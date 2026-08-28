@@ -10,6 +10,7 @@ public record UpdateAppearanceSettingsRequest(
         String headerBgColor,
         String borderColor,
         String secondarySurfaceColor,
-        Boolean resetToDefault
+        Boolean resetToDefault,
+        Boolean clearAdvancedOverrides
 ) {
 }

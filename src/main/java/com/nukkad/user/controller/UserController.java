@@ -336,6 +336,8 @@ public class UserController {
             ThemePreset themePreset = request.themePreset() == null ? null : ThemePreset.valueOf(request.themePreset());
             UserAppearanceSettings updated = Boolean.TRUE.equals(request.resetToDefault())
                     ? userAppearanceSettingsService.resetToDefault(principal.id(), themeMode, themePreset)
+                    : Boolean.TRUE.equals(request.clearAdvancedOverrides())
+                    ? userAppearanceSettingsService.clearAdvancedOverrides(principal.id())
                     : userAppearanceSettingsService.updateSettings(
                             principal.id(), themeMode, themePreset, request.customPrimaryColor(),
                             request.sidebarColor(), request.pageBgColor(), request.cardBgColor(),

@@ -65,6 +65,20 @@ public class UserAppearanceSettingsService {
         return repository.save(settings);
     }
 
+    /** Clears only the 6 advanced-override colours, leaving mode/preset/custom colour untouched. */
+    @Transactional
+    public UserAppearanceSettings clearAdvancedOverrides(String userId) {
+        UserAppearanceSettings settings = repository.findById(userId)
+                .orElseGet(() -> UserAppearanceSettings.builder().userId(userId).build());
+        settings.setSidebarColor(null);
+        settings.setPageBgColor(null);
+        settings.setCardBgColor(null);
+        settings.setHeaderBgColor(null);
+        settings.setBorderColor(null);
+        settings.setSecondarySurfaceColor(null);
+        return repository.save(settings);
+    }
+
     private void requireValidHexOrNull(String value, String fieldName) {
         if (value != null && !value.isBlank() && !HEX_COLOR.matcher(value).matches()) {
             throw new BadRequestException("Invalid hex colour for " + fieldName + ": " + value);
