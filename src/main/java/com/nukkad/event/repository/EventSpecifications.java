@@ -33,6 +33,11 @@ public final class EventSpecifications {
         return (root, query, cb) -> cb.equal(root.get("chapterId"), chapterId);
     }
 
+    public static Specification<Event> organizerUserId(String organizerUserId) {
+        if (organizerUserId == null || organizerUserId.isBlank()) return null;
+        return (root, query, cb) -> cb.equal(root.get("organizerUserId"), organizerUserId);
+    }
+
     public static Specification<Event> upcoming(Boolean upcoming) {
         if (upcoming == null || !upcoming) return null;
         return (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("startAt"), Instant.now());

@@ -66,11 +66,12 @@ public class EventService {
     }
 
     @Transactional(readOnly = true)
-    public Page<EventDto> listEvents(String chapterId, Boolean upcoming, String q, String viewerId, int page, int size) {
+    public Page<EventDto> listEvents(String chapterId, Boolean upcoming, String q, String organizerUserId, String viewerId, int page, int size) {
         Specification<Event> spec = EventSpecifications.combine(
                 EventSpecifications.chapterId(chapterId),
                 EventSpecifications.upcoming(upcoming),
-                EventSpecifications.search(q)
+                EventSpecifications.search(q),
+                EventSpecifications.organizerUserId(organizerUserId)
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "startAt"));
         return eventRepository.findAll(spec, pageable).map(event -> toDto(event, viewerId));

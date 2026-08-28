@@ -74,12 +74,16 @@ public class ChapterService {
     }
 
     @Transactional(readOnly = true)
-    public Page<ChapterDto> listChapters(String q, int page, int size) {
-        Specification<Chapter> spec = (root, query, cb) -> {
+    public Page<ChapterDto> listChapters(String q, String presidentUserId, int page, int size) {
+        Specification<Chapter> searchSpec = (root, query, cb) -> {
             if (q == null || q.isBlank()) return cb.conjunction();
             String like = "%" + q.trim().toLowerCase() + "%";
             return cb.or(cb.like(cb.lower(root.get("name")), like), cb.like(cb.lower(cb.coalesce(root.get("city"), "")), like));
         };
+        Specification<Chapter> spec = searchSpec;
+        if (presidentUserId != null && !presidentUserId.isBlank()) {
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("presidentUserId"), presidentUserId));
+        }
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "name"));
         return chapterRepository.findAll(spec, pageable).map(this::toDtoWithCounts);
     }
@@ -152,6 +156,36 @@ public class ChapterService {
     public UserDto leaveChapter(String userId, String chapterId) {
         getEntityOrThrow(chapterId);
         User user = userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        if (chapterId.equals(user.getChapterId())) {
+            user.setChapterId(null);
+            user = userRepository.save(user);
+        }
+        return userMapper.toDto(user);
+    }
+
+    @Transactional
+    public UserDto addMember(String requesterId, String chapterId, String targetUserId) {
+        Chapter chapter = getEntityOrThrow(chapterId);
+        if (!requesterId.equals(chapter.getPresidentUserId())) {
+            throw new ForbiddenException("Only this chapter's president can add members");
+        }
+        User user = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
+        user.setChapterId(chapterId);
+        return userMapper.toDto(userRepository.save(user));
+    }
+
+    @Transactional
+    public UserDto removeMember(String requesterId, String chapterId, String targetUserId) {
+        Chapter chapter = getEntityOrThrow(chapterId);
+        if (!requesterId.equals(chapter.getPresidentUserId())) {
+            throw new ForbiddenException("Only this chapter's president can remove members");
+        }
+        if (targetUserId.equals(chapter.getPresidentUserId())) {
+            throw new ForbiddenException("The chapter president cannot be removed as a member");
+        }
+        User user = userRepository.findById(targetUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
         if (chapterId.equals(user.getChapterId())) {
             user.setChapterId(null);
             user = userRepository.save(user);

@@ -39,9 +39,10 @@ public class ChapterController {
 
     @GetMapping
     public ApiResponse<PageResponse<ChapterDto>> list(@RequestParam(required = false) String q,
+                                                        @RequestParam(required = false) String presidentUserId,
                                                         @RequestParam(defaultValue = "0") int page,
                                                         @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(PageResponse.from(chapterService.listChapters(q, page, size)));
+        return ApiResponse.ok(PageResponse.from(chapterService.listChapters(q, presidentUserId, page, size)));
     }
 
     @GetMapping("/{id}")
@@ -88,5 +89,17 @@ public class ChapterController {
     @PostMapping("/{id}/leave")
     public ApiResponse<UserDto> leave(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         return ApiResponse.ok(chapterService.leaveChapter(principal.id(), id));
+    }
+
+    @PostMapping("/{id}/members/{userId}")
+    public ApiResponse<UserDto> addMember(@AuthenticationPrincipal AuthenticatedUser principal,
+                                           @PathVariable String id, @PathVariable String userId) {
+        return ApiResponse.ok(chapterService.addMember(principal.id(), id, userId));
+    }
+
+    @DeleteMapping("/{id}/members/{userId}")
+    public ApiResponse<UserDto> removeMember(@AuthenticationPrincipal AuthenticatedUser principal,
+                                              @PathVariable String id, @PathVariable String userId) {
+        return ApiResponse.ok(chapterService.removeMember(principal.id(), id, userId));
     }
 }

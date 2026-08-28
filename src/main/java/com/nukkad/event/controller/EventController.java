@@ -41,10 +41,11 @@ public class EventController {
                                                        @RequestParam(required = false) String chapterId,
                                                        @RequestParam(required = false) Boolean upcoming,
                                                        @RequestParam(required = false) String q,
+                                                       @RequestParam(required = false) String organizerUserId,
                                                        @RequestParam(defaultValue = "0") int page,
                                                        @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(PageResponse.from(
-                eventService.listEvents(chapterId, upcoming, q, principal.id(), page, size)));
+                eventService.listEvents(chapterId, upcoming, q, organizerUserId, principal.id(), page, size)));
     }
 
     @GetMapping("/{id}")

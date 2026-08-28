@@ -103,4 +103,53 @@ class ChapterServiceTest {
 
         verify(chapterRepository, never()).saveAndFlush(any());
     }
+
+    @Test
+    void presidentCanAddAMember() {
+        Chapter existing = chapter("c1", "u1");
+        User target = user("u2");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(userRepository.findById("u2")).thenReturn(Optional.of(target));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().addMember("u1", "c1", "u2");
+
+        assertThat(target.getChapterId()).isEqualTo("c1");
+    }
+
+    @Test
+    void nonPresidentCannotAddAMember() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service().addMember("u2", "c1", "u3"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void presidentCanRemoveAMember() {
+        Chapter existing = chapter("c1", "u1");
+        User target = user("u2");
+        target.setChapterId("c1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(userRepository.findById("u2")).thenReturn(Optional.of(target));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().removeMember("u1", "c1", "u2");
+
+        assertThat(target.getChapterId()).isNull();
+    }
+
+    @Test
+    void presidentCannotRemoveThemselfAsAMember() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service().removeMember("u1", "c1", "u1"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(userRepository, never()).save(any());
+    }
 }
