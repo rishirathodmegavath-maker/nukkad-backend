@@ -1,0 +1,8 @@
+CREATE TABLE user_privacy_settings (
+  user_id CHAR(36) NOT NULL,
+  profile_visibility ENUM('EVERYONE','CONNECTIONS') NOT NULL DEFAULT 'EVERYONE',
+  message_permission ENUM('EVERYONE','CONNECTIONS') NOT NULL DEFAULT 'EVERYONE',
+  connect_permission ENUM('EVERYONE','MUTUAL_CONNECTIONS','NOBODY') NOT NULL DEFAULT 'EVERYONE',
+  PRIMARY KEY (user_id),
+  CONSTRAINT fk_user_privacy_settings_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

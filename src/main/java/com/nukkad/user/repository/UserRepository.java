@@ -1,0 +1,22 @@
+package com.nukkad.user.repository;
+
+import com.nukkad.user.entity.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Optional;
+
+public interface UserRepository extends JpaRepository<User, String>, JpaSpecificationExecutor<User> {
+    Optional<User> findByEmail(String email);
+    boolean existsByEmail(String email);
+    long countByChapterId(String chapterId);
+
+    /** Bulk skill fetch for a candidate pool — avoids N+1 lazy-loading `User.skills` per candidate
+     *  when scoring many users at once. Each row is {@code [user_id, skill]}. */
+    @Query(value = "select user_id, skill from user_skills where user_id in :userIds", nativeQuery = true)
+    List<Object[]> findSkillsByUserIds(@Param("userIds") Collection<String> userIds);
+}

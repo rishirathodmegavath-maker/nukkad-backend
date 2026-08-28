@@ -1,0 +1,6 @@
+ALTER TABLE startup_team_members
+  MODIFY COLUMN status ENUM('ACTIVE','PENDING','REJECTED') NOT NULL DEFAULT 'ACTIVE',
+  ADD COLUMN message VARCHAR(1000) NULL AFTER role_id,
+  ADD COLUMN reviewed_at TIMESTAMP NULL AFTER message,
+  ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at,
+  ADD KEY idx_stm_startup_status (startup_id, status);

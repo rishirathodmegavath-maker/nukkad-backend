@@ -1,0 +1,5 @@
+package com.nukkad.user.entity;
+
+public enum ProfileSection {
+    EXPERIENCE, EDUCATION, ACHIEVEMENTS, PROJECTS, CERTIFICATIONS, PUBLICATIONS, SOCIAL_LINKS, RECOMMENDATIONS
+}
