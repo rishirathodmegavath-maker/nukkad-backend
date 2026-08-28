@@ -7,6 +7,7 @@ import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.repository.EventRepository;
 import com.nukkad.idea.repository.IdeaRepository;
 import com.nukkad.resource.repository.ResourceRepository;
@@ -44,13 +45,14 @@ class ChapterServiceTest {
     @Mock private OpportunityRepository opportunityRepository;
     @Mock private EventRepository eventRepository;
     @Mock private ResourceRepository resourceRepository;
+    @Mock private FileStorageService fileStorageService;
 
     private final ChapterMapper chapterMapper = new ChapterMapper();
     private final UserMapper userMapper = new UserMapper();
 
     private ChapterService service() {
         return new ChapterService(chapterRepository, userRepository, ideaRepository, startupRepository,
-                opportunityRepository, eventRepository, resourceRepository, chapterMapper, userMapper);
+                opportunityRepository, eventRepository, resourceRepository, chapterMapper, userMapper, fileStorageService);
     }
 
     private Chapter chapter(String id, String presidentUserId) {

@@ -8,6 +8,7 @@ import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.repository.EventRepository;
 import com.nukkad.idea.repository.IdeaRepository;
 import com.nukkad.resource.repository.ResourceRepository;
@@ -25,6 +26,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class ChapterService {
@@ -38,6 +40,7 @@ public class ChapterService {
     private final ResourceRepository resourceRepository;
     private final ChapterMapper chapterMapper;
     private final UserMapper userMapper;
+    private final FileStorageService fileStorageService;
 
     public ChapterService(ChapterRepository chapterRepository,
                            UserRepository userRepository,
@@ -47,7 +50,8 @@ public class ChapterService {
                            EventRepository eventRepository,
                            ResourceRepository resourceRepository,
                            ChapterMapper chapterMapper,
-                           UserMapper userMapper) {
+                           UserMapper userMapper,
+                           FileStorageService fileStorageService) {
         this.chapterRepository = chapterRepository;
         this.userRepository = userRepository;
         this.ideaRepository = ideaRepository;
@@ -57,6 +61,7 @@ public class ChapterService {
         this.resourceRepository = resourceRepository;
         this.chapterMapper = chapterMapper;
         this.userMapper = userMapper;
+        this.fileStorageService = fileStorageService;
     }
 
     public Chapter getEntityOrThrow(String id) {
@@ -111,6 +116,27 @@ public class ChapterService {
         if (request.description() != null) chapter.setDescription(request.description());
         if (request.coverImageUrl() != null) chapter.setCoverImageUrl(request.coverImageUrl());
 
+        return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
+    }
+
+    @Transactional
+    public ChapterDto updateCoverImage(String userId, String id, MultipartFile file, String publicBaseUrl) {
+        Chapter chapter = getEntityOrThrow(id);
+        if (!userId.equals(chapter.getPresidentUserId())) {
+            throw new ForbiddenException("Only this chapter's president can update its cover photo");
+        }
+        String relativePath = fileStorageService.storeImage(file, "chapter-covers");
+        chapter.setCoverImageUrl(publicBaseUrl + "/uploads/" + relativePath);
+        return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
+    }
+
+    @Transactional
+    public ChapterDto removeCoverImage(String userId, String id) {
+        Chapter chapter = getEntityOrThrow(id);
+        if (!userId.equals(chapter.getPresidentUserId())) {
+            throw new ForbiddenException("Only this chapter's president can remove its cover photo");
+        }
+        chapter.setCoverImageUrl(null);
         return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
     }
 
