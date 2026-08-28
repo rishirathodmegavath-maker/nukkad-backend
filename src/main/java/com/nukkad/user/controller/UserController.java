@@ -2,6 +2,7 @@ package com.nukkad.user.controller;
 
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.response.ApiResponse;
+import org.springframework.dao.DataIntegrityViolationException;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.security.AuthenticatedUser;
 import com.nukkad.user.dto.AchievementDto;
@@ -200,8 +201,16 @@ public class UserController {
 
     @PostMapping("/{id}/follow")
     public ApiResponse<Map<String, Object>> follow(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
-        var result = userService.toggleFollow(principal.id(), id);
-        return ApiResponse.ok(Map.of("following", result.following()));
+        try {
+            var result = userService.toggleFollow(principal.id(), id);
+            return ApiResponse.ok(Map.of("following", result.following()));
+        } catch (DataIntegrityViolationException e) {
+            // Two simultaneous follow-toggle requests both saw "not following yet" and raced to
+            // insert; the loser hits the (follower_id, followee_id) unique key. The transaction
+            // that failed has already rolled back cleanly by the time it reaches here — the
+            // desired end state (following) is true regardless of which request "won".
+            return ApiResponse.ok(Map.of("following", true));
+        }
     }
 
     @PostMapping("/{id}/endorsements/{skill}")

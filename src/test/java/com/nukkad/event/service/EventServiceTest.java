@@ -218,7 +218,7 @@ class EventServiceTest {
     @Test
     void duplicateRsvpIsPrevented() {
         Event chapterEvent = event("e1", "c1", "president1", null);
-        when(eventRepository.findById("e1")).thenReturn(Optional.of(chapterEvent));
+        when(eventRepository.findByIdForUpdate("e1")).thenReturn(Optional.of(chapterEvent));
         when(attendeeRepository.existsByEventIdAndUserId("e1", "member1")).thenReturn(true);
 
         assertThatThrownBy(() -> service().rsvp("member1", "e1"))
@@ -228,7 +228,7 @@ class EventServiceTest {
     @Test
     void rsvpAfterCapacityReachedIsRejected() {
         Event fullEvent = event("e1", "c1", "president1", 2);
-        when(eventRepository.findById("e1")).thenReturn(Optional.of(fullEvent));
+        when(eventRepository.findByIdForUpdate("e1")).thenReturn(Optional.of(fullEvent));
         when(attendeeRepository.existsByEventIdAndUserId("e1", "member1")).thenReturn(false);
         when(attendeeRepository.countByEventId("e1")).thenReturn(2L);
 
@@ -239,7 +239,7 @@ class EventServiceTest {
     @Test
     void rsvpUsesAuthenticatedUserIdAndCreatesRealAttendeeRecord() {
         Event openEvent = event("e1", "c1", "president1", null);
-        when(eventRepository.findById("e1")).thenReturn(Optional.of(openEvent));
+        when(eventRepository.findByIdForUpdate("e1")).thenReturn(Optional.of(openEvent));
         when(attendeeRepository.existsByEventIdAndUserId("e1", "member1")).thenReturn(false);
         when(attendeeRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -275,7 +275,7 @@ class EventServiceTest {
 
     @Test
     void deletedEventCannotBeRsvpedTo() {
-        when(eventRepository.findById("gone")).thenReturn(Optional.empty());
+        when(eventRepository.findByIdForUpdate("gone")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service().rsvp("member1", "gone"))
                 .isInstanceOf(com.nukkad.common.exception.ResourceNotFoundException.class);

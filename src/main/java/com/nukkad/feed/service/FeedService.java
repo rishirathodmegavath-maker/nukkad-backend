@@ -96,22 +96,26 @@ public class FeedService {
 
     @Transactional
     public PostDto toggleLike(String viewerId, String postId) {
-        Post post = postRepository.findById(postId)
-                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        if (!postRepository.existsById(postId)) {
+            throw new ResourceNotFoundException("Post not found: " + postId);
+        }
 
         var existing = postLikeRepository.findByPostIdAndUserId(postId, viewerId);
         boolean liked;
         if (existing.isPresent()) {
-            postLikeRepository.delete(existing.get());
-            post.setLikesCount(Math.max(0, post.getLikesCount() - 1));
+            postLikeRepository.deleteByPostIdAndUserId(postId, viewerId);
+            postRepository.decrementLikesCount(postId);
             liked = false;
         } else {
             postLikeRepository.save(PostLike.builder().postId(postId).userId(viewerId).build());
-            post.setLikesCount(post.getLikesCount() + 1);
+            postRepository.incrementLikesCount(postId);
             liked = true;
         }
+        // The modifying query above clears the persistence context, so this is a fresh read.
+        Post refreshed = postRepository.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
         boolean saved = postSaveRepository.findByPostIdAndUserId(postId, viewerId).isPresent();
-        return toDto(postRepository.save(post), liked, saved);
+        return toDto(refreshed, liked, saved);
     }
 
     @Transactional
@@ -122,7 +126,7 @@ public class FeedService {
         var existing = postSaveRepository.findByPostIdAndUserId(postId, viewerId);
         boolean saved;
         if (existing.isPresent()) {
-            postSaveRepository.delete(existing.get());
+            postSaveRepository.deleteByPostIdAndUserId(postId, viewerId);
             saved = false;
         } else {
             postSaveRepository.save(PostSave.builder().postId(postId).userId(viewerId).build());
@@ -205,8 +209,7 @@ public class FeedService {
                 .content(request.content().trim())
                 .build());
 
-        post.setCommentsCount(post.getCommentsCount() + 1);
-        postRepository.save(post);
+        postRepository.incrementCommentsCount(postId);
 
         return toCommentDto(comment);
     }

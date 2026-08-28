@@ -182,7 +182,8 @@ public class EventService {
 
     @Transactional
     public EventDto rsvp(String userId, String eventId) {
-        Event event = getEntityOrThrow(eventId);
+        Event event = eventRepository.findByIdForUpdate(eventId)
+                .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
         if (attendeeRepository.existsByEventIdAndUserId(eventId, userId)) {
             throw new ConflictException("You're already registered for this event");
         }

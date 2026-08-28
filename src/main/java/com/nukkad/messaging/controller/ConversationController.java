@@ -11,6 +11,7 @@ import com.nukkad.messaging.service.ConversationService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.validation.Valid;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,7 +59,24 @@ public class ConversationController {
     public ApiResponse<MessageDto> sendMessage(@AuthenticationPrincipal AuthenticatedUser principal,
                                                 @PathVariable String id,
                                                 @Valid @RequestBody SendMessageRequest request) {
-        return ApiResponse.ok(conversationService.sendMessage(id, principal.id(), request.content(), request.sharedPostId()));
+        // Two messages landing in the same conversation at the same instant can deadlock on the
+        // conversation row's UPDATE (MySQL FK-locking between the messages insert and the
+        // conversations update); retrying the whole transaction is the standard response to a
+        // MySQL deadlock, which by design always aborts exactly one of the two contending transactions.
+        int attempts = 0;
+        while (true) {
+            try {
+                return ApiResponse.ok(conversationService.sendMessage(id, principal.id(), request.content(), request.sharedPostId()));
+            } catch (PessimisticLockingFailureException ex) {
+                if (++attempts >= 5) throw ex;
+                try {
+                    Thread.sleep((long) (Math.random() * 25 * attempts));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw ex;
+                }
+            }
+        }
     }
 
     @PatchMapping("/{id}/read")

@@ -13,6 +13,7 @@ import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -82,12 +83,23 @@ public class FeedController {
 
     @PostMapping("/{id}/like")
     public ApiResponse<PostDto> toggleLike(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
-        return ApiResponse.ok(feedService.toggleLike(principal.id(), id));
+        try {
+            return ApiResponse.ok(feedService.toggleLike(principal.id(), id));
+        } catch (DataIntegrityViolationException e) {
+            // Two simultaneous like-toggle requests both saw "not liked yet" and raced to insert;
+            // the loser's transaction has already rolled back cleanly by the time it reaches here.
+            // The desired end state (liked) is true regardless of which request "won" — return that.
+            return ApiResponse.ok(feedService.get(principal.id(), id));
+        }
     }
 
     @PostMapping("/{id}/save")
     public ApiResponse<PostDto> toggleSave(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
-        return ApiResponse.ok(feedService.toggleSave(principal.id(), id));
+        try {
+            return ApiResponse.ok(feedService.toggleSave(principal.id(), id));
+        } catch (DataIntegrityViolationException e) {
+            return ApiResponse.ok(feedService.get(principal.id(), id));
+        }
     }
 
     @GetMapping("/{id}/comments")

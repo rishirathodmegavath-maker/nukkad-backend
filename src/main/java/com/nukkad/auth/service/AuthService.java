@@ -22,7 +22,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Instant;
 import java.util.HashSet;
@@ -42,6 +45,7 @@ public class AuthService {
     private final UserMapper userMapper;
     private final AuditService auditService;
     private final GoogleTokenVerifier googleTokenVerifier;
+    private final TransactionTemplate requiresNewTransactionTemplate;
 
     public AuthService(UserRepository userRepository,
                         RefreshTokenRepository refreshTokenRepository,
@@ -50,7 +54,8 @@ public class AuthService {
                         JwtService jwtService,
                         UserMapper userMapper,
                         AuditService auditService,
-                        GoogleTokenVerifier googleTokenVerifier) {
+                        GoogleTokenVerifier googleTokenVerifier,
+                        PlatformTransactionManager transactionManager) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.passwordResetTokenRepository = passwordResetTokenRepository;
@@ -59,6 +64,8 @@ public class AuthService {
         this.userMapper = userMapper;
         this.auditService = auditService;
         this.googleTokenVerifier = googleTokenVerifier;
+        this.requiresNewTransactionTemplate = new TransactionTemplate(transactionManager);
+        this.requiresNewTransactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Transactional
@@ -87,8 +94,7 @@ public class AuthService {
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new BadCredentialsException("Invalid email or password");
         }
-        user.setLastActiveAt(Instant.now());
-        userRepository.save(user);
+        userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
         return issueAuthResponse(user, ip, userAgent, false);
     }
@@ -113,8 +119,7 @@ public class AuthService {
             return userRepository.saveAndFlush(created);
         });
 
-        user.setLastActiveAt(Instant.now());
-        userRepository.save(user);
+        userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
         return issueAuthResponse(user, ip, userAgent, isNewUser[0]);
     }
@@ -204,9 +209,15 @@ public class AuthService {
         revokeAllForUser(user.getId());
     }
 
+    /**
+     * Runs in its own committed transaction (REQUIRES_NEW) so the revocation survives even when
+     * the caller immediately throws afterward (e.g. refresh-token-reuse detection) — otherwise
+     * Spring's default rollback-on-RuntimeException would undo this side effect along with it.
+     */
     private void revokeAllForUser(String userId) {
-        refreshTokenRepository.findByUserIdAndRevokedAtIsNull(userId)
-                .forEach(t -> t.setRevokedAt(Instant.now()));
+        requiresNewTransactionTemplate.executeWithoutResult(status ->
+                refreshTokenRepository.findByUserIdAndRevokedAtIsNull(userId)
+                        .forEach(t -> t.setRevokedAt(Instant.now())));
     }
 
     @Transactional

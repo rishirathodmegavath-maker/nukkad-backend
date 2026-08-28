@@ -273,7 +273,7 @@ public class StartupService {
     private StartupTeamMemberDto transitionJoinRequest(String founderId, String memberId,
                                                          StartupTeamMember.Status newStatus,
                                                          String notificationTitle, String messageTemplate) {
-        StartupTeamMember member = teamMemberRepository.findById(memberId)
+        StartupTeamMember member = teamMemberRepository.findByIdForUpdate(memberId)
                 .orElseThrow(() -> new ResourceNotFoundException("Join request not found: " + memberId));
         Startup startup = getEntityOrThrow(member.getStartupId());
         requireFounder(founderId, startup.getId());
