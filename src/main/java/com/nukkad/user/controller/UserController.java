@@ -23,14 +23,20 @@ import com.nukkad.user.dto.WriteRecommendationRequest;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationPreferenceService;
 import com.nukkad.user.dto.AccountPrivacyDto;
+import com.nukkad.user.dto.AppearanceSettingsDto;
 import com.nukkad.user.dto.UpdateAccountPrivacyRequest;
+import com.nukkad.user.dto.UpdateAppearanceSettingsRequest;
 import com.nukkad.user.entity.ConnectPermission;
 import com.nukkad.user.entity.MessagePermission;
 import com.nukkad.user.entity.ProfileSection;
 import com.nukkad.user.entity.ProfileVisibility;
 import com.nukkad.user.entity.SectionVisibility;
+import com.nukkad.user.entity.ThemeMode;
+import com.nukkad.user.entity.ThemePreset;
+import com.nukkad.user.entity.UserAppearanceSettings;
 import com.nukkad.user.entity.UserPrivacySettings;
 import com.nukkad.user.service.ProfilePrivacyService;
+import com.nukkad.user.service.UserAppearanceSettingsService;
 import com.nukkad.user.service.UserPrivacySettingsService;
 import com.nukkad.user.service.UserEndorsementService;
 import com.nukkad.user.service.UserRecommendationService;
@@ -73,6 +79,7 @@ public class UserController {
     private final ProfilePrivacyService profilePrivacyService;
     private final NotificationPreferenceService notificationPreferenceService;
     private final UserPrivacySettingsService userPrivacySettingsService;
+    private final UserAppearanceSettingsService userAppearanceSettingsService;
     private final PeopleRecommendationService peopleRecommendationService;
     private final CompatibilityService compatibilityService;
 
@@ -80,6 +87,7 @@ public class UserController {
                            UserRecommendationService userRecommendationService, ProfilePrivacyService profilePrivacyService,
                            NotificationPreferenceService notificationPreferenceService,
                            UserPrivacySettingsService userPrivacySettingsService,
+                           UserAppearanceSettingsService userAppearanceSettingsService,
                            PeopleRecommendationService peopleRecommendationService,
                            CompatibilityService compatibilityService) {
         this.peopleRecommendationService = peopleRecommendationService;
@@ -90,6 +98,7 @@ public class UserController {
         this.profilePrivacyService = profilePrivacyService;
         this.notificationPreferenceService = notificationPreferenceService;
         this.userPrivacySettingsService = userPrivacySettingsService;
+        this.userAppearanceSettingsService = userAppearanceSettingsService;
     }
 
     @GetMapping("/me")
@@ -310,6 +319,44 @@ public class UserController {
                 settings.getProfileVisibility().name(),
                 settings.getMessagePermission().name(),
                 settings.getConnectPermission().name());
+    }
+
+    // ---- Appearance (theme mode, preset, custom colour, advanced overrides) ----
+
+    @GetMapping("/me/appearance")
+    public ApiResponse<AppearanceSettingsDto> getAppearanceSettings(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(toAppearanceSettingsDto(userAppearanceSettingsService.getSettings(principal.id())));
+    }
+
+    @PatchMapping("/me/appearance")
+    public ApiResponse<AppearanceSettingsDto> updateAppearanceSettings(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                                        @RequestBody UpdateAppearanceSettingsRequest request) {
+        try {
+            ThemeMode themeMode = request.themeMode() == null ? null : ThemeMode.valueOf(request.themeMode());
+            ThemePreset themePreset = request.themePreset() == null ? null : ThemePreset.valueOf(request.themePreset());
+            UserAppearanceSettings updated = Boolean.TRUE.equals(request.resetToDefault())
+                    ? userAppearanceSettingsService.resetToDefault(principal.id(), themeMode, themePreset)
+                    : userAppearanceSettingsService.updateSettings(
+                            principal.id(), themeMode, themePreset, request.customPrimaryColor(),
+                            request.sidebarColor(), request.pageBgColor(), request.cardBgColor(),
+                            request.headerBgColor(), request.borderColor(), request.secondarySurfaceColor());
+            return ApiResponse.ok(toAppearanceSettingsDto(updated));
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Invalid appearance setting value");
+        }
+    }
+
+    private AppearanceSettingsDto toAppearanceSettingsDto(UserAppearanceSettings settings) {
+        return new AppearanceSettingsDto(
+                settings.getThemeMode().name(),
+                settings.getThemePreset().name(),
+                settings.getCustomPrimaryColor(),
+                settings.getSidebarColor(),
+                settings.getPageBgColor(),
+                settings.getCardBgColor(),
+                settings.getHeaderBgColor(),
+                settings.getBorderColor(),
+                settings.getSecondarySurfaceColor());
     }
 
     @PostMapping("/{id}/block")
