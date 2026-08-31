@@ -101,7 +101,15 @@ public class AuthService {
 
     @Transactional
     public AuthResponse loginWithGoogle(String rawIdToken, String ip, String userAgent) {
-        GoogleTokenVerifier.GoogleIdentity identity = googleTokenVerifier.verify(rawIdToken);
+        return authenticateGoogleIdentity(googleTokenVerifier.verify(rawIdToken), ip, userAgent);
+    }
+
+    @Transactional
+    public AuthResponse loginWithGoogleAuthCode(String code, String redirectUri, String ip, String userAgent) {
+        return authenticateGoogleIdentity(googleTokenVerifier.exchangeAuthorizationCode(code, redirectUri), ip, userAgent);
+    }
+
+    private AuthResponse authenticateGoogleIdentity(GoogleTokenVerifier.GoogleIdentity identity, String ip, String userAgent) {
         String email = identity.email().toLowerCase().trim();
 
         boolean[] isNewUser = { false };

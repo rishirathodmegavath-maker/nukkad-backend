@@ -27,13 +27,13 @@ public class SecurityConfig {
             "/api/auth/register",
             "/api/auth/login",
             "/api/auth/google",
+            "/api/auth/google/code",
             "/api/auth/refresh",
             "/api/auth/password-reset/**",
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/v3/api-docs/**",
             "/actuator/health",
-            "/uploads/**",
             "/ws/**"
     };
 

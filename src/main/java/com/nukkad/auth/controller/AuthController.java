@@ -2,6 +2,7 @@ package com.nukkad.auth.controller;
 
 import com.nukkad.auth.dto.AuthResponse;
 import com.nukkad.auth.dto.ChangePasswordRequest;
+import com.nukkad.auth.dto.GoogleAuthCodeRequest;
 import com.nukkad.auth.dto.GoogleAuthRequest;
 import com.nukkad.auth.dto.LoginRequest;
 import com.nukkad.auth.dto.MessageResponse;
@@ -59,6 +60,12 @@ public class AuthController {
     @PostMapping("/google")
     public ApiResponse<AuthResponse> google(@Valid @RequestBody GoogleAuthRequest request, HttpServletRequest httpRequest) {
         return ApiResponse.ok(authService.loginWithGoogle(request.idToken(), httpRequest.getRemoteAddr(), httpRequest.getHeader("User-Agent")));
+    }
+
+    @PostMapping("/google/code")
+    public ApiResponse<AuthResponse> googleCode(@Valid @RequestBody GoogleAuthCodeRequest request, HttpServletRequest httpRequest) {
+        return ApiResponse.ok(authService.loginWithGoogleAuthCode(
+                request.code(), request.redirectUri(), httpRequest.getRemoteAddr(), httpRequest.getHeader("User-Agent")));
     }
 
     @PostMapping("/refresh")
