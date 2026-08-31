@@ -39,3 +39,7 @@ build/
 run.log
 *.log
 uploads/
+
+### Local DB dumps/backups at repo root — never commit real data (migrations under
+### src/main/resources/db/migration are unaffected, this only matches the root) ###
+/*.sql

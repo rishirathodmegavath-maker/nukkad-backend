@@ -70,7 +70,7 @@ public class ResourceService {
 
     @Transactional
     public ResourceDto createResource(String uploaderId, String title, String description, String typeLabel,
-                                       String url, MultipartFile file, String chapterId, Set<String> tags, String publicBaseUrl) {
+                                       String url, MultipartFile file, String chapterId, Set<String> tags) {
         ResourceType type;
         try {
             type = ResourceType.fromLabel(typeLabel);
@@ -87,7 +87,7 @@ public class ResourceService {
         String finalUrl;
         if (hasFile) {
             FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "resources");
-            finalUrl = publicBaseUrl + "/uploads/" + media.path();
+            finalUrl = media.url();
         } else {
             finalUrl = url.trim();
         }

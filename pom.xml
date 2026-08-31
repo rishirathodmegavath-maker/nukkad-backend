@@ -31,6 +31,7 @@
 		<springdoc.version>2.8.6</springdoc.version>
 		<jjwt.version>0.12.6</jjwt.version>
 		<testcontainers.version>1.21.3</testcontainers.version>
+		<aws-sdk.version>2.54.7</aws-sdk.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -66,6 +67,11 @@
 			<groupId>com.mysql</groupId>
 			<artifactId>mysql-connector-j</artifactId>
 			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>s3</artifactId>
+			<version>${aws-sdk.version}</version>
 		</dependency>
 		<dependency>
 			<groupId>org.projectlombok</groupId>

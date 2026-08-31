@@ -9,7 +9,6 @@ import com.nukkad.common.response.PageResponse;
 import com.nukkad.security.AuthenticatedUser;
 import com.nukkad.user.dto.UserDto;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -24,7 +23,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 @RestController
 @RequestMapping("/api/chapters")
@@ -67,13 +65,8 @@ public class ChapterController {
     @PostMapping("/{id}/cover")
     public ApiResponse<ChapterDto> uploadCover(@AuthenticationPrincipal AuthenticatedUser principal,
                                                 @PathVariable String id,
-                                                @RequestParam("file") MultipartFile file,
-                                                HttpServletRequest httpRequest) {
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(httpRequest)
-                .replacePath(null)
-                .build()
-                .toUriString();
-        return ApiResponse.ok(chapterService.updateCoverImage(principal.id(), id, file, baseUrl));
+                                                @RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(chapterService.updateCoverImage(principal.id(), id, file));
     }
 
     @DeleteMapping("/{id}/cover")

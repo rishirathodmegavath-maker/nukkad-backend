@@ -7,7 +7,6 @@ import com.nukkad.resource.dto.UpdateResourceRequest;
 import com.nukkad.resource.service.ResourceService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -23,7 +22,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.util.Arrays;
 import java.util.Map;
@@ -65,10 +63,8 @@ public class ResourceController {
                                              @RequestParam(required = false) String url,
                                              @RequestParam(required = false) MultipartFile file,
                                              @RequestParam(required = false) String chapterId,
-                                             @RequestParam(required = false) String tags,
-                                             HttpServletRequest httpRequest) {
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(httpRequest).replacePath(null).build().toUriString();
-        return ApiResponse.ok(resourceService.createResource(principal.id(), title, description, type, url, file, chapterId, parseTags(tags), baseUrl));
+                                             @RequestParam(required = false) String tags) {
+        return ApiResponse.ok(resourceService.createResource(principal.id(), title, description, type, url, file, chapterId, parseTags(tags)));
     }
 
     @PutMapping("/{id}")

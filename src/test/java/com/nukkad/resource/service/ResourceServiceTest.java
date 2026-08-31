@@ -55,7 +55,7 @@ class ResourceServiceTest {
 
     @Test
     void creatingWithNeitherUrlNorFileIsRejected() {
-        assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "Document", null, null, null, Set.of(), "http://x"))
+        assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "Document", null, null, null, Set.of()))
                 .isInstanceOf(BadRequestException.class);
         verify(resourceRepository, never()).saveAndFlush(any());
     }
@@ -63,7 +63,7 @@ class ResourceServiceTest {
     @Test
     void creatingWithBothUrlAndFileIsRejected() {
         MockMultipartFile file = new MockMultipartFile("file", "deck.pdf", "application/pdf", "content".getBytes());
-        assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "Document", "https://example.com", file, null, Set.of(), "http://x"))
+        assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "Document", "https://example.com", file, null, Set.of()))
                 .isInstanceOf(BadRequestException.class);
         verify(resourceRepository, never()).saveAndFlush(any());
     }
@@ -73,7 +73,7 @@ class ResourceServiceTest {
         when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ResourceDto dto = service().createResource("u1", "Startup Checklist", "desc", "Document",
-                "https://example.com/checklist", null, null, Set.of("Fundraising"), "http://localhost:8082");
+                "https://example.com/checklist", null, null, Set.of("Fundraising"));
 
         assertThat(dto.url()).isEqualTo("https://example.com/checklist");
         assertThat(dto.uploaderUserId()).isEqualTo("u1");
@@ -84,19 +84,19 @@ class ResourceServiceTest {
     void creatingWithFileStoresItAndPersistsAHostedUrl() {
         MockMultipartFile file = new MockMultipartFile("file", "deck.pdf", "application/pdf", "content".getBytes());
         when(fileStorageService.storeMedia(any(), org.mockito.ArgumentMatchers.eq("resources")))
-                .thenReturn(new FileStorageService.StoredMedia("resources/abc123.pdf", FileStorageService.AttachmentKind.PDF));
+                .thenReturn(new FileStorageService.StoredMedia("https://storage.example.com/resources/abc123.pdf", FileStorageService.AttachmentKind.PDF));
         when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ResourceDto dto = service().createResource("u1", "Pitch Deck", "desc", "Document",
-                null, file, null, Set.of(), "http://localhost:8082");
+                null, file, null, Set.of());
 
-        assertThat(dto.url()).isEqualTo("http://localhost:8082/uploads/resources/abc123.pdf");
+        assertThat(dto.url()).isEqualTo("https://storage.example.com/resources/abc123.pdf");
     }
 
     @Test
     void unknownResourceTypeIsRejected() {
         assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "NotAType",
-                "https://example.com", null, null, Set.of(), "http://x"))
+                "https://example.com", null, null, Set.of()))
                 .isInstanceOf(BadRequestException.class);
     }
 
@@ -104,7 +104,7 @@ class ResourceServiceTest {
     void creatingForANonExistentChapterIsRejected() {
         when(chapterRepository.findById("ghost")).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "Document",
-                "https://example.com", null, "ghost", Set.of(), "http://x"))
+                "https://example.com", null, "ghost", Set.of()))
                 .isInstanceOf(ResourceNotFoundException.class);
     }
 

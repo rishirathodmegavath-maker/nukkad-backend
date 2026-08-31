@@ -124,13 +124,12 @@ public class ChapterService {
     }
 
     @Transactional
-    public ChapterDto updateCoverImage(String userId, String id, MultipartFile file, String publicBaseUrl) {
+    public ChapterDto updateCoverImage(String userId, String id, MultipartFile file) {
         Chapter chapter = getEntityOrThrow(id);
         if (!userId.equals(chapter.getPresidentUserId())) {
             throw new ForbiddenException("Only this chapter's president can update its cover photo");
         }
-        String relativePath = fileStorageService.storeImage(file, "chapter-covers");
-        chapter.setCoverImageUrl(publicBaseUrl + "/uploads/" + relativePath);
+        chapter.setCoverImageUrl(fileStorageService.storeImage(file, "chapter-covers"));
         return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
     }
 

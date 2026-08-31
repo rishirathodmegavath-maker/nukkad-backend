@@ -47,7 +47,6 @@ import com.nukkad.matching.dto.RecommendedUserDto;
 import com.nukkad.matching.service.CompatibilityService;
 import com.nukkad.matching.service.PeopleRecommendationService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -62,7 +61,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.util.EnumMap;
 import java.util.List;
@@ -115,13 +113,8 @@ public class UserController {
 
     @PostMapping("/me/avatar")
     public ApiResponse<UserDto> uploadAvatar(@AuthenticationPrincipal AuthenticatedUser principal,
-                                              @RequestParam("file") MultipartFile file,
-                                              HttpServletRequest httpRequest) {
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(httpRequest)
-                .replacePath(null)
-                .build()
-                .toUriString();
-        return ApiResponse.ok(userService.updateAvatar(principal.id(), file, baseUrl));
+                                              @RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(userService.updateAvatar(principal.id(), file));
     }
 
     @DeleteMapping("/me/avatar")
@@ -131,13 +124,8 @@ public class UserController {
 
     @PostMapping("/me/cover")
     public ApiResponse<UserDto> uploadCover(@AuthenticationPrincipal AuthenticatedUser principal,
-                                             @RequestParam("file") MultipartFile file,
-                                             HttpServletRequest httpRequest) {
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(httpRequest)
-                .replacePath(null)
-                .build()
-                .toUriString();
-        return ApiResponse.ok(userService.updateCover(principal.id(), file, baseUrl));
+                                             @RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(userService.updateCover(principal.id(), file));
     }
 
     @DeleteMapping("/me/cover")

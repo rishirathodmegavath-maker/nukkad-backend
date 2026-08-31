@@ -159,11 +159,10 @@ public class StartupService {
     }
 
     @Transactional
-    public StartupDto updateLogo(String founderId, String startupId, MultipartFile file, String publicBaseUrl) {
+    public StartupDto updateLogo(String founderId, String startupId, MultipartFile file) {
         Startup startup = getEntityOrThrow(startupId);
         requireFounder(founderId, startupId);
-        String relativePath = fileStorageService.storeImage(file, "startup-logos");
-        startup.setLogoUrl(publicBaseUrl + "/uploads/" + relativePath);
+        startup.setLogoUrl(fileStorageService.storeImage(file, "startup-logos"));
         return startupMapper.toDto(startupRepository.save(startup));
     }
 

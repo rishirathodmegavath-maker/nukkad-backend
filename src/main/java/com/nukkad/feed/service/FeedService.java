@@ -107,7 +107,13 @@ public class FeedService {
             postRepository.decrementLikesCount(postId);
             liked = false;
         } else {
-            postLikeRepository.save(PostLike.builder().postId(postId).userId(viewerId).build());
+            // saveAndFlush (not save()) so the insert hits the database immediately: a plain save()
+            // only queues it on the persistence context, so the very next toggle would never find it
+            // and would insert a duplicate "like" instead of unliking. Going through the repository
+            // method (rather than an injected EntityManager.flush()) also means a concurrent duplicate
+            // insert's constraint/lock failure is properly translated into a Spring DataAccessException
+            // for the controller to catch, instead of leaking a raw Hibernate/JPA exception type.
+            postLikeRepository.saveAndFlush(PostLike.builder().postId(postId).userId(viewerId).build());
             postRepository.incrementLikesCount(postId);
             liked = true;
         }
@@ -214,10 +220,10 @@ public class FeedService {
         return toCommentDto(comment);
     }
 
-    public AttachmentRef uploadAttachment(MultipartFile file, String publicBaseUrl) {
+    public AttachmentRef uploadAttachment(MultipartFile file) {
         var stored = fileStorageService.storeMedia(file, "feed");
         String originalName = file.getOriginalFilename();
-        return new AttachmentRef(publicBaseUrl + "/uploads/" + stored.path(), stored.kind().name(), originalName);
+        return new AttachmentRef(stored.url(), stored.kind().name(), originalName);
     }
 
     private Post.Type parseType(String type) {

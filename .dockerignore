@@ -1,0 +1,7 @@
+target
+uploads
+*.log
+*.sql
+.env
+.git
+.idea

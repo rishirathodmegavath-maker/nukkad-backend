@@ -11,8 +11,8 @@ import com.nukkad.feed.dto.UpdatePostRequest;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -27,7 +27,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 @RestController
 @RequestMapping("/api/feed")
@@ -85,10 +84,14 @@ public class FeedController {
     public ApiResponse<PostDto> toggleLike(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         try {
             return ApiResponse.ok(feedService.toggleLike(principal.id(), id));
-        } catch (DataIntegrityViolationException e) {
-            // Two simultaneous like-toggle requests both saw "not liked yet" and raced to insert;
-            // the loser's transaction has already rolled back cleanly by the time it reaches here.
-            // The desired end state (liked) is true regardless of which request "won" — return that.
+        } catch (DataIntegrityViolationException | CannotAcquireLockException e) {
+            // Multiple simultaneous like-toggle requests all saw "not liked yet" and raced to insert
+            // the same (post_id, user_id) row. MySQL/InnoDB resolves this either as a clean unique-
+            // constraint violation (DataIntegrityViolationException) or, with three or more concurrent
+            // inserts of the same key, a genuine deadlock between the waiters (CannotAcquireLockException)
+            // — the loser's transaction has already rolled back cleanly by the time it reaches here
+            // either way. The desired end state (liked) is true regardless of which request "won", so
+            // return that.
             return ApiResponse.ok(feedService.get(principal.id(), id));
         }
     }
@@ -97,7 +100,7 @@ public class FeedController {
     public ApiResponse<PostDto> toggleSave(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         try {
             return ApiResponse.ok(feedService.toggleSave(principal.id(), id));
-        } catch (DataIntegrityViolationException e) {
+        } catch (DataIntegrityViolationException | CannotAcquireLockException e) {
             return ApiResponse.ok(feedService.get(principal.id(), id));
         }
     }
@@ -117,11 +120,7 @@ public class FeedController {
     }
 
     @PostMapping("/attachments")
-    public ApiResponse<AttachmentRef> uploadAttachment(@RequestParam("file") MultipartFile file, HttpServletRequest httpRequest) {
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(httpRequest)
-                .replacePath(null)
-                .build()
-                .toUriString();
-        return ApiResponse.ok(feedService.uploadAttachment(file, baseUrl));
+    public ApiResponse<AttachmentRef> uploadAttachment(@RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(feedService.uploadAttachment(file));
     }
 }

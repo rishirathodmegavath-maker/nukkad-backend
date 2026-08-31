@@ -16,7 +16,6 @@ import com.nukkad.startup.dto.StartupUpdateDto;
 import com.nukkad.startup.dto.UpdateStartupRequest;
 import com.nukkad.startup.service.StartupService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -31,7 +30,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.util.List;
 import java.util.Map;
@@ -89,13 +87,8 @@ public class StartupController {
     @PostMapping("/{id}/logo")
     public ApiResponse<StartupDto> uploadLogo(@AuthenticationPrincipal AuthenticatedUser principal,
                                                 @PathVariable String id,
-                                                @RequestParam("file") MultipartFile file,
-                                                HttpServletRequest httpRequest) {
-        String baseUrl = ServletUriComponentsBuilder.fromRequestUri(httpRequest)
-                .replacePath(null)
-                .build()
-                .toUriString();
-        return ApiResponse.ok(startupService.updateLogo(principal.id(), id, file, baseUrl));
+                                                @RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(startupService.updateLogo(principal.id(), id, file));
     }
 
     @DeleteMapping("/{id}/logo")

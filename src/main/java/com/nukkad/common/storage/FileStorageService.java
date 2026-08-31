@@ -1,17 +1,19 @@
 package com.nukkad.common.storage;
 
 import com.nukkad.common.exception.BadRequestException;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+/** Uploads validated media to S3-compatible object storage and returns a public, directly-loadable URL. */
 @Service
 public class FileStorageService {
 
@@ -20,7 +22,7 @@ public class FileStorageService {
 
     public enum AttachmentKind { IMAGE, VIDEO, PDF }
 
-    public record StoredMedia(String path, AttachmentKind kind) {}
+    public record StoredMedia(String url, AttachmentKind kind) {}
 
     private static final Map<String, AttachmentKind> ALLOWED_MEDIA_CONTENT_TYPES = Map.ofEntries(
             Map.entry("image/png", AttachmentKind.IMAGE),
@@ -35,13 +37,15 @@ public class FileStorageService {
     private static final Set<String> ALLOWED_MEDIA_EXTENSIONS =
             Set.of("png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov", "pdf");
 
-    private final Path uploadsRoot;
+    private final S3Client s3Client;
+    private final StorageProperties properties;
 
-    public FileStorageService(@Value("${nukkad.uploads.dir}") String uploadsDir) {
-        this.uploadsRoot = Path.of(uploadsDir).toAbsolutePath().normalize();
+    public FileStorageService(S3Client s3Client, StorageProperties properties) {
+        this.s3Client = s3Client;
+        this.properties = properties;
     }
 
-    /** Stores an image under uploads/{subDir}/ and returns its path relative to the uploads root (e.g. "avatars/abc.png"). */
+    /** Stores an image under {subDir}/ and returns its full public URL. */
     public String storeImage(MultipartFile file, String subDir) {
         if (file == null || file.isEmpty()) {
             throw new BadRequestException("No file was uploaded");
@@ -57,10 +61,10 @@ public class FileStorageService {
             extension = contentType.substring(contentType.lastIndexOf('/') + 1);
         }
 
-        return writeToDisk(file, subDir, extension);
+        return uploadToS3(file, subDir, extension);
     }
 
-    /** Stores an image, video or PDF under uploads/{subDir}/ and returns its relative path plus detected kind. */
+    /** Stores an image, video or PDF under {subDir}/ and returns its full public URL plus detected kind. */
     public StoredMedia storeMedia(MultipartFile file, String subDir) {
         if (file == null || file.isEmpty()) {
             throw new BadRequestException("No file was uploaded");
@@ -77,23 +81,22 @@ public class FileStorageService {
             extension = contentType.substring(contentType.lastIndexOf('/') + 1);
         }
 
-        String path = writeToDisk(file, subDir, extension);
-        return new StoredMedia(path, kind);
+        String url = uploadToS3(file, subDir, extension);
+        return new StoredMedia(url, kind);
     }
 
-    private String writeToDisk(MultipartFile file, String subDir, String extension) {
-        String filename = UUID.randomUUID() + "." + extension;
+    private String uploadToS3(MultipartFile file, String subDir, String extension) {
+        String key = subDir + "/" + UUID.randomUUID() + "." + extension;
         try {
-            Path targetDir = uploadsRoot.resolve(subDir).normalize();
-            Files.createDirectories(targetDir);
-            Path target = targetDir.resolve(filename).normalize();
-            if (!target.startsWith(targetDir)) {
-                throw new BadRequestException("Invalid filename");
-            }
-            file.transferTo(target);
-        } catch (IOException e) {
+            PutObjectRequest request = PutObjectRequest.builder()
+                    .bucket(properties.bucket())
+                    .key(key)
+                    .contentType(file.getContentType())
+                    .build();
+            s3Client.putObject(request, RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
+        } catch (IOException | S3Exception e) {
             throw new RuntimeException("Failed to store uploaded file", e);
         }
-        return subDir + "/" + filename;
+        return properties.publicBaseUrl() + "/" + key;
     }
 }

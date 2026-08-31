@@ -227,10 +227,9 @@ public class UserService {
     }
 
     @Transactional
-    public UserDto updateAvatar(String userId, MultipartFile file, String publicBaseUrl) {
+    public UserDto updateAvatar(String userId, MultipartFile file) {
         User user = getEntityOrThrow(userId);
-        String relativePath = fileStorageService.storeImage(file, "avatars");
-        user.setAvatarUrl(publicBaseUrl + "/uploads/" + relativePath);
+        user.setAvatarUrl(fileStorageService.storeImage(file, "avatars"));
         return toFullDto(userRepository.save(user), null, null, userId);
     }
 
@@ -242,10 +241,9 @@ public class UserService {
     }
 
     @Transactional
-    public UserDto updateCover(String userId, MultipartFile file, String publicBaseUrl) {
+    public UserDto updateCover(String userId, MultipartFile file) {
         User user = getEntityOrThrow(userId);
-        String relativePath = fileStorageService.storeImage(file, "covers");
-        user.setCoverUrl(publicBaseUrl + "/uploads/" + relativePath);
+        user.setCoverUrl(fileStorageService.storeImage(file, "covers"));
         return toFullDto(userRepository.save(user), null, null, userId);
     }
 
