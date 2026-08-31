@@ -1,11 +1,14 @@
 package com.nukkad.messaging.service;
 
+import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.investor.repository.IntroRequestRepository;
 import com.nukkad.messaging.dto.MessageDto;
 import com.nukkad.messaging.entity.Conversation;
 import com.nukkad.messaging.entity.Message;
+import com.nukkad.messaging.entity.MessageDeletion;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.messaging.repository.MessageDeletionRepository;
 import com.nukkad.messaging.repository.MessageRepository;
@@ -16,6 +19,7 @@ import com.nukkad.user.repository.UserBlockRepository;
 import com.nukkad.user.service.UserPrivacySettingsService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -70,6 +74,11 @@ class ConversationServiceTest {
         when(messageRepository.findLatestVisibleForViewer(eq("conv1"), eq(viewerId), any())).thenReturn(List.of());
         when(messageRepository.countUnreadVisibleForViewer("conv1", viewerId)).thenReturn(0L);
         when(userBlockRepository.existsBetween(viewerId, otherId)).thenReturn(false);
+    }
+
+    private Message message(String id, String conversationId, String senderId) {
+        return Message.builder().id(id).conversationId(conversationId).senderId(senderId)
+                .contentCiphertext("ciphertext").build();
     }
 
     private void stubMessagePersistenceAndEncryption() {
@@ -214,5 +223,151 @@ class ConversationServiceTest {
         // Java's || short-circuits once the real connection check is true — the opportunity-based
         // exception is never even consulted for an already-connected pair.
         verify(opportunityApplicantRepository, never()).existsAcceptedApplicationBetween(any(), any());
+    }
+
+    // ---- "Delete for me": per-viewer message hiding (single + bulk) ----
+
+    @Test
+    void viewerCanHideAMessageTheyReceivedFromTheirOwnView() {
+        // "Delete for me" is not restricted to messages you sent — Alice can hide Bob's message
+        // from her own view too, since it only ever changes her own visibility.
+        Conversation conv = conversation("alice", "bob");
+        Message bobsMessage = message("msg1", "conv1", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("msg1"))).thenReturn(List.of(bobsMessage));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(java.util.Set.of());
+
+        service().hideMessagesForViewer("conv1", "alice", List.of("msg1"));
+
+        ArgumentCaptor<List<MessageDeletion>> captor = ArgumentCaptor.forClass(List.class);
+        verify(messageDeletionRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).hasSize(1);
+        assertThat(captor.getValue().get(0).getMessageId()).isEqualTo("msg1");
+        assertThat(captor.getValue().get(0).getUserId()).isEqualTo("alice");
+    }
+
+    @Test
+    void hidingAMessageNeverMutatesTheSharedMessageRowOrBroadcastsAnything() {
+        // The shared Message entity itself must be completely untouched — hiding is purely a
+        // MessageDeletion insert for the viewer — and no realtime event goes out, since only the
+        // acting viewer's own view changes and their own client already has the result of this call.
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("msg1"))).thenReturn(List.of(msg));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(java.util.Set.of());
+
+        service().hideMessagesForViewer("conv1", "alice", List.of("msg1"));
+
+        verify(messageRepository, never()).save(any());
+        verify(messageRepository, never()).saveAll(any());
+        verify(messagingTemplate, org.mockito.Mockito.never()).convertAndSend(any(String.class), any(Object.class));
+    }
+
+    @Test
+    void viewerCanBulkHideMultipleMessagesRegardlessOfSender() {
+        Conversation conv = conversation("alice", "bob");
+        Message m1 = message("msg1", "conv1", "alice");
+        Message m2 = message("msg2", "conv1", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("msg1", "msg2"))).thenReturn(List.of(m1, m2));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1", "msg2"))).thenReturn(java.util.Set.of());
+
+        service().hideMessagesForViewer("conv1", "alice", List.of("msg1", "msg2"));
+
+        ArgumentCaptor<List<MessageDeletion>> captor = ArgumentCaptor.forClass(List.class);
+        verify(messageDeletionRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).extracting(MessageDeletion::getMessageId).containsExactlyInAnyOrder("msg1", "msg2");
+        assertThat(captor.getValue()).allMatch(d -> d.getUserId().equals("alice"));
+    }
+
+    @Test
+    void bulkHideWithOneMessageFromAnotherConversationHidesNothing() {
+        Conversation conv = conversation("alice", "bob");
+        Message ownConvMessage = message("msg1", "conv1", "alice");
+        Message otherConvMessage = message("msg2", "some-other-conv", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("msg1", "msg2"))).thenReturn(List.of(ownConvMessage, otherConvMessage));
+
+        assertThatThrownBy(() -> service().hideMessagesForViewer("conv1", "alice", List.of("msg1", "msg2")))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        // All-or-nothing: the one message that doesn't belong to this conversation blocks the batch.
+        verify(messageDeletionRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void hidingANonexistentMessageIsNotFound() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("ghost"))).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service().hideMessagesForViewer("conv1", "alice", List.of("ghost")))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(messageDeletionRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void hidingAMessageFromAnotherConversationIsRejected() {
+        Conversation conv = conversation("alice", "bob");
+        Message otherConversationsMessage = message("msg1", "some-other-conv", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("msg1"))).thenReturn(List.of(otherConversationsMessage));
+
+        assertThatThrownBy(() -> service().hideMessagesForViewer("conv1", "alice", List.of("msg1")))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(messageDeletionRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void reHidingAnAlreadyHiddenMessageIsAHarmlessNoOp() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findAllById(List.of("msg1"))).thenReturn(List.of(msg));
+        // Alice already has a MessageDeletion row for msg1 — the dedup filter should drop it.
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(java.util.Set.of("msg1"));
+
+        service().hideMessagesForViewer("conv1", "alice", List.of("msg1"));
+
+        ArgumentCaptor<List<MessageDeletion>> captor = ArgumentCaptor.forClass(List.class);
+        verify(messageDeletionRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).isEmpty();
+    }
+
+    @Test
+    void hideMessagesRejectsAnEmptyIdList() {
+        assertThatThrownBy(() -> service().hideMessagesForViewer("conv1", "alice", List.of()))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(conversationRepository, never()).findById(any());
+    }
+
+    @Test
+    void nonParticipantCannotHideMessagesInAConversationTheyAreNotPartOf() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+
+        assertThatThrownBy(() -> service().hideMessagesForViewer("conv1", "mallory", List.of("msg1")))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(messageRepository, never()).findAllById(any());
+        verify(messageDeletionRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void deleteConversationStillWorksUnchangedAlongsideMessageDeletion() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findByConversationId("conv1")).thenReturn(List.of(message("msg1", "conv1", "bob")));
+        when(messageDeletionRepository.findDeletedMessageIds(eq("alice"), any())).thenReturn(java.util.Set.of());
+
+        service().deleteConversation("conv1", "alice");
+
+        assertThat(conv.getDeletedAtByUserA() != null || conv.getDeletedAtByUserB() != null).isTrue();
+        verify(conversationRepository).save(conv);
+        verify(messageDeletionRepository).saveAll(any());
     }
 }

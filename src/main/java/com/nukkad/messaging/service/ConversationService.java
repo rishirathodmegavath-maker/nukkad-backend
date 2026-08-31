@@ -224,6 +224,44 @@ public class ConversationService {
         messageDeletionRepository.saveAll(newDeletions);
     }
 
+    /**
+     * "Delete for me": hides the given messages from {@code viewerId}'s own view only, via the same
+     * per-viewer MessageDeletion mechanism {@link #deleteConversation} uses for the whole chat. The
+     * shared Message row is never touched, so the other participant's history — and, since
+     * {@link com.nukkad.messaging.repository.MessageRepository}'s viewer-scoped queries are the only
+     * read path, their unread count and "last message" preview too — is completely unaffected. Any
+     * participant may hide any message in the conversation this way, including ones sent by the
+     * other participant, since it only ever changes the caller's own visibility. Every id must exist
+     * and belong to this conversation — a single invalid id fails the whole batch (all-or-nothing) so
+     * a malicious client can't probe for other conversations' message ids. Re-hiding an
+     * already-hidden message is a harmless no-op. No realtime event is broadcast: only the acting
+     * viewer's own view changes, and their own client already reflects that from this call's result.
+     */
+    @Transactional
+    public void hideMessagesForViewer(String conversationId, String viewerId, List<String> messageIds) {
+        if (messageIds.isEmpty()) {
+            throw new BadRequestException("No messages specified");
+        }
+        Conversation conversation = getConversationForParticipant(conversationId, viewerId);
+
+        List<Message> messages = messageRepository.findAllById(messageIds);
+        if (messages.size() != messageIds.size()) {
+            throw new ResourceNotFoundException("One or more messages were not found");
+        }
+        for (Message message : messages) {
+            if (!message.getConversationId().equals(conversation.getId())) {
+                throw new ResourceNotFoundException("One or more messages were not found");
+            }
+        }
+
+        Set<String> alreadyHidden = messageDeletionRepository.findDeletedMessageIds(viewerId, messageIds);
+        List<MessageDeletion> newHides = messageIds.stream()
+                .filter(id -> !alreadyHidden.contains(id))
+                .map(id -> MessageDeletion.builder().messageId(id).userId(viewerId).build())
+                .toList();
+        messageDeletionRepository.saveAll(newHides);
+    }
+
     private Conversation getConversationForParticipant(String conversationId, String viewerId) {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation not found: " + conversationId));

@@ -23,6 +23,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/conversations")
 @SecurityRequirement(name = "bearerAuth")
@@ -100,6 +102,23 @@ public class ConversationController {
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         conversationService.deleteConversation(id, principal.id());
+        return ApiResponse.ok(null);
+    }
+
+    /** "Delete for me": hides this message from the caller's own view only. See {@link ConversationService#hideMessagesForViewer}. */
+    @DeleteMapping("/{id}/messages/{messageId}")
+    public ApiResponse<Void> hideMessage(@AuthenticationPrincipal AuthenticatedUser principal,
+                                          @PathVariable String id, @PathVariable String messageId) {
+        conversationService.hideMessagesForViewer(id, principal.id(), List.of(messageId));
+        return ApiResponse.ok(null);
+    }
+
+    /** Bulk "delete for me": hides the given messages from the caller's own view only. */
+    @DeleteMapping("/{id}/messages")
+    public ApiResponse<Void> hideMessages(@AuthenticationPrincipal AuthenticatedUser principal,
+                                           @PathVariable String id,
+                                           @RequestParam List<String> messageIds) {
+        conversationService.hideMessagesForViewer(id, principal.id(), messageIds);
         return ApiResponse.ok(null);
     }
 }
