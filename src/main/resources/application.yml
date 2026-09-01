@@ -2,6 +2,14 @@ spring:
   application:
     name: nukkad-backend
 
+management:
+  health:
+    mail:
+      # Email sending is already best-effort (EmailService swallows send failures rather than
+      # failing the request) — an unreachable SMTP server shouldn't drag the whole app's health
+      # status to DOWN.
+      enabled: false
+
   datasource:
     url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3307}/${DB_NAME:nukkad}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
     username: ${DB_USERNAME:nukkad_app}
