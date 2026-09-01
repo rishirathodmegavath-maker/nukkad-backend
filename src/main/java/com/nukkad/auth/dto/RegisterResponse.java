@@ -1,4 +1,4 @@
 package com.nukkad.auth.dto;
 
-public record RegisterResponse(String email, String message) {
+public record RegisterResponse(String email, String message, boolean verified) {
 }

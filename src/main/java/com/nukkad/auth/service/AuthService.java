@@ -27,6 +27,7 @@ import com.nukkad.user.mapper.UserMapper;
 import com.nukkad.user.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -57,6 +58,12 @@ public class AuthService {
     private final GoogleTokenVerifier googleTokenVerifier;
     private final EmailService emailService;
     private final TransactionTemplate requiresNewTransactionTemplate;
+
+    /** Testing-only escape hatch while production has no working SMTP: skips the verification
+     * email/gate entirely so signup+login work without any mail server. Flip back to true (the
+     * default) once real SMTP is configured — see nukkad.mail.* / SMTP_* env vars. */
+    @Value("${nukkad.auth.require-email-verification:true}")
+    private boolean requireEmailVerification;
 
     public AuthService(UserRepository userRepository,
                         RefreshTokenRepository refreshTokenRepository,
@@ -93,13 +100,16 @@ public class AuthService {
                 .name(request.name().trim())
                 .email(email)
                 .passwordHash(passwordEncoder.encode(request.password()))
-                .emailVerified(false)
+                .emailVerified(!requireEmailVerification)
                 .securityRoles(new HashSet<>(Set.of(SecurityRole.USER)))
                 .build();
         user = userRepository.saveAndFlush(user);
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
-        issueVerificationEmail(user);
-        return new RegisterResponse(user.getEmail(), "Account created. Check your email to verify your address before signing in.");
+        if (requireEmailVerification) {
+            issueVerificationEmail(user);
+            return new RegisterResponse(user.getEmail(), "Account created. Check your email to verify your address before signing in.", false);
+        }
+        return new RegisterResponse(user.getEmail(), "Account created. You can log in now.", true);
     }
 
     @Transactional
