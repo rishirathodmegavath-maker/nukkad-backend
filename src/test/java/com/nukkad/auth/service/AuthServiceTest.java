@@ -226,7 +226,7 @@ class AuthServiceTest {
         when(googleTokenVerifier.verify("id-token")).thenReturn(
                 new GoogleTokenVerifier.GoogleIdentity("google-sub-2", "nobody@nukkad.test", "Nobody", null));
         when(userRepository.findByGoogleSubject("google-sub-2")).thenReturn(Optional.empty());
-        when(userRepository.existsByEmail("nobody@nukkad.test")).thenReturn(false);
+        when(userRepository.findByEmail("nobody@nukkad.test")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service().loginWithGoogle("id-token", "127.0.0.1", "agent"))
                 .isInstanceOf(GoogleAccountNotFoundException.class);
@@ -234,11 +234,34 @@ class AuthServiceTest {
     }
 
     @Test
-    void googleLoginRejectsWhenAccountExistsButNotLinked() {
+    void googleLoginAutoLinksLegacyAccountFoundByEmailWhenNeverLinked() {
+        // Migration backfill: an account created before Google subjects were recorded at all has
+        // no googleSubject yet — Google's own token already proves ownership of this exact verified
+        // email, so login should complete the link rather than lock the user out.
+        User u = user("u1", "existing@nukkad.test", true, null);
         when(googleTokenVerifier.verify("id-token")).thenReturn(
                 new GoogleTokenVerifier.GoogleIdentity("google-sub-3", "existing@nukkad.test", "Existing", null));
         when(userRepository.findByGoogleSubject("google-sub-3")).thenReturn(Optional.empty());
-        when(userRepository.existsByEmail("existing@nukkad.test")).thenReturn(true);
+        when(userRepository.findByEmail("existing@nukkad.test")).thenReturn(Optional.of(u));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh");
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(jwtService.issueAccessToken(any(), any(), any())).thenReturn("access-token");
+        stubRefreshTokenSaveEcho();
+
+        var response = service().loginWithGoogle("id-token", "127.0.0.1", "agent");
+
+        assertThat(response.accessToken()).isEqualTo("access-token");
+        assertThat(u.getGoogleSubject()).isEqualTo("google-sub-3");
+    }
+
+    @Test
+    void googleLoginRejectsWhenAccountLinkedToADifferentGoogleIdentity() {
+        User u = user("u1", "existing@nukkad.test", true, "some-other-google-sub");
+        when(googleTokenVerifier.verify("id-token")).thenReturn(
+                new GoogleTokenVerifier.GoogleIdentity("google-sub-3", "existing@nukkad.test", "Existing", null));
+        when(userRepository.findByGoogleSubject("google-sub-3")).thenReturn(Optional.empty());
+        when(userRepository.findByEmail("existing@nukkad.test")).thenReturn(Optional.of(u));
 
         assertThatThrownBy(() -> service().loginWithGoogle("id-token", "127.0.0.1", "agent"))
                 .isInstanceOf(GoogleAccountNotLinkedException.class);

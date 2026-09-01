@@ -173,13 +173,26 @@ public class AuthService {
 
         User user = userRepository.findByGoogleSubject(identity.subject())
                 .orElseGet(() -> {
-                    if (userRepository.existsByEmail(email)) {
+                    User existingByEmail = userRepository.findByEmail(email).orElse(null);
+                    if (existingByEmail == null) {
+                        throw new GoogleAccountNotFoundException(
+                                "Your Google account isn't connected to a Nukkad account yet. Please create a Nukkad account first.");
+                    }
+                    if (existingByEmail.getGoogleSubject() != null) {
+                        // Already linked — just not to *this* Google identity. A real mismatch, not a
+                        // migration gap: don't silently relink.
                         throw new GoogleAccountNotLinkedException(
                                 "This Nukkad account is not connected to Google yet. Sign in with your email and "
                                         + "password, then connect Google from Security settings.");
                     }
-                    throw new GoogleAccountNotFoundException(
-                            "Your Google account isn't connected to a Nukkad account yet. Please create a Nukkad account first.");
+                    // One-time migration backfill: this account was created back when Google Sign-In
+                    // auto-created/matched accounts by email alone and never recorded a Google subject
+                    // at all (that's the exact gap this whole rework closed). Google's own token proves
+                    // ownership of this verified email, so it's safe to complete the link now rather
+                    // than lock out every pre-existing Google-only user who has no password to fall
+                    // back on.
+                    existingByEmail.setGoogleSubject(identity.subject());
+                    return userRepository.save(existingByEmail);
                 });
 
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
