@@ -209,7 +209,15 @@ public class FeedService {
             throw new BadRequestException("Comments are turned off for this post");
         }
 
-        PostComment comment = postCommentRepository.save(PostComment.builder()
+        // saveAndFlush (not save()) so the insert actually reaches the database before the next
+        // line runs: incrementCommentsCount is a bulk @Modifying update with clearAutomatically =
+        // true, which clears the persistence context immediately after executing. A plain save()
+        // only queues the insert — it's still sitting unflushed when clear() runs, so it gets
+        // silently discarded and the comment never reaches the database (commentsCount still
+        // increments correctly since that's a separate direct UPDATE, which is why the count went
+        // up while the comment itself never appeared). Same class of bug already fixed this way in
+        // toggleLike above.
+        PostComment comment = postCommentRepository.saveAndFlush(PostComment.builder()
                 .postId(postId)
                 .authorId(authorId)
                 .content(request.content().trim())
