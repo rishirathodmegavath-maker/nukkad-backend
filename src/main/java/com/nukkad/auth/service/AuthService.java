@@ -3,14 +3,22 @@ package com.nukkad.auth.service;
 import com.nukkad.auth.dto.AuthResponse;
 import com.nukkad.auth.dto.LoginRequest;
 import com.nukkad.auth.dto.RegisterRequest;
+import com.nukkad.auth.dto.RegisterResponse;
+import com.nukkad.auth.entity.EmailVerificationToken;
 import com.nukkad.auth.entity.PasswordResetToken;
 import com.nukkad.auth.entity.RefreshToken;
+import com.nukkad.auth.repository.EmailVerificationTokenRepository;
 import com.nukkad.auth.repository.PasswordResetTokenRepository;
 import com.nukkad.auth.repository.RefreshTokenRepository;
 import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
+import com.nukkad.common.email.EmailService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
+import com.nukkad.common.exception.EmailNotVerifiedException;
+import com.nukkad.common.exception.GoogleAccountNotFoundException;
+import com.nukkad.common.exception.GoogleAccountNotLinkedException;
+import com.nukkad.common.exception.GoogleEmailMismatchException;
 import com.nukkad.common.exception.UnauthorizedException;
 import com.nukkad.security.JwtService;
 import com.nukkad.user.entity.SecurityRole;
@@ -36,55 +44,62 @@ import java.util.stream.Collectors;
 public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
+    private static final long EMAIL_VERIFICATION_EXPIRY_SECONDS = 24L * 3600;
 
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final PasswordResetTokenRepository passwordResetTokenRepository;
+    private final EmailVerificationTokenRepository emailVerificationTokenRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final UserMapper userMapper;
     private final AuditService auditService;
     private final GoogleTokenVerifier googleTokenVerifier;
+    private final EmailService emailService;
     private final TransactionTemplate requiresNewTransactionTemplate;
 
     public AuthService(UserRepository userRepository,
                         RefreshTokenRepository refreshTokenRepository,
                         PasswordResetTokenRepository passwordResetTokenRepository,
+                        EmailVerificationTokenRepository emailVerificationTokenRepository,
                         PasswordEncoder passwordEncoder,
                         JwtService jwtService,
                         UserMapper userMapper,
                         AuditService auditService,
                         GoogleTokenVerifier googleTokenVerifier,
+                        EmailService emailService,
                         PlatformTransactionManager transactionManager) {
         this.userRepository = userRepository;
         this.refreshTokenRepository = refreshTokenRepository;
         this.passwordResetTokenRepository = passwordResetTokenRepository;
+        this.emailVerificationTokenRepository = emailVerificationTokenRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.userMapper = userMapper;
         this.auditService = auditService;
         this.googleTokenVerifier = googleTokenVerifier;
+        this.emailService = emailService;
         this.requiresNewTransactionTemplate = new TransactionTemplate(transactionManager);
         this.requiresNewTransactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     @Transactional
-    public AuthResponse register(RegisterRequest request, String ip, String userAgent) {
-        if (userRepository.existsByEmail(request.email().toLowerCase())) {
+    public RegisterResponse register(RegisterRequest request, String ip, String userAgent) {
+        String email = request.email().toLowerCase().trim();
+        if (userRepository.existsByEmail(email)) {
             throw new ConflictException("An account with this email already exists");
         }
         User user = User.builder()
                 .name(request.name().trim())
-                .email(request.email().toLowerCase().trim())
+                .email(email)
                 .passwordHash(passwordEncoder.encode(request.password()))
+                .emailVerified(false)
                 .securityRoles(new HashSet<>(Set.of(SecurityRole.USER)))
                 .build();
-        // saveAndFlush (not save): @CreationTimestamp is only assigned once the INSERT actually
-        // runs, which Hibernate would otherwise defer to end-of-transaction — after we've already
-        // read it below to build the response.
         user = userRepository.saveAndFlush(user);
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
-        return issueAuthResponse(user, ip, userAgent, true);
+        issueVerificationEmail(user);
+        return new RegisterResponse(user.getEmail(), "Account created. Check your email to verify your address before signing in.");
     }
 
     @Transactional
@@ -94,9 +109,50 @@ public class AuthService {
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
             throw new BadCredentialsException("Invalid email or password");
         }
+        if (!user.isEmailVerified()) {
+            throw new EmailNotVerifiedException("Please verify your email before signing in.");
+        }
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
-        return issueAuthResponse(user, ip, userAgent, false);
+        return issueAuthResponse(user, ip, userAgent);
+    }
+
+    @Transactional
+    public void verifyEmail(String rawToken) {
+        String hash = jwtService.hashOpaqueToken(rawToken);
+        EmailVerificationToken token = emailVerificationTokenRepository.findByTokenHash(hash)
+                .filter(EmailVerificationToken::isUsable)
+                .orElseThrow(() -> new BadRequestException("Invalid or expired verification link"));
+
+        User user = userRepository.findById(token.getUserId())
+                .orElseThrow(() -> new BadRequestException("Invalid or expired verification link"));
+
+        user.setEmailVerified(true);
+        userRepository.save(user);
+
+        token.setUsedAt(Instant.now());
+        emailVerificationTokenRepository.save(token);
+    }
+
+    @Transactional
+    public void resendVerificationEmail(String email) {
+        userRepository.findByEmail(email.toLowerCase().trim())
+                .filter(user -> !user.isEmailVerified())
+                .ifPresent(this::issueVerificationEmail);
+        // Always behave the same regardless of whether the email exists or is already verified,
+        // to avoid user enumeration.
+    }
+
+    private void issueVerificationEmail(User user) {
+        String rawToken = jwtService.generateOpaqueToken();
+        String hash = jwtService.hashOpaqueToken(rawToken);
+        EmailVerificationToken token = EmailVerificationToken.builder()
+                .userId(user.getId())
+                .tokenHash(hash)
+                .expiresAt(Instant.now().plusSeconds(EMAIL_VERIFICATION_EXPIRY_SECONDS))
+                .build();
+        emailVerificationTokenRepository.save(token);
+        emailService.sendVerificationEmail(user.getEmail(), user.getName(), rawToken);
     }
 
     @Transactional
@@ -104,6 +160,9 @@ public class AuthService {
         return authenticateGoogleIdentity(googleTokenVerifier.verify(rawIdToken), ip, userAgent);
     }
 
+    /** Redirect-flow counterpart: exchanges the OAuth authorization code Google handed back after
+     * the full-page redirect, then resolves the identity through the exact same "must already be
+     * linked" policy as {@link #loginWithGoogle} — Google never creates a Nukkad account either way. */
     @Transactional
     public AuthResponse loginWithGoogleAuthCode(String code, String redirectUri, String ip, String userAgent) {
         return authenticateGoogleIdentity(googleTokenVerifier.exchangeAuthorizationCode(code, redirectUri), ip, userAgent);
@@ -112,24 +171,40 @@ public class AuthService {
     private AuthResponse authenticateGoogleIdentity(GoogleTokenVerifier.GoogleIdentity identity, String ip, String userAgent) {
         String email = identity.email().toLowerCase().trim();
 
-        boolean[] isNewUser = { false };
-        User user = userRepository.findByEmail(email).orElseGet(() -> {
-            isNewUser[0] = true;
-            User created = User.builder()
-                    .name(identity.name() != null && !identity.name().isBlank() ? identity.name() : email)
-                    .email(email)
-                    // Google-authenticated accounts have no password of their own; this hash is
-                    // unusable for password login and only satisfies the NOT NULL column.
-                    .passwordHash(passwordEncoder.encode(java.util.UUID.randomUUID().toString()))
-                    .avatarUrl(identity.pictureUrl())
-                    .securityRoles(new HashSet<>(Set.of(SecurityRole.USER)))
-                    .build();
-            return userRepository.saveAndFlush(created);
-        });
+        User user = userRepository.findByGoogleSubject(identity.subject())
+                .orElseGet(() -> {
+                    if (userRepository.existsByEmail(email)) {
+                        throw new GoogleAccountNotLinkedException(
+                                "This Nukkad account is not connected to Google yet. Sign in with your email and "
+                                        + "password, then connect Google from Security settings.");
+                    }
+                    throw new GoogleAccountNotFoundException(
+                            "Your Google account isn't connected to a Nukkad account yet. Please create a Nukkad account first.");
+                });
 
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
-        return issueAuthResponse(user, ip, userAgent, isNewUser[0]);
+        return issueAuthResponse(user, ip, userAgent);
+    }
+
+    @Transactional
+    public void linkGoogleAccount(String userId, String rawIdToken) {
+        GoogleTokenVerifier.GoogleIdentity identity = googleTokenVerifier.verify(rawIdToken);
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new UnauthorizedException("User no longer exists"));
+
+        if (!identity.email().equalsIgnoreCase(user.getEmail())) {
+            throw new GoogleEmailMismatchException(
+                    "Connect the Google account that uses the same email address as your Nukkad account.");
+        }
+        userRepository.findByGoogleSubject(identity.subject()).ifPresent(existing -> {
+            if (!existing.getId().equals(user.getId())) {
+                throw new ConflictException("This Google account is already linked to a different Nukkad account.");
+            }
+        });
+
+        user.setGoogleSubject(identity.subject());
+        userRepository.save(user);
     }
 
     @Transactional
@@ -180,8 +255,7 @@ public class AuthService {
                     .expiresAt(Instant.now().plusSeconds(3600))
                     .build();
             passwordResetTokenRepository.save(resetToken);
-            // No SMTP integration in V1 — log the link so it can be manually delivered in dev/testing.
-            log.info("Password reset requested for {}. Reset token (dev-only log): {}", user.getEmail(), rawToken);
+            emailService.sendPasswordResetEmail(user.getEmail(), user.getName(), rawToken);
         });
         // Always behave the same regardless of whether the email exists, to avoid user enumeration.
     }
@@ -261,10 +335,10 @@ public class AuthService {
                 .forEach(t -> t.setRevokedAt(Instant.now()));
     }
 
-    private AuthResponse issueAuthResponse(User user, String ip, String userAgent, boolean isNewUser) {
+    private AuthResponse issueAuthResponse(User user, String ip, String userAgent) {
         RefreshToken refreshToken = issueRefreshToken(user.getId(), ip, userAgent);
         String accessToken = jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user));
-        return new AuthResponse(userMapper.toDto(user), accessToken, refreshToken.rawTokenTransient, jwtService.getAccessExpirationSeconds(), isNewUser);
+        return new AuthResponse(userMapper.toDto(user), accessToken, refreshToken.rawTokenTransient, jwtService.getAccessExpirationSeconds());
     }
 
     private RefreshToken issueRefreshToken(String userId, String ip, String userAgent) {

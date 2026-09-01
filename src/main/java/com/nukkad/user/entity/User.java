@@ -48,6 +48,13 @@ public class User {
     @Column(name = "password_hash", nullable = false, length = 100)
     private String passwordHash;
 
+    @Column(name = "email_verified", nullable = false)
+    @Builder.Default
+    private boolean emailVerified = false;
+
+    @Column(name = "google_subject", length = 255, unique = true)
+    private String googleSubject;
+
     @Column(name = "avatar_url", length = 500)
     private String avatarUrl;
 

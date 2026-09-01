@@ -40,7 +40,7 @@ public class GoogleTokenVerifier {
                 : null;
     }
 
-    public record GoogleIdentity(String email, String name, String pictureUrl) {}
+    public record GoogleIdentity(String subject, String email, String name, String pictureUrl) {}
 
     public GoogleIdentity verify(String rawIdToken) {
         if (!configured) {
@@ -57,7 +57,7 @@ public class GoogleTokenVerifier {
             }
             String name = (String) payload.get("name");
             String picture = (String) payload.get("picture");
-            return new GoogleIdentity(payload.getEmail(), name, picture);
+            return new GoogleIdentity(payload.getSubject(), payload.getEmail(), name, picture);
         } catch (GeneralSecurityException | IOException | IllegalArgumentException e) {
             throw new UnauthorizedException("Could not verify Google token");
         }

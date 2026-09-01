@@ -30,11 +30,27 @@ spring:
     # without this, Flyway refuses to start over that gap once a local migration (V40) exists
     # above it.
     ignore-migration-patterns: "*:missing"
+    # V40/V41 were already applied (from a build that predated V39 existing in this classpath),
+    # so V39 now has to run after them — safe here since it's pure additive DDL (new columns on
+    # users, a new email_verification_tokens table) with zero overlap with what V40/V41 touched.
+    out-of-order: true
 
   servlet:
     multipart:
       max-file-size: 50MB
       max-request-size: 50MB
+
+  mail:
+    host: ${SMTP_HOST:localhost}
+    port: ${SMTP_PORT:1025}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${SMTP_AUTH:false}
+          starttls:
+            enable: ${SMTP_STARTTLS:false}
 
 server:
   port: ${SERVER_PORT:8082}
@@ -60,6 +76,9 @@ nukkad:
   google:
     client-id: ${GOOGLE_CLIENT_ID:}
     client-secret: ${GOOGLE_CLIENT_SECRET:}
+  mail:
+    from: ${MAIL_FROM:no-reply@nukkad.app}
+    frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5174}
   messaging:
     encryption-key: ${MESSAGE_ENCRYPTION_KEY}
   storage:

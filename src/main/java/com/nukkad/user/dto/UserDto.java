@@ -38,6 +38,7 @@ public record UserDto(
         Integer profileCompleteness,
         List<EndorsementSummaryDto> endorsementSummary,
         List<RecommendationDto> recommendations,
-        Set<String> roles
+        Set<String> roles,
+        boolean googleLinked
 ) {
 }

@@ -2,6 +2,8 @@ package com.nukkad.auth;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.nukkad.user.entity.User;
+import com.nukkad.user.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -47,6 +49,9 @@ class AuthIntegrationTest {
     @Autowired
     TestRestTemplate rest;
 
+    @Autowired
+    UserRepository userRepository;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private String url(String path) {
@@ -67,16 +72,35 @@ class AuthIntegrationTest {
         assertThat(unauthBody.get("success").asBoolean()).isFalse();
         assertThat(unauthBody.get("errorCode").asText()).isEqualTo("UNAUTHORIZED");
 
-        // Register.
+        // Register — no tokens are issued anymore; the account starts unverified.
         String registerPayload = """
-                {"name":"Integration Test","email":"%s","password":"password123"}
+                {"name":"Integration Test","email":"%s","password":"Password123!"}
                 """.formatted(email);
         var registerResponse = rest.postForEntity(url("/auth/register"), new HttpEntity<>(registerPayload, jsonHeaders), String.class);
         assertThat(registerResponse.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         JsonNode registerBody = objectMapper.readTree(registerResponse.getBody()).get("data");
-        assertThat(registerBody.get("user").get("email").asText()).isEqualTo(email);
-        String firstAccessToken = registerBody.get("accessToken").asText();
-        String firstRefreshToken = registerBody.get("refreshToken").asText();
+        assertThat(registerBody.get("email").asText()).isEqualTo(email);
+
+        // Logging in before verification is rejected — no session is issued.
+        String loginPayload = """
+                {"email":"%s","password":"Password123!"}
+                """.formatted(email);
+        var loginBeforeVerify = rest.postForEntity(url("/auth/login"), new HttpEntity<>(loginPayload, jsonHeaders), String.class);
+        assertThat(loginBeforeVerify.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(objectMapper.readTree(loginBeforeVerify.getBody()).get("errorCode").asText()).isEqualTo("EMAIL_NOT_VERIFIED");
+
+        // Simulate clicking the emailed verification link (the raw token itself is only ever
+        // emailed, never stored — flipping the flag directly is the test-only equivalent).
+        User user = userRepository.findByEmail(email).orElseThrow();
+        user.setEmailVerified(true);
+        userRepository.save(user);
+
+        // Login now succeeds and issues a session.
+        var loginResponse = rest.postForEntity(url("/auth/login"), new HttpEntity<>(loginPayload, jsonHeaders), String.class);
+        assertThat(loginResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
+        JsonNode loginBody = objectMapper.readTree(loginResponse.getBody()).get("data");
+        String firstAccessToken = loginBody.get("accessToken").asText();
+        String firstRefreshToken = loginBody.get("refreshToken").asText();
 
         // Access a protected endpoint with the freshly issued access token.
         HttpHeaders authHeaders = new HttpHeaders();
@@ -84,13 +108,6 @@ class AuthIntegrationTest {
         var meResponse = rest.exchange(url("/users/me"), HttpMethod.GET, new HttpEntity<>(authHeaders), String.class);
         assertThat(meResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(objectMapper.readTree(meResponse.getBody()).get("data").get("email").asText()).isEqualTo(email);
-
-        // Login separately confirms the password was actually persisted/hashed correctly.
-        String loginPayload = """
-                {"email":"%s","password":"password123"}
-                """.formatted(email);
-        var loginResponse = rest.postForEntity(url("/auth/login"), new HttpEntity<>(loginPayload, jsonHeaders), String.class);
-        assertThat(loginResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
 
         // Wrong password is rejected.
         String wrongPasswordPayload = """
@@ -124,7 +141,7 @@ class AuthIntegrationTest {
         HttpHeaders jsonHeaders = new HttpHeaders();
         jsonHeaders.setContentType(MediaType.APPLICATION_JSON);
         String payload = """
-                {"name":"Dup User","email":"%s","password":"password123"}
+                {"name":"Dup User","email":"%s","password":"Password123!"}
                 """.formatted(email);
 
         var first = rest.postForEntity(url("/auth/register"), new HttpEntity<>(payload, jsonHeaders), String.class);

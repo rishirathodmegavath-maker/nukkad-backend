@@ -3,6 +3,8 @@ package com.nukkad.feed;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nukkad.feed.repository.PostLikeRepository;
+import com.nukkad.user.entity.User;
+import com.nukkad.user.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -64,6 +66,9 @@ class FeedLikeConcurrencyIntegrationTest {
     TestRestTemplate rest;
 
     @Autowired
+    UserRepository userRepository;
+
+    @Autowired
     PostLikeRepository postLikeRepository;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -72,16 +77,24 @@ class FeedLikeConcurrencyIntegrationTest {
         return "http://localhost:" + port + "/api" + path;
     }
 
-    private String registerAndLogin(String email) throws Exception {
+    private String registerVerifyAndLogin(String email) throws Exception {
         HttpHeaders json = new HttpHeaders();
         json.setContentType(MediaType.APPLICATION_JSON);
 
-        // This codebase predates email verification: register issues tokens immediately.
         String registerPayload = """
-                {"name":"Concurrency Test","email":"%s","password":"password123"}
+                {"name":"Concurrency Test","email":"%s","password":"Password123!"}
                 """.formatted(email);
-        var registerResponse = rest.postForEntity(url("/auth/register"), new HttpEntity<>(registerPayload, json), String.class);
-        return objectMapper.readTree(registerResponse.getBody()).get("data").get("accessToken").asText();
+        rest.postForEntity(url("/auth/register"), new HttpEntity<>(registerPayload, json), String.class);
+
+        User user = userRepository.findByEmail(email).orElseThrow();
+        user.setEmailVerified(true);
+        userRepository.save(user);
+
+        String loginPayload = """
+                {"email":"%s","password":"Password123!"}
+                """.formatted(email);
+        var loginResponse = rest.postForEntity(url("/auth/login"), new HttpEntity<>(loginPayload, json), String.class);
+        return objectMapper.readTree(loginResponse.getBody()).get("data").get("accessToken").asText();
     }
 
     private HttpHeaders authHeaders(String token) {
@@ -94,7 +107,7 @@ class FeedLikeConcurrencyIntegrationTest {
     @Test
     void concurrentLikeRequestsForTheSameUserAndPostResultInExactlyOneLike() throws Exception {
         String email = "concurrency-" + System.nanoTime() + "@nukkad.app";
-        String token = registerAndLogin(email);
+        String token = registerVerifyAndLogin(email);
 
         var createPost = rest.exchange(url("/feed"), HttpMethod.POST,
                 new HttpEntity<>("{\"content\":\"concurrency test post\",\"type\":\"text\"}", authHeaders(token)), String.class);

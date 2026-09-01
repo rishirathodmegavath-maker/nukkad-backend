@@ -51,7 +51,7 @@ class CompatibilityServiceTest {
     private UserDto stubDto(String id) {
         return new UserDto(id, id, null, null, null, null, null, null, null, 0,
                 Set.of(), Set.of(), Set.of(), Map.of(), null, null, null, null, 0, false, null,
-                null, null, null, null, null, null, null, null, null, null, null, Set.of());
+                null, null, null, null, null, null, null, null, null, null, null, Set.of(), false);
     }
 
     private CompatibilityService service() {
