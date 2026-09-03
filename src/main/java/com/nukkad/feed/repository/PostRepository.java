@@ -29,4 +29,8 @@ public interface PostRepository extends JpaRepository<Post, String> {
     @Modifying(clearAutomatically = true)
     @Query("UPDATE Post p SET p.likesCount = GREATEST(p.likesCount - 1, 0) WHERE p.id = :id")
     void decrementLikesCount(@Param("id") String id);
+
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE Post p SET p.commentsCount = GREATEST(p.commentsCount - :by, 0) WHERE p.id = :id")
+    void decrementCommentsCount(@Param("id") String id, @Param("by") int by);
 }

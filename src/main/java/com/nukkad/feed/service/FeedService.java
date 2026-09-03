@@ -10,6 +10,7 @@ import com.nukkad.feed.dto.CommentDto;
 import com.nukkad.feed.dto.CreateCommentRequest;
 import com.nukkad.feed.dto.CreatePostRequest;
 import com.nukkad.feed.dto.PostDto;
+import com.nukkad.feed.dto.PostLikeDto;
 import com.nukkad.feed.dto.UpdatePostRequest;
 import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.entity.PostAttachment;
@@ -28,7 +29,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class FeedService {
@@ -197,8 +200,27 @@ public class FeedService {
         if (!postRepository.existsById(postId)) {
             throw new ResourceNotFoundException("Post not found: " + postId);
         }
-        return postCommentRepository.findByPostIdOrderByCreatedAtAsc(postId, PageRequest.of(page, size))
-                .map(this::toCommentDto);
+        Page<PostComment> comments = postCommentRepository
+                .findByPostIdAndParentCommentIdIsNullOrderByCreatedAtAsc(postId, PageRequest.of(page, size));
+
+        List<String> ids = comments.getContent().stream().map(PostComment::getId).toList();
+        Map<String, Integer> replyCounts = ids.isEmpty() ? Map.of() : postCommentRepository
+                .countRepliesGroupedByParent(ids).stream()
+                .collect(Collectors.toMap(row -> (String) row[0], row -> ((Long) row[1]).intValue()));
+
+        return comments.map(c -> toCommentDto(c, replyCounts.getOrDefault(c.getId(), 0)));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<CommentDto> listReplies(String postId, String commentId, int page, int size) {
+        PostComment parent = postCommentRepository.findById(commentId)
+                .filter(c -> c.getPostId().equals(postId))
+                .orElseThrow(() -> new ResourceNotFoundException("Comment not found: " + commentId));
+        if (parent.getParentCommentId() != null) {
+            throw new BadRequestException("Cannot list replies of a reply");
+        }
+        return postCommentRepository.findByParentCommentIdOrderByCreatedAtAsc(commentId, PageRequest.of(page, size))
+                .map(c -> toCommentDto(c, 0));
     }
 
     @Transactional
@@ -207,6 +229,18 @@ public class FeedService {
                 .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
         if (post.isCommentsDisabled()) {
             throw new BadRequestException("Comments are turned off for this post");
+        }
+
+        // Flattening rule: replies never nest past one level. Replying to a reply re-parents onto
+        // that reply's own top-level ancestor instead of rejecting it, so "reply to a reply" still
+        // works from the user's perspective — it just lands in the same flat list as every other
+        // reply under that original comment.
+        String parentCommentId = null;
+        if (request.parentCommentId() != null && !request.parentCommentId().isBlank()) {
+            PostComment target = postCommentRepository.findById(request.parentCommentId())
+                    .filter(c -> c.getPostId().equals(postId))
+                    .orElseThrow(() -> new ResourceNotFoundException("Comment not found: " + request.parentCommentId()));
+            parentCommentId = target.getParentCommentId() != null ? target.getParentCommentId() : target.getId();
         }
 
         // saveAndFlush (not save()) so the insert actually reaches the database before the next
@@ -219,13 +253,41 @@ public class FeedService {
         // toggleLike above.
         PostComment comment = postCommentRepository.saveAndFlush(PostComment.builder()
                 .postId(postId)
+                .parentCommentId(parentCommentId)
                 .authorId(authorId)
                 .content(request.content().trim())
                 .build());
 
         postRepository.incrementCommentsCount(postId);
 
-        return toCommentDto(comment);
+        return toCommentDto(comment, 0);
+    }
+
+    @Transactional
+    public void deleteComment(String viewerId, String postId, String commentId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        PostComment comment = postCommentRepository.findById(commentId)
+                .filter(c -> c.getPostId().equals(postId))
+                .orElseThrow(() -> new ResourceNotFoundException("Comment not found: " + commentId));
+        if (!comment.getAuthorId().equals(viewerId) && !post.getAuthorId().equals(viewerId)) {
+            throw new ForbiddenException("You can only delete your own comments");
+        }
+
+        int removed = 1 + (comment.getParentCommentId() == null
+                ? (int) postCommentRepository.countByParentCommentId(commentId)
+                : 0);
+        postCommentRepository.delete(comment); // DB cascade (ON DELETE CASCADE) removes any replies
+        postRepository.decrementCommentsCount(postId, removed);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<PostLikeDto> listLikers(String postId, int page, int size) {
+        if (!postRepository.existsById(postId)) {
+            throw new ResourceNotFoundException("Post not found: " + postId);
+        }
+        return postLikeRepository.findByPostIdOrderByCreatedAtDesc(postId, PageRequest.of(page, size))
+                .map(l -> new PostLikeDto(l.getUserId(), l.getCreatedAt()));
     }
 
     public AttachmentRef uploadAttachment(MultipartFile file) {
@@ -266,7 +328,8 @@ public class FeedService {
                 post.getCreatedAt(), attachments);
     }
 
-    private CommentDto toCommentDto(PostComment comment) {
-        return new CommentDto(comment.getId(), comment.getPostId(), comment.getAuthorId(), comment.getContent(), comment.getCreatedAt());
+    private CommentDto toCommentDto(PostComment comment, int replyCount) {
+        return new CommentDto(comment.getId(), comment.getPostId(), comment.getParentCommentId(), comment.getAuthorId(),
+                comment.getContent(), replyCount, comment.getCreatedAt());
     }
 }

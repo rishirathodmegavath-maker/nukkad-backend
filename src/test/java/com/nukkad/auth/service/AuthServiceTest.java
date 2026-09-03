@@ -59,9 +59,13 @@ class AuthServiceTest {
     private final UserMapper userMapper = new UserMapper();
 
     private AuthService service() {
-        return new AuthService(userRepository, refreshTokenRepository, passwordResetTokenRepository,
+        AuthService service = new AuthService(userRepository, refreshTokenRepository, passwordResetTokenRepository,
                 emailVerificationTokenRepository, passwordEncoder, jwtService, userMapper, auditService,
                 googleTokenVerifier, emailService, mock(PlatformTransactionManager.class));
+        // @Value isn't processed outside a Spring context — set it explicitly to match the real
+        // default (nukkad.auth.require-email-verification: true) rather than Java's `false` default.
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "requireEmailVerification", true);
+        return service;
     }
 
     private User user(String id, String email, boolean verified, String googleSubject) {

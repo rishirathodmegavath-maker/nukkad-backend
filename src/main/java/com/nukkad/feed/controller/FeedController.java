@@ -7,6 +7,7 @@ import com.nukkad.feed.dto.CommentDto;
 import com.nukkad.feed.dto.CreateCommentRequest;
 import com.nukkad.feed.dto.CreatePostRequest;
 import com.nukkad.feed.dto.PostDto;
+import com.nukkad.feed.dto.PostLikeDto;
 import com.nukkad.feed.dto.UpdatePostRequest;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.security.AuthenticatedUser;
@@ -112,11 +113,32 @@ public class FeedController {
         return ApiResponse.ok(PageResponse.from(feedService.listComments(id, page, size)));
     }
 
+    @GetMapping("/{id}/comments/{commentId}/replies")
+    public ApiResponse<PageResponse<CommentDto>> listReplies(@PathVariable String id, @PathVariable String commentId,
+                                                               @RequestParam(defaultValue = "0") int page,
+                                                               @RequestParam(defaultValue = "50") int size) {
+        return ApiResponse.ok(PageResponse.from(feedService.listReplies(id, commentId, page, size)));
+    }
+
     @PostMapping("/{id}/comments")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<CommentDto> addComment(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id,
                                                @Valid @RequestBody CreateCommentRequest request) {
         return ApiResponse.ok(feedService.addComment(principal.id(), id, request));
+    }
+
+    @DeleteMapping("/{id}/comments/{commentId}")
+    public ApiResponse<Void> deleteComment(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id,
+                                            @PathVariable String commentId) {
+        feedService.deleteComment(principal.id(), id, commentId);
+        return ApiResponse.ok(null);
+    }
+
+    @GetMapping("/{id}/likes")
+    public ApiResponse<PageResponse<PostLikeDto>> listLikers(@PathVariable String id,
+                                                               @RequestParam(defaultValue = "0") int page,
+                                                               @RequestParam(defaultValue = "50") int size) {
+        return ApiResponse.ok(PageResponse.from(feedService.listLikers(id, page, size)));
     }
 
     @PostMapping("/attachments")

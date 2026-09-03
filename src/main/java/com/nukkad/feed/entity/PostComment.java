@@ -31,6 +31,9 @@ public class PostComment {
     @Column(name = "post_id", nullable = false, columnDefinition = "CHAR(36)")
     private String postId;
 
+    @Column(name = "parent_comment_id", columnDefinition = "CHAR(36)")
+    private String parentCommentId;
+
     @Column(name = "author_id", nullable = false, columnDefinition = "CHAR(36)")
     private String authorId;
 
