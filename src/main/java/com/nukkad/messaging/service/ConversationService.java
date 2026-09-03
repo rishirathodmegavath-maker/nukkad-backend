@@ -7,10 +7,15 @@ import com.nukkad.feed.dto.PostDto;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.investor.repository.IntroRequestRepository;
 import com.nukkad.messaging.dto.ConversationDto;
+import com.nukkad.messaging.dto.GroupInfoDto;
+import com.nukkad.messaging.dto.GroupParticipantDto;
 import com.nukkad.messaging.dto.MessageDto;
+import com.nukkad.messaging.dto.RepliedMessagePreviewDto;
 import com.nukkad.messaging.entity.Conversation;
+import com.nukkad.messaging.entity.ConversationParticipant;
 import com.nukkad.messaging.entity.Message;
 import com.nukkad.messaging.entity.MessageDeletion;
+import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.messaging.repository.MessageDeletionRepository;
 import com.nukkad.messaging.repository.MessageRepository;
@@ -20,6 +25,7 @@ import com.nukkad.user.repository.ConnectionRepository;
 import com.nukkad.user.repository.UserBlockRepository;
 import com.nukkad.user.service.UserPrivacySettingsService;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
@@ -27,6 +33,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 
@@ -34,6 +42,7 @@ import java.util.Set;
 public class ConversationService {
 
     private final ConversationRepository conversationRepository;
+    private final ConversationParticipantRepository participantRepository;
     private final MessageRepository messageRepository;
     private final MessageDeletionRepository messageDeletionRepository;
     private final MessageEncryptionService encryptionService;
@@ -47,6 +56,7 @@ public class ConversationService {
     private final FeedService feedService;
 
     public ConversationService(ConversationRepository conversationRepository,
+                                ConversationParticipantRepository participantRepository,
                                 MessageRepository messageRepository,
                                 MessageDeletionRepository messageDeletionRepository,
                                 MessageEncryptionService encryptionService,
@@ -59,6 +69,7 @@ public class ConversationService {
                                 UserPrivacySettingsService privacySettingsService,
                                 FeedService feedService) {
         this.conversationRepository = conversationRepository;
+        this.participantRepository = participantRepository;
         this.messageRepository = messageRepository;
         this.messageDeletionRepository = messageDeletionRepository;
         this.encryptionService = encryptionService;
@@ -116,9 +127,23 @@ public class ConversationService {
 
     @Transactional(readOnly = true)
     public Page<ConversationDto> list(String viewerId, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size);
-        return conversationRepository.findVisibleForViewer(viewerId, pageable)
-                .map(c -> toDto(c, viewerId));
+        // DIRECT + GROUP conversations live in the same table but have no shared "visible to viewer"
+        // query (GROUP membership lives in a separate join table) — merged and paginated here in
+        // Java rather than a UNION query, which fits this codebase's plain-JPQL style and is fine at
+        // this app's scale.
+        List<Conversation> direct = conversationRepository.findVisibleForViewer(viewerId, Pageable.unpaged()).getContent();
+        List<String> groupIds = participantRepository.findVisibleGroupConversationIdsForUser(viewerId);
+        List<Conversation> groups = groupIds.isEmpty() ? List.of() : conversationRepository.findAllById(groupIds);
+
+        List<Conversation> all = new ArrayList<>(direct.size() + groups.size());
+        all.addAll(direct);
+        all.addAll(groups);
+        all.sort(Comparator.comparing(Conversation::getUpdatedAt).reversed());
+
+        int from = Math.min(page * size, all.size());
+        int to = Math.min(from + size, all.size());
+        List<ConversationDto> content = all.subList(from, to).stream().map(c -> toDto(c, viewerId)).toList();
+        return new PageImpl<>(content, PageRequest.of(page, size), all.size());
     }
 
     @Transactional(readOnly = true)
@@ -130,14 +155,27 @@ public class ConversationService {
     }
 
     @Transactional
-    public MessageDto sendMessage(String conversationId, String senderId, String content, String sharedPostId) {
+    public MessageDto sendMessage(String conversationId, String senderId, String content, String sharedPostId, String replyToMessageId) {
         Conversation conversation = getConversationForParticipant(conversationId, senderId);
-        String recipientId = conversation.otherParticipant(senderId);
-        if (userBlockRepository.existsBetween(senderId, recipientId)) {
-            throw new ForbiddenException("You can't send messages in this conversation");
-        }
-        if (!privacySettingsService.canMessage(recipientId, isConnectedForMessaging(senderId, recipientId))) {
-            throw new ForbiddenException("This user only accepts messages from their connections");
+        boolean isGroup = conversation.getConversationType() == Conversation.Type.GROUP;
+
+        List<String> recipientIds;
+        if (isGroup) {
+            // No per-pair block/privacy gate for groups in v1 — a documented limitation. Anyone still
+            // an active participant receives the message.
+            recipientIds = participantRepository.findByConversationIdAndDeletedAtIsNull(conversation.getId()).stream()
+                    .map(ConversationParticipant::getUserId)
+                    .filter(id -> !id.equals(senderId))
+                    .toList();
+        } else {
+            String recipientId = conversation.otherParticipant(senderId);
+            if (userBlockRepository.existsBetween(senderId, recipientId)) {
+                throw new ForbiddenException("You can't send messages in this conversation");
+            }
+            if (!privacySettingsService.canMessage(recipientId, isConnectedForMessaging(senderId, recipientId))) {
+                throw new ForbiddenException("This user only accepts messages from their connections");
+            }
+            recipientIds = List.of(recipientId);
         }
 
         String trimmedContent = content == null ? "" : content.trim();
@@ -149,32 +187,55 @@ public class ConversationService {
             // Fail fast (404) if the post doesn't exist rather than persisting a dangling reference.
             feedService.get(senderId, normalizedPostId);
         }
+        String normalizedReplyToId = (replyToMessageId == null || replyToMessageId.isBlank()) ? null : replyToMessageId;
+        if (normalizedReplyToId != null) {
+            messageRepository.findById(normalizedReplyToId)
+                    .filter(m -> m.getConversationId().equals(conversation.getId()))
+                    .orElseThrow(() -> new ResourceNotFoundException("Message not found: " + normalizedReplyToId));
+        }
 
         Message message = Message.builder()
                 .conversationId(conversation.getId())
                 .senderId(senderId)
+                .replyToMessageId(normalizedReplyToId)
                 .contentCiphertext(encryptionService.encrypt(trimmedContent))
                 .messageType(normalizedPostId != null ? Message.Type.SHARED_POST : Message.Type.TEXT)
                 .sharedPostId(normalizedPostId)
                 .build();
         message = messageRepository.saveAndFlush(message);
 
-        // Bumps updated_at so the conversation resurfaces at the top of both participants' lists
-        // (and past either side's deletedAtFor, if they'd previously deleted the chat).
+        // Bumps updated_at so the conversation resurfaces at the top of every participant's list
+        // (and past a DIRECT side's deletedAtFor, if they'd previously deleted the chat).
         Instant now = Instant.now();
         conversationRepository.touchUpdatedAt(conversation.getId(), now);
         conversation.setUpdatedAt(now);
 
         MessageDto dto = toMessageDto(message, senderId);
+        // One topic per conversation, fanned out by STOMP to every current subscriber — this line is
+        // identical for DIRECT and GROUP and needs no branching. Only the per-recipient sidebar-list
+        // refresh below has to loop for a group instead of resolving a single otherParticipant.
         messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId(), dto);
-        messagingTemplate.convertAndSend("/topic/users/" + recipientId + "/conversations",
-                toDto(conversation, recipientId));
+        for (String recipientId : recipientIds) {
+            messagingTemplate.convertAndSend("/topic/users/" + recipientId + "/conversations",
+                    toDto(conversation, recipientId));
+        }
         return dto;
     }
 
     @Transactional
     public void markRead(String conversationId, String viewerId) {
         Conversation conversation = getConversationForParticipant(conversationId, viewerId);
+        if (conversation.getConversationType() == Conversation.Type.GROUP) {
+            // Per-user read state (last_read_at) rather than the shared is_read boolean, which only
+            // makes sense for exactly 2 participants.
+            ConversationParticipant participant = participantRepository
+                    .findByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, viewerId)
+                    .orElseThrow(() -> new ForbiddenException("You are not a participant in this conversation"));
+            participant.setLastReadAt(Instant.now());
+            participantRepository.save(participant);
+            messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId() + "/read", new ReadReceipt(viewerId));
+            return;
+        }
         int updated = messageRepository.markConversationRead(conversation.getId(), viewerId);
         if (updated > 0) {
             messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId() + "/read",
@@ -265,20 +326,42 @@ public class ConversationService {
     private Conversation getConversationForParticipant(String conversationId, String viewerId) {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Conversation not found: " + conversationId));
-        if (!conversation.hasParticipant(viewerId)) {
+        boolean allowed = conversation.getConversationType() == Conversation.Type.GROUP
+                ? participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, viewerId)
+                : conversation.hasParticipant(viewerId);
+        if (!allowed) {
             throw new ForbiddenException("You are not a participant in this conversation");
         }
         return conversation;
     }
 
-    private ConversationDto toDto(Conversation conversation, String viewerId) {
+    /** Package-private (not private) so {@link GroupConversationService} can build the same DTO
+     * shape after group-membership mutations, instead of duplicating this logic. */
+    ConversationDto toDto(Conversation conversation, String viewerId) {
         List<Message> latest = messageRepository.findLatestVisibleForViewer(conversation.getId(), viewerId, PageRequest.of(0, 1));
         MessageDto lastMessage = latest.isEmpty() ? null : toMessageDto(latest.get(0), viewerId);
+
+        if (conversation.getConversationType() == Conversation.Type.GROUP) {
+            ConversationParticipant me = participantRepository
+                    .findByConversationIdAndUserIdAndDeletedAtIsNull(conversation.getId(), viewerId)
+                    .orElseThrow(() -> new ForbiddenException("You are not a participant in this conversation"));
+            long unread = messageRepository.countUnreadSinceForViewer(conversation.getId(), viewerId, me.getLastReadAt());
+            List<GroupParticipantDto> participants = participantRepository
+                    .findByConversationIdAndDeletedAtIsNull(conversation.getId()).stream()
+                    .map(p -> new GroupParticipantDto(p.getUserId(), p.getRole().name()))
+                    .toList();
+            GroupInfoDto groupInfo = new GroupInfoDto(conversation.getGroupName(), conversation.getGroupAvatarUrl(),
+                    conversation.getCreatedBy(), me.getRole().name(), participants);
+            return new ConversationDto(conversation.getId(), conversation.getConversationType().name(), null, groupInfo,
+                    lastMessage, unread, conversation.getUpdatedAt(), me.getMutedAt() != null, me.getNickname(), false);
+        }
+
         long unread = messageRepository.countUnreadVisibleForViewer(conversation.getId(), viewerId);
         String otherId = conversation.otherParticipant(viewerId);
         boolean blocked = userBlockRepository.existsBetween(viewerId, otherId);
-        return new ConversationDto(conversation.getId(), otherId, lastMessage, unread, conversation.getUpdatedAt(),
-                conversation.isMutedFor(viewerId), conversation.nicknameFor(viewerId), blocked);
+        return new ConversationDto(conversation.getId(), conversation.getConversationType().name(), otherId, null,
+                lastMessage, unread, conversation.getUpdatedAt(), conversation.isMutedFor(viewerId),
+                conversation.nicknameFor(viewerId), blocked);
     }
 
     private record ReadReceipt(String readBy) {}
@@ -292,8 +375,25 @@ public class ConversationService {
                 // Post was deleted after being shared; frontend shows a "no longer available" state.
             }
         }
+        RepliedMessagePreviewDto replyTo = null;
+        if (message.getReplyToMessageId() != null) {
+            replyTo = messageRepository.findById(message.getReplyToMessageId())
+                    .map(original -> {
+                        String snippet = original.getMessageType() == Message.Type.SHARED_POST
+                                ? "Shared a post"
+                                : truncate(encryptionService.decrypt(original.getContentCiphertext()), 120);
+                        return new RepliedMessagePreviewDto(original.getId(), original.getSenderId(),
+                                original.getMessageType().name(), snippet);
+                    })
+                    .orElse(null); // Original was hard-deleted; frontend just omits the quoted preview.
+        }
         return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
                 message.getMessageType().name(), encryptionService.decrypt(message.getContentCiphertext()),
-                message.getSharedPostId(), sharedPost, message.isRead(), message.getCreatedAt());
+                message.getSharedPostId(), sharedPost, message.getReplyToMessageId(), replyTo,
+                message.isRead(), message.getCreatedAt());
+    }
+
+    private String truncate(String value, int maxLength) {
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "…";
     }
 }

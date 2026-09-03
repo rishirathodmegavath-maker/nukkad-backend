@@ -38,6 +38,9 @@ public class Message {
     @Column(name = "sender_id", nullable = false, columnDefinition = "CHAR(36)")
     private String senderId;
 
+    @Column(name = "reply_to_message_id", columnDefinition = "CHAR(36)")
+    private String replyToMessageId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "message_type", nullable = false, length = 20)
     @Builder.Default

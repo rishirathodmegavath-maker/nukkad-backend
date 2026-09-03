@@ -7,8 +7,10 @@ import com.nukkad.feed.service.FeedService;
 import com.nukkad.investor.repository.IntroRequestRepository;
 import com.nukkad.messaging.dto.MessageDto;
 import com.nukkad.messaging.entity.Conversation;
+import com.nukkad.messaging.entity.ConversationParticipant;
 import com.nukkad.messaging.entity.Message;
 import com.nukkad.messaging.entity.MessageDeletion;
+import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.messaging.repository.MessageDeletionRepository;
 import com.nukkad.messaging.repository.MessageRepository;
@@ -31,8 +33,11 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -46,6 +51,7 @@ import static org.mockito.Mockito.when;
 class ConversationServiceTest {
 
     @Mock private ConversationRepository conversationRepository;
+    @Mock private ConversationParticipantRepository participantRepository;
     @Mock private MessageRepository messageRepository;
     @Mock private MessageDeletionRepository messageDeletionRepository;
     @Mock private MessageEncryptionService encryptionService;
@@ -59,7 +65,7 @@ class ConversationServiceTest {
     @Mock private FeedService feedService;
 
     private ConversationService service() {
-        return new ConversationService(conversationRepository, messageRepository, messageDeletionRepository,
+        return new ConversationService(conversationRepository, participantRepository, messageRepository, messageDeletionRepository,
                 encryptionService, messagingTemplate, userBlockRepository, connectionRepository,
                 opportunityApplicantRepository, startupTeamMemberRepository, introRequestRepository,
                 privacySettingsService, feedService);
@@ -67,6 +73,15 @@ class ConversationServiceTest {
 
     private Conversation conversation(String senderId, String recipientId) {
         return Conversation.builder().id("conv1").userAId(senderId).userBId(recipientId).build();
+    }
+
+    private Conversation groupConversation() {
+        return Conversation.builder().id("conv1").conversationType(Conversation.Type.GROUP).groupName("Test Group").build();
+    }
+
+    private ConversationParticipant participant(String userId, ConversationParticipant.Role role) {
+        return ConversationParticipant.builder().id(userId + "-p").conversationId("conv1").userId(userId).role(role)
+                .joinedAt(Instant.now()).build();
     }
 
     /** Stubs the read-side lookups {@code toDto} needs to build the broadcast DTO sent to the recipient. */
@@ -105,7 +120,7 @@ class ConversationServiceTest {
         stubMessagePersistenceAndEncryption();
         stubConversationDtoLookups("owner1", "applicant1");
 
-        MessageDto dto = service().sendMessage("conv1", "applicant1", "Hello!", null);
+        MessageDto dto = service().sendMessage("conv1", "applicant1", "Hello!", null, null);
 
         assertThat(dto.content()).isEqualTo("Hello!");
         // The exception is read-only: it never creates, updates, or reads a real Connection row.
@@ -123,7 +138,7 @@ class ConversationServiceTest {
         when(opportunityApplicantRepository.existsAcceptedApplicationBetween("stranger1", "owner1")).thenReturn(false);
         when(privacySettingsService.canMessage("owner1", false)).thenReturn(false);
 
-        assertThatThrownBy(() -> service().sendMessage("conv1", "stranger1", "Hi", null))
+        assertThatThrownBy(() -> service().sendMessage("conv1", "stranger1", "Hi", null, null))
                 .isInstanceOf(ForbiddenException.class);
 
         verify(messageRepository, never()).saveAndFlush(any());
@@ -143,7 +158,7 @@ class ConversationServiceTest {
         stubMessagePersistenceAndEncryption();
         stubConversationDtoLookups("founder1", "teammate1");
 
-        MessageDto dto = service().sendMessage("conv1", "teammate1", "Hello!", null);
+        MessageDto dto = service().sendMessage("conv1", "teammate1", "Hello!", null, null);
 
         assertThat(dto.content()).isEqualTo("Hello!");
         verify(connectionRepository, never()).save(any());
@@ -160,7 +175,7 @@ class ConversationServiceTest {
         when(startupTeamMemberRepository.existsActiveTeamMembershipBetween("requester1", "founder1")).thenReturn(false);
         when(privacySettingsService.canMessage("founder1", false)).thenReturn(false);
 
-        assertThatThrownBy(() -> service().sendMessage("conv1", "requester1", "Hi", null))
+        assertThatThrownBy(() -> service().sendMessage("conv1", "requester1", "Hi", null, null))
                 .isInstanceOf(ForbiddenException.class);
 
         verify(messageRepository, never()).saveAndFlush(any());
@@ -181,7 +196,7 @@ class ConversationServiceTest {
         stubMessagePersistenceAndEncryption();
         stubConversationDtoLookups("founder1", "investor1");
 
-        MessageDto dto = service().sendMessage("conv1", "investor1", "Hello!", null);
+        MessageDto dto = service().sendMessage("conv1", "investor1", "Hello!", null, null);
 
         assertThat(dto.content()).isEqualTo("Hello!");
         verify(connectionRepository, never()).save(any());
@@ -199,7 +214,7 @@ class ConversationServiceTest {
         when(introRequestRepository.existsAcceptedIntroBetween("investor1", "founder1")).thenReturn(false);
         when(privacySettingsService.canMessage("founder1", false)).thenReturn(false);
 
-        assertThatThrownBy(() -> service().sendMessage("conv1", "investor1", "Hi", null))
+        assertThatThrownBy(() -> service().sendMessage("conv1", "investor1", "Hi", null, null))
                 .isInstanceOf(ForbiddenException.class);
 
         verify(messageRepository, never()).saveAndFlush(any());
@@ -217,7 +232,7 @@ class ConversationServiceTest {
         stubMessagePersistenceAndEncryption();
         stubConversationDtoLookups("owner1", "friend1");
 
-        MessageDto dto = service().sendMessage("conv1", "friend1", "Hello!", null);
+        MessageDto dto = service().sendMessage("conv1", "friend1", "Hello!", null, null);
 
         assertThat(dto.content()).isEqualTo("Hello!");
         // Java's || short-circuits once the real connection check is true — the opportunity-based
@@ -369,5 +384,97 @@ class ConversationServiceTest {
         assertThat(conv.getDeletedAtByUserA() != null || conv.getDeletedAtByUserB() != null).isTrue();
         verify(conversationRepository).save(conv);
         verify(messageDeletionRepository).saveAll(any());
+    }
+
+    // ---- GROUP conversations: sendMessage fan-out, DIRECT path unchanged, non-member rejected ----
+
+    @Test
+    void sendingToAGroupBroadcastsOnceToTheConversationTopicAndOncePerNonSenderParticipant() {
+        Conversation group = groupConversation();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group));
+        when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice")).thenReturn(true);
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1")).thenReturn(List.of(
+                participant("alice", ConversationParticipant.Role.ADMIN),
+                participant("bob", ConversationParticipant.Role.MEMBER),
+                participant("carol", ConversationParticipant.Role.MEMBER)));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull(eq("conv1"), anyString()))
+                .thenAnswer(inv -> Optional.of(participant(inv.getArgument(1), ConversationParticipant.Role.MEMBER)));
+        stubMessagePersistenceAndEncryption();
+        when(messageRepository.findLatestVisibleForViewer(eq("conv1"), anyString(), any())).thenReturn(List.of());
+        when(messageRepository.countUnreadSinceForViewer(eq("conv1"), anyString(), any())).thenReturn(0L);
+
+        MessageDto dto = service().sendMessage("conv1", "alice", "Hello group!", null, null);
+
+        assertThat(dto.content()).isEqualTo("Hello!"); // stubMessagePersistenceAndEncryption() decrypts to this
+        verify(messagingTemplate).convertAndSend(eq("/topic/conversations/conv1"), any(MessageDto.class));
+        // One sidebar-refresh push per non-sender participant (bob, carol) — never one for alice herself.
+        verify(messagingTemplate).convertAndSend(eq("/topic/users/bob/conversations"), any(Object.class));
+        verify(messagingTemplate).convertAndSend(eq("/topic/users/carol/conversations"), any(Object.class));
+        verify(messagingTemplate, never()).convertAndSend(eq("/topic/users/alice/conversations"), any(Object.class));
+    }
+
+    @Test
+    void sendingToAGroupNeverConsultsDirectOnlyBlockOrPrivacyChecks() {
+        Conversation group = groupConversation();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group));
+        when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice")).thenReturn(true);
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1")).thenReturn(List.of(
+                participant("alice", ConversationParticipant.Role.ADMIN),
+                participant("bob", ConversationParticipant.Role.MEMBER)));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull(eq("conv1"), anyString()))
+                .thenAnswer(inv -> Optional.of(participant(inv.getArgument(1), ConversationParticipant.Role.MEMBER)));
+        stubMessagePersistenceAndEncryption();
+        when(messageRepository.findLatestVisibleForViewer(eq("conv1"), anyString(), any())).thenReturn(List.of());
+        when(messageRepository.countUnreadSinceForViewer(eq("conv1"), anyString(), any())).thenReturn(0L);
+
+        service().sendMessage("conv1", "alice", "Hi group", null, null);
+
+        verify(userBlockRepository, never()).existsBetween(any(), any());
+        verify(privacySettingsService, never()).canMessage(any(), anyBoolean());
+    }
+
+    @Test
+    void directSendMessageStillUsesTheOriginalSingleRecipientPathUnchanged() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("bob", "alice");
+
+        service().sendMessage("conv1", "alice", "Hi", null, null);
+
+        verify(messagingTemplate).convertAndSend(eq("/topic/conversations/conv1"), any(MessageDto.class));
+        verify(messagingTemplate, times(1)).convertAndSend(eq("/topic/users/bob/conversations"), any(Object.class));
+        verify(participantRepository, never()).findByConversationIdAndDeletedAtIsNull(any());
+    }
+
+    @Test
+    void nonMemberCannotSendToAGroupTheyAreNotPartOf() {
+        Conversation group = groupConversation();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group));
+        when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "mallory")).thenReturn(false);
+
+        assertThatThrownBy(() -> service().sendMessage("conv1", "mallory", "Hi", null, null))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(messageRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void replyingToAMessageFromAnotherConversationIsRejected() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+        when(messageRepository.findById("other-conv-msg"))
+                .thenReturn(Optional.of(message("other-conv-msg", "some-other-conv", "bob")));
+
+        assertThatThrownBy(() -> service().sendMessage("conv1", "alice", "Hi", null, "other-conv-msg"))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(messageRepository, never()).saveAndFlush(any());
     }
 }

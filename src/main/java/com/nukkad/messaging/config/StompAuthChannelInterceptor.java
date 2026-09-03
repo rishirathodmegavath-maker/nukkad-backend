@@ -1,5 +1,7 @@
 package com.nukkad.messaging.config;
 
+import com.nukkad.messaging.entity.Conversation;
+import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.security.AuthenticatedUser;
 import com.nukkad.security.JwtService;
@@ -28,10 +30,13 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     private final JwtService jwtService;
     private final ConversationRepository conversationRepository;
+    private final ConversationParticipantRepository conversationParticipantRepository;
 
-    public StompAuthChannelInterceptor(JwtService jwtService, ConversationRepository conversationRepository) {
+    public StompAuthChannelInterceptor(JwtService jwtService, ConversationRepository conversationRepository,
+                                        ConversationParticipantRepository conversationParticipantRepository) {
         this.jwtService = jwtService;
         this.conversationRepository = conversationRepository;
+        this.conversationParticipantRepository = conversationParticipantRepository;
     }
 
     @Override
@@ -61,7 +66,9 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
                 String rest = destination.substring(CONVERSATIONS_PREFIX.length());
                 String conversationId = rest.contains("/") ? rest.substring(0, rest.indexOf('/')) : rest;
                 boolean allowed = conversationRepository.findById(conversationId)
-                        .map(c -> c.hasParticipant(userId))
+                        .map(c -> c.getConversationType() == Conversation.Type.GROUP
+                                ? conversationParticipantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, userId)
+                                : c.hasParticipant(userId))
                         .orElse(false);
                 if (!allowed) throw new AccessDeniedException("Not a participant in this conversation");
             } else if (destination.startsWith(USERS_PREFIX)) {
