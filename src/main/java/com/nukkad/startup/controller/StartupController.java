@@ -64,6 +64,11 @@ public class StartupController {
         return ApiResponse.ok(startupService.getStartup(id, principal.id()));
     }
 
+    @GetMapping("/me/founding")
+    public ApiResponse<List<StartupDto>> myFoundedStartups(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(startupService.listMyFoundedStartups(principal.id()));
+    }
+
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<StartupDto> create(@AuthenticationPrincipal AuthenticatedUser principal,

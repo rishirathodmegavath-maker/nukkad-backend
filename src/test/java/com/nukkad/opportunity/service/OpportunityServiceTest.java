@@ -7,6 +7,7 @@ import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
 import com.nukkad.opportunity.dto.ApplyToOpportunityRequest;
+import com.nukkad.opportunity.dto.PostOpportunityRequest;
 import com.nukkad.opportunity.entity.ApplicationStatus;
 import com.nukkad.opportunity.entity.Opportunity;
 import com.nukkad.opportunity.entity.OpportunityApplicant;
@@ -14,6 +15,8 @@ import com.nukkad.opportunity.mapper.OpportunityMapper;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
 import com.nukkad.opportunity.repository.OpportunityInterestRepository;
 import com.nukkad.opportunity.repository.OpportunityRepository;
+import com.nukkad.startup.entity.StartupTeamMember;
+import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import com.nukkad.user.dto.UserDto;
 import com.nukkad.user.entity.Availability;
 import com.nukkad.user.entity.User;
@@ -71,11 +74,12 @@ class OpportunityServiceTest {
     @Mock private OpportunityMapper opportunityMapper;
     @Mock private NotificationService notificationService;
     @Mock private AuditService auditService;
+    @Mock private StartupTeamMemberRepository startupTeamMemberRepository;
 
     private OpportunityService service() {
         return new OpportunityService(opportunityRepository, applicantRepository, interestRepository,
                 userRepository, userExperienceRepository, userProjectRepository, userService, userMapper,
-                opportunityMapper, notificationService, auditService);
+                opportunityMapper, notificationService, auditService, startupTeamMemberRepository);
     }
 
     private Opportunity opportunity(String posterId) {
@@ -412,5 +416,90 @@ class OpportunityServiceTest {
                 .isInstanceOf(ForbiddenException.class);
 
         verify(applicantRepository, never()).saveAndFlush(any());
+    }
+
+    // ---- 13. Posting is gated to founders of a startup ----
+
+    private PostOpportunityRequest postRequest() {
+        return new PostOpportunityRequest("AI/ML Intern", "Internship", null, "ABC Technologies",
+                "Bengaluru", true, "Build ML pipelines", List.of("Python"), null);
+    }
+
+    @Test
+    void nonFounderCannotPostAnOpportunity() {
+        when(userRepository.findById("user1")).thenReturn(Optional.of(user("user1", "Alex")));
+        when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("user1", StartupTeamMember.Status.ACTIVE))
+                .thenReturn(false);
+
+        assertThatThrownBy(() -> service().postOpportunity("user1", postRequest()))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void founderOfAStartupCanPostAnOpportunity() {
+        when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("founder1", StartupTeamMember.Status.ACTIVE))
+                .thenReturn(true);
+        when(userRepository.findById("founder1")).thenReturn(Optional.of(user("founder1", "Rishi")));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().postOpportunity("founder1", postRequest());
+
+        verify(opportunityRepository).saveAndFlush(any(Opportunity.class));
+    }
+
+    // ---- 14. Closed opportunities reject new applications and interest ----
+
+    @Test
+    void applyingToAClosedOpportunityIsRejected() {
+        Opportunity opp = opportunity("owner1");
+        opp.setClosed(true);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        ApplyToOpportunityRequest request = new ApplyToOpportunityRequest("x", "y", null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> service().apply("applicant1", "opp1", request))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(applicantRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void expressingInterestInAClosedOpportunityIsRejected() {
+        Opportunity opp = opportunity("owner1");
+        opp.setClosed(true);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        assertThatThrownBy(() -> service().expressInterest("applicant1", "opp1"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(interestRepository, never()).save(any());
+    }
+
+    // ---- 15. Close/reopen is owner-only ----
+
+    @Test
+    void ownerCanCloseAndReopenTheirOpportunity() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().closeOpportunity("owner1", "opp1");
+        assertThat(opp.isClosed()).isTrue();
+
+        service().reopenOpportunity("owner1", "opp1");
+        assertThat(opp.isClosed()).isFalse();
+    }
+
+    @Test
+    void nonOwnerCannotCloseAnOpportunity() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        assertThatThrownBy(() -> service().closeOpportunity("stranger1", "opp1"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
     }
 }

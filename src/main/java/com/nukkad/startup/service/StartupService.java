@@ -107,6 +107,13 @@ public class StartupService {
                 .map(s -> startupMapper.toDto(s, followRepository.existsByUserIdAndStartupId(viewerId, s.getId())));
     }
 
+    @Transactional(readOnly = true)
+    public List<StartupDto> listMyFoundedStartups(String userId) {
+        List<String> startupIds = teamMemberRepository.findByUserIdAndIsFounderTrueAndStatus(userId, StartupTeamMember.Status.ACTIVE)
+                .stream().map(StartupTeamMember::getStartupId).toList();
+        return startupRepository.findAllById(startupIds).stream().map(startupMapper::toDto).toList();
+    }
+
     @Transactional
     public StartupDto createStartup(String creatorId, CreateStartupRequest request) {
         Startup startup = Startup.builder()

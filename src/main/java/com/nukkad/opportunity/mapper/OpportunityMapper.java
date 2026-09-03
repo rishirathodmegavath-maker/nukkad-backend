@@ -19,6 +19,7 @@ public class OpportunityMapper {
                 opportunity.getId(),
                 opportunity.getTitle(),
                 opportunity.getType().getLabel(),
+                opportunity.isClosed(),
                 opportunity.getStartupId(),
                 opportunity.getOrganizationName(),
                 opportunity.getLocation(),

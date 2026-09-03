@@ -7,6 +7,7 @@ public record OpportunityDto(
         String id,
         String title,
         String type,
+        boolean closed,
         String startupId,
         String organizationName,
         String location,

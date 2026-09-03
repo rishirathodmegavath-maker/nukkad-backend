@@ -44,6 +44,10 @@ public class Opportunity {
     @Column(nullable = false, length = 20)
     private OpportunityType type;
 
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean closed = false;
+
     @Column(name = "startup_id", columnDefinition = "CHAR(36)")
     private String startupId;
 

@@ -152,6 +152,7 @@ public class ContentMatchingService {
         List<Opportunity> candidates = opportunityRepository
                 .findAll(PageRequest.of(0, CANDIDATE_WINDOW_SIZE, Sort.by(Sort.Direction.DESC, "createdAt")))
                 .getContent().stream()
+                .filter(opp -> !opp.isClosed())
                 .filter(opp -> !opp.getPostedByUserId().equals(viewerId))
                 .filter(opp -> !alreadyInteracted.contains(opp.getId()))
                 .filter(opp -> !blocked.contains(opp.getPostedByUserId()))

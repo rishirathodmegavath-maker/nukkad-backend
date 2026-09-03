@@ -22,6 +22,8 @@ import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
 import com.nukkad.opportunity.repository.OpportunityInterestRepository;
 import com.nukkad.opportunity.repository.OpportunityRepository;
 import com.nukkad.opportunity.repository.OpportunitySpecifications;
+import com.nukkad.startup.entity.StartupTeamMember;
+import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import com.nukkad.user.dto.ExperienceDto;
 import com.nukkad.user.dto.ProjectDto;
 import com.nukkad.user.dto.UserDto;
@@ -64,6 +66,7 @@ public class OpportunityService {
     private final OpportunityMapper opportunityMapper;
     private final NotificationService notificationService;
     private final AuditService auditService;
+    private final StartupTeamMemberRepository startupTeamMemberRepository;
 
     public OpportunityService(OpportunityRepository opportunityRepository,
                                OpportunityApplicantRepository applicantRepository,
@@ -75,7 +78,8 @@ public class OpportunityService {
                                UserMapper userMapper,
                                OpportunityMapper opportunityMapper,
                                NotificationService notificationService,
-                               AuditService auditService) {
+                               AuditService auditService,
+                               StartupTeamMemberRepository startupTeamMemberRepository) {
         this.opportunityRepository = opportunityRepository;
         this.applicantRepository = applicantRepository;
         this.interestRepository = interestRepository;
@@ -87,6 +91,7 @@ public class OpportunityService {
         this.opportunityMapper = opportunityMapper;
         this.notificationService = notificationService;
         this.auditService = auditService;
+        this.startupTeamMemberRepository = startupTeamMemberRepository;
     }
 
     public Opportunity getEntityOrThrow(String id) {
@@ -116,7 +121,8 @@ public class OpportunityService {
                 OpportunitySpecifications.search(q),
                 OpportunitySpecifications.type(type),
                 OpportunitySpecifications.remote(remote),
-                OpportunitySpecifications.chapterId(chapterId)
+                OpportunitySpecifications.chapterId(chapterId),
+                OpportunitySpecifications.open()
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return opportunityRepository.findAll(spec, pageable).map(o -> toOpportunityDto(o, viewerId));
@@ -126,6 +132,9 @@ public class OpportunityService {
     public OpportunityDto postOpportunity(String userId, PostOpportunityRequest request) {
         User poster = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
+        if (!startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus(userId, StartupTeamMember.Status.ACTIVE)) {
+            throw new ForbiddenException("Only a founder of a startup on Nukkad can post an opportunity");
+        }
 
         Opportunity opportunity = Opportunity.builder()
                 .title(request.title().trim())
@@ -172,8 +181,27 @@ public class OpportunityService {
     }
 
     @Transactional
+    public OpportunityDto closeOpportunity(String userId, String id) {
+        Opportunity opportunity = getEntityOrThrow(id);
+        requirePoster(userId, opportunity);
+        opportunity.setClosed(true);
+        return opportunityMapper.toDto(opportunityRepository.saveAndFlush(opportunity));
+    }
+
+    @Transactional
+    public OpportunityDto reopenOpportunity(String userId, String id) {
+        Opportunity opportunity = getEntityOrThrow(id);
+        requirePoster(userId, opportunity);
+        opportunity.setClosed(false);
+        return opportunityMapper.toDto(opportunityRepository.saveAndFlush(opportunity));
+    }
+
+    @Transactional
     public void expressInterest(String userId, String id) {
         Opportunity opportunity = getEntityOrThrow(id);
+        if (opportunity.isClosed()) {
+            throw new BadRequestException("This opportunity is no longer accepting applications");
+        }
         if (!interestRepository.existsByOpportunityIdAndUserId(id, userId)) {
             interestRepository.save(OpportunityInterest.builder().opportunityId(id).userId(userId).build());
             notificationService.notify(opportunity.getPostedByUserId(), NotificationType.opportunity,
@@ -186,6 +214,9 @@ public class OpportunityService {
     @Transactional
     public ApplicationDto apply(String userId, String id, ApplyToOpportunityRequest request) {
         Opportunity opportunity = getEntityOrThrow(id);
+        if (opportunity.isClosed()) {
+            throw new BadRequestException("This opportunity is no longer accepting applications");
+        }
         User applicantUser = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 

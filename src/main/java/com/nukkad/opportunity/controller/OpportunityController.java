@@ -90,6 +90,16 @@ public class OpportunityController {
         return ApiResponse.ok(null);
     }
 
+    @PostMapping("/{id}/close")
+    public ApiResponse<OpportunityDto> close(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(opportunityService.closeOpportunity(principal.id(), id));
+    }
+
+    @PostMapping("/{id}/reopen")
+    public ApiResponse<OpportunityDto> reopen(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(opportunityService.reopenOpportunity(principal.id(), id));
+    }
+
     @PostMapping("/{id}/interest")
     public ApiResponse<Void> expressInterest(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         opportunityService.expressInterest(principal.id(), id);

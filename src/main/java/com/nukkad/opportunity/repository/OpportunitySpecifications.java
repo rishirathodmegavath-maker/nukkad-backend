@@ -44,4 +44,9 @@ public final class OpportunitySpecifications {
         if (chapterId == null || chapterId.isBlank()) return null;
         return (root, query, cb) -> cb.equal(root.get("chapterId"), chapterId);
     }
+
+    /** Always applied in discovery/search — closed postings never appear in public browse results. */
+    public static Specification<Opportunity> open() {
+        return (root, query, cb) -> cb.isFalse(root.get("closed"));
+    }
 }
