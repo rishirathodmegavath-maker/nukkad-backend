@@ -505,4 +505,173 @@ class ConversationServiceTest {
 
         verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
     }
+
+    // ---- Edit: sender-only, TEXT-only, unchanged content is a no-op, broadcasts on the conversation topic ----
+
+    @Test
+    void senderCanEditTheirOwnTextMessageAndItBroadcastsTheUpdate() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+        when(encryptionService.decrypt("ciphertext")).thenReturn("Hi");
+        when(encryptionService.encrypt("Hello")).thenReturn("new-ciphertext");
+        when(encryptionService.decrypt("new-ciphertext")).thenReturn("Hello");
+
+        MessageDto dto = service().editMessage("conv1", "alice", "msg1", "Hello");
+
+        assertThat(dto.content()).isEqualTo("Hello");
+        assertThat(dto.editedAt()).isNotNull();
+        assertThat(msg.getContentCiphertext()).isEqualTo("new-ciphertext");
+        verify(messageRepository).save(msg);
+        verify(messagingTemplate).convertAndSend(eq("/topic/conversations/conv1"), any(MessageDto.class));
+    }
+
+    @Test
+    void nonSenderCannotEditAnotherUsersMessage() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+
+        assertThatThrownBy(() -> service().editMessage("conv1", "alice", "msg1", "Hacked"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(messageRepository, never()).save(any());
+        verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    void editingWithBlankContentIsRejectedAndOriginalStaysIntact() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+
+        assertThatThrownBy(() -> service().editMessage("conv1", "alice", "msg1", "   "))
+                .isInstanceOf(BadRequestException.class);
+
+        assertThat(msg.getContentCiphertext()).isEqualTo("ciphertext");
+        verify(messageRepository, never()).save(any());
+    }
+
+    @Test
+    void editingWithUnchangedContentSkipsPersistingAndBroadcasting() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+        when(encryptionService.decrypt("ciphertext")).thenReturn("Hi");
+
+        MessageDto dto = service().editMessage("conv1", "alice", "msg1", "Hi");
+
+        assertThat(dto.content()).isEqualTo("Hi");
+        assertThat(dto.editedAt()).isNull();
+        verify(messageRepository, never()).save(any());
+        verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    void editingASharedPostMessageIsRejected() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
+                .messageType(Message.Type.SHARED_POST).sharedPostId("post1").contentCiphertext("ciphertext").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+
+        assertThatThrownBy(() -> service().editMessage("conv1", "alice", "msg1", "New caption"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(messageRepository, never()).save(any());
+    }
+
+    @Test
+    void editingAnAlreadyUnsentMessageIsRejected() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "alice");
+        msg.setUnsentAt(Instant.now());
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+
+        assertThatThrownBy(() -> service().editMessage("conv1", "alice", "msg1", "New text"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(messageRepository, never()).save(any());
+    }
+
+    // ---- Unsend: sender-only, global (not per-viewer), wipes ciphertext, broadcasts ----
+
+    @Test
+    void senderCanUnsendTheirOwnMessageAndContentIsWipedForEveryone() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+        when(encryptionService.encrypt("")).thenReturn("empty-ciphertext");
+
+        MessageDto dto = service().unsendMessage("conv1", "alice", "msg1");
+
+        assertThat(dto.content()).isEmpty();
+        assertThat(dto.unsentAt()).isNotNull();
+        assertThat(dto.sharedPost()).isNull();
+        assertThat(msg.getContentCiphertext()).isEqualTo("empty-ciphertext");
+        assertThat(msg.getUnsentAt()).isNotNull();
+        // The row itself is kept (never hard-deleted) so reply references, ordering and pagination
+        // stay intact — only its content is wiped and the tombstone timestamp is set.
+        verify(messageRepository, never()).deleteById(any());
+        verify(messageRepository, never()).delete(any());
+        verify(messageRepository).save(msg);
+        verify(messagingTemplate).convertAndSend(eq("/topic/conversations/conv1"), any(MessageDto.class));
+    }
+
+    @Test
+    void nonSenderCannotUnsendAnotherUsersMessage() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+
+        assertThatThrownBy(() -> service().unsendMessage("conv1", "alice", "msg1"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(messageRepository, never()).save(any());
+        verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    void unsendingAnAlreadyUnsentMessageIsAHarmlessNoOpButStillReturnsTheTombstone() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = message("msg1", "conv1", "alice");
+        Instant firstUnsentAt = Instant.now().minusSeconds(60);
+        msg.setUnsentAt(firstUnsentAt);
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+
+        MessageDto dto = service().unsendMessage("conv1", "alice", "msg1");
+
+        assertThat(dto.unsentAt()).isEqualTo(firstUnsentAt);
+        verify(messageRepository, never()).save(any());
+        verify(encryptionService, never()).encrypt(any());
+    }
+
+    // ---- Replies to an unsent original degrade gracefully instead of leaking its old text ----
+
+    @Test
+    void replyPreviewShowsUnsentPlaceholderWhenTheOriginalWasUnsent() {
+        Conversation conv = conversation("alice", "bob");
+        Message original = message("msg1", "conv1", "bob");
+        original.setUnsentAt(Instant.now());
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(original));
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("bob", "alice");
+
+        MessageDto dto = service().sendMessage("conv1", "alice", "Hello!", null, "msg1");
+
+        assertThat(dto.replyTo()).isNotNull();
+        assertThat(dto.replyTo().contentSnippet()).isEqualTo("This message was unsent");
+    }
 }

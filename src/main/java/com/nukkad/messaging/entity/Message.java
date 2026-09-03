@@ -60,6 +60,15 @@ public class Message {
     @Column(name = "read_at")
     private Instant readAt;
 
+    @Column(name = "edited_at")
+    private Instant editedAt;
+
+    /** Global "unsend": set once, for everyone, unlike {@link MessageDeletion} which is per-viewer.
+     * The row is kept (never hard-deleted) so reply references, ordering and pagination stay intact —
+     * {@code contentCiphertext} is wiped alongside this so the original text is gone from storage too. */
+    @Column(name = "unsent_at")
+    private Instant unsentAt;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

@@ -11,6 +11,7 @@ import com.nukkad.messaging.dto.SetNicknameRequest;
 import com.nukkad.messaging.dto.StartConversationRequest;
 import com.nukkad.messaging.dto.UpdateGroupRequest;
 import com.nukkad.messaging.dto.UpdateGroupRoleRequest;
+import com.nukkad.messaging.dto.UpdateMessageRequest;
 import com.nukkad.messaging.service.ConversationService;
 import com.nukkad.messaging.service.GroupConversationService;
 import com.nukkad.security.AuthenticatedUser;
@@ -129,6 +130,23 @@ public class ConversationController {
                                            @RequestParam List<String> messageIds) {
         conversationService.hideMessagesForViewer(id, principal.id(), messageIds);
         return ApiResponse.ok(null);
+    }
+
+    /** Edit: sender-only, enforced in {@link ConversationService#editMessage} from the authenticated
+     * identity, never from a client-supplied id. */
+    @PatchMapping("/{id}/messages/{messageId}")
+    public ApiResponse<MessageDto> editMessage(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                @PathVariable String id, @PathVariable String messageId,
+                                                @Valid @RequestBody UpdateMessageRequest request) {
+        return ApiResponse.ok(conversationService.editMessage(id, principal.id(), messageId, request.content()));
+    }
+
+    /** Unsend: removes the message for everyone. Distinct from {@link #hideMessage} ("delete for me"),
+     * which only ever changes the caller's own view. Sender-only, enforced in the service layer. */
+    @PostMapping("/{id}/messages/{messageId}/unsend")
+    public ApiResponse<MessageDto> unsendMessage(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                  @PathVariable String id, @PathVariable String messageId) {
+        return ApiResponse.ok(conversationService.unsendMessage(id, principal.id(), messageId));
     }
 
     @PostMapping("/group")

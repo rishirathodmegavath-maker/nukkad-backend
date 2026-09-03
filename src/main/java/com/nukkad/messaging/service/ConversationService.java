@@ -222,6 +222,73 @@ public class ConversationService {
         return dto;
     }
 
+    /**
+     * Edit: only the sender may ever call this (enforced here, never trusted from the client) and
+     * only for a TEXT message — a SHARED_POST's attachment/link is never editable, and there's no
+     * separate caption field on it to edit instead. Unchanged content (after trim) is a deliberate
+     * no-op: nothing is persisted or broadcast, matching "don't make an unnecessary API request".
+     */
+    @Transactional
+    public MessageDto editMessage(String conversationId, String userId, String messageId, String content) {
+        Conversation conversation = getConversationForParticipant(conversationId, userId);
+        Message message = messageRepository.findById(messageId)
+                .filter(m -> m.getConversationId().equals(conversation.getId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Message not found: " + messageId));
+        if (!message.getSenderId().equals(userId)) {
+            throw new ForbiddenException("You can only edit your own messages");
+        }
+        if (message.getUnsentAt() != null) {
+            throw new BadRequestException("This message was unsent");
+        }
+        if (message.getMessageType() != Message.Type.TEXT) {
+            throw new BadRequestException("Only text messages can be edited");
+        }
+        String trimmed = content == null ? "" : content.trim();
+        if (trimmed.isEmpty()) {
+            throw new BadRequestException("Message can't be empty");
+        }
+        String currentContent = encryptionService.decrypt(message.getContentCiphertext());
+        if (trimmed.equals(currentContent)) {
+            return toMessageDto(message, userId);
+        }
+
+        message.setContentCiphertext(encryptionService.encrypt(trimmed));
+        message.setEditedAt(Instant.now());
+        messageRepository.save(message);
+
+        MessageDto dto = toMessageDto(message, userId);
+        messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId(), dto);
+        return dto;
+    }
+
+    /**
+     * Unsend: global — removes the content for every participant, unlike {@link #hideMessagesForViewer}
+     * which only ever changes the caller's own view. Only the sender may call this (enforced here).
+     * The row is kept (not hard-deleted) so reply references, ordering and pagination stay intact;
+     * the ciphertext is wiped too so the original text is actually gone from storage, and
+     * {@link #toMessageDto} returns empty content/no attachment for it from this point on for both
+     * sides. Calling this twice on an already-unsent message is a harmless no-op.
+     */
+    @Transactional
+    public MessageDto unsendMessage(String conversationId, String userId, String messageId) {
+        Conversation conversation = getConversationForParticipant(conversationId, userId);
+        Message message = messageRepository.findById(messageId)
+                .filter(m -> m.getConversationId().equals(conversation.getId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Message not found: " + messageId));
+        if (!message.getSenderId().equals(userId)) {
+            throw new ForbiddenException("You can only unsend your own messages");
+        }
+        if (message.getUnsentAt() == null) {
+            message.setUnsentAt(Instant.now());
+            message.setContentCiphertext(encryptionService.encrypt(""));
+            messageRepository.save(message);
+        }
+
+        MessageDto dto = toMessageDto(message, userId);
+        messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId(), dto);
+        return dto;
+    }
+
     @Transactional
     public void markRead(String conversationId, String viewerId) {
         Conversation conversation = getConversationForParticipant(conversationId, viewerId);
@@ -368,6 +435,14 @@ public class ConversationService {
     private record ReadReceipt(String readBy, Instant readAt) {}
 
     private MessageDto toMessageDto(Message message, String viewerId) {
+        // Unsent: content/attachment are gone for everyone from here on — nothing left to decrypt or
+        // resolve, and no reply-to preview on the tombstone itself (there's nothing left to quote).
+        if (message.getUnsentAt() != null) {
+            return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
+                    message.getMessageType().name(), "", null, null, message.getReplyToMessageId(), null,
+                    message.isRead(), message.getReadAt(), message.getEditedAt(), message.getUnsentAt(), message.getCreatedAt());
+        }
+
         PostDto sharedPost = null;
         if (message.getMessageType() == Message.Type.SHARED_POST && message.getSharedPostId() != null) {
             try {
@@ -380,9 +455,17 @@ public class ConversationService {
         if (message.getReplyToMessageId() != null) {
             replyTo = messageRepository.findById(message.getReplyToMessageId())
                     .map(original -> {
-                        String snippet = original.getMessageType() == Message.Type.SHARED_POST
-                                ? "Shared a post"
-                                : truncate(encryptionService.decrypt(original.getContentCiphertext()), 120);
+                        // Recomputed fresh on every call, never a stored snapshot — an edit to the
+                        // original is reflected the next time this replying message's DTO is built,
+                        // and an unsent original degrades gracefully instead of leaking its old text.
+                        String snippet;
+                        if (original.getUnsentAt() != null) {
+                            snippet = "This message was unsent";
+                        } else if (original.getMessageType() == Message.Type.SHARED_POST) {
+                            snippet = "Shared a post";
+                        } else {
+                            snippet = truncate(encryptionService.decrypt(original.getContentCiphertext()), 120);
+                        }
                         return new RepliedMessagePreviewDto(original.getId(), original.getSenderId(),
                                 original.getMessageType().name(), snippet);
                     })
@@ -391,7 +474,7 @@ public class ConversationService {
         return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
                 message.getMessageType().name(), encryptionService.decrypt(message.getContentCiphertext()),
                 message.getSharedPostId(), sharedPost, message.getReplyToMessageId(), replyTo,
-                message.isRead(), message.getReadAt(), message.getCreatedAt());
+                message.isRead(), message.getReadAt(), message.getEditedAt(), message.getUnsentAt(), message.getCreatedAt());
     }
 
     private String truncate(String value, int maxLength) {
