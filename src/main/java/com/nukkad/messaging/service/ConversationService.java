@@ -225,21 +225,22 @@ public class ConversationService {
     @Transactional
     public void markRead(String conversationId, String viewerId) {
         Conversation conversation = getConversationForParticipant(conversationId, viewerId);
+        Instant now = Instant.now();
         if (conversation.getConversationType() == Conversation.Type.GROUP) {
             // Per-user read state (last_read_at) rather than the shared is_read boolean, which only
             // makes sense for exactly 2 participants.
             ConversationParticipant participant = participantRepository
                     .findByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, viewerId)
                     .orElseThrow(() -> new ForbiddenException("You are not a participant in this conversation"));
-            participant.setLastReadAt(Instant.now());
+            participant.setLastReadAt(now);
             participantRepository.save(participant);
-            messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId() + "/read", new ReadReceipt(viewerId));
+            messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId() + "/read", new ReadReceipt(viewerId, now));
             return;
         }
-        int updated = messageRepository.markConversationRead(conversation.getId(), viewerId);
+        int updated = messageRepository.markConversationRead(conversation.getId(), viewerId, now);
         if (updated > 0) {
             messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId() + "/read",
-                    new ReadReceipt(viewerId));
+                    new ReadReceipt(viewerId, now));
         }
     }
 
@@ -364,7 +365,7 @@ public class ConversationService {
                 conversation.nicknameFor(viewerId), blocked);
     }
 
-    private record ReadReceipt(String readBy) {}
+    private record ReadReceipt(String readBy, Instant readAt) {}
 
     private MessageDto toMessageDto(Message message, String viewerId) {
         PostDto sharedPost = null;
@@ -390,7 +391,7 @@ public class ConversationService {
         return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
                 message.getMessageType().name(), encryptionService.decrypt(message.getContentCiphertext()),
                 message.getSharedPostId(), sharedPost, message.getReplyToMessageId(), replyTo,
-                message.isRead(), message.getCreatedAt());
+                message.isRead(), message.getReadAt(), message.getCreatedAt());
     }
 
     private String truncate(String value, int maxLength) {

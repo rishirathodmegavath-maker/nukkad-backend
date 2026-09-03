@@ -32,6 +32,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -476,5 +477,32 @@ class ConversationServiceTest {
                 .isInstanceOf(ResourceNotFoundException.class);
 
         verify(messageRepository, never()).saveAndFlush(any());
+    }
+
+    // ---- markRead records a real readAt timestamp (backs the frontend's "Seen <time>" status) ----
+
+    @Test
+    void markingADirectConversationReadRecordsARealReadTimestamp() {
+        Conversation conv = conversation("bob", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.markConversationRead(eq("conv1"), eq("bob"), any(Instant.class))).thenReturn(2);
+
+        service().markRead("conv1", "bob");
+
+        ArgumentCaptor<Instant> readAtCaptor = ArgumentCaptor.forClass(Instant.class);
+        verify(messageRepository).markConversationRead(eq("conv1"), eq("bob"), readAtCaptor.capture());
+        assertThat(readAtCaptor.getValue()).isCloseTo(Instant.now(), within(2, java.time.temporal.ChronoUnit.SECONDS));
+        verify(messagingTemplate).convertAndSend(eq("/topic/conversations/conv1/read"), any(Object.class));
+    }
+
+    @Test
+    void markingAConversationReadDoesNotBroadcastWhenNothingWasActuallyUnread() {
+        Conversation conv = conversation("bob", "alice");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.markConversationRead(eq("conv1"), eq("bob"), any(Instant.class))).thenReturn(0);
+
+        service().markRead("conv1", "bob");
+
+        verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
     }
 }

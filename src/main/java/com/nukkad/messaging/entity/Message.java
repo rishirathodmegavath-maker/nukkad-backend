@@ -57,6 +57,9 @@ public class Message {
     @Builder.Default
     private boolean isRead = false;
 
+    @Column(name = "read_at")
+    private Instant readAt;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

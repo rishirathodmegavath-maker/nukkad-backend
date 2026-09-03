@@ -19,8 +19,8 @@ public interface MessageRepository extends JpaRepository<Message, String> {
     List<Message> findByConversationId(String conversationId);
 
     @Modifying
-    @Query("UPDATE Message m SET m.isRead = true WHERE m.conversationId = :conversationId AND m.senderId <> :viewerId AND m.isRead = false")
-    int markConversationRead(@Param("conversationId") String conversationId, @Param("viewerId") String viewerId);
+    @Query("UPDATE Message m SET m.isRead = true, m.readAt = :readAt WHERE m.conversationId = :conversationId AND m.senderId <> :viewerId AND m.isRead = false")
+    int markConversationRead(@Param("conversationId") String conversationId, @Param("viewerId") String viewerId, @Param("readAt") Instant readAt);
 
     /** Excludes messages the viewer has individually deleted (message_deletions) — the shared rows are untouched. */
     @Query("select m from Message m where m.conversationId = :conversationId "
