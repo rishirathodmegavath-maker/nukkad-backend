@@ -82,6 +82,42 @@ class ChapterServiceTest {
     }
 
     @Test
+    void creatingAChapterWithAnAlreadyUsedNameIsRejected() {
+        when(chapterRepository.existsByNameIgnoreCase("Nukkad Pune")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().createChapter("u1",
+                new CreateChapterRequest("Nukkad Pune", "Pune", "India", "A new hub", null)))
+                .isInstanceOf(ConflictException.class);
+        verify(chapterRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void duplicateNameCheckIsCaseAndWhitespaceInsensitive() {
+        // The pre-check normalizes via IgnoreCase at the query level and trims before calling it —
+        // exercised here by asserting the trimmed name is what's actually looked up.
+        when(chapterRepository.existsByNameIgnoreCase("Nukkad Pune")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().createChapter("u1",
+                new CreateChapterRequest("  Nukkad Pune  ", null, null, "A new hub", null)))
+                .isInstanceOf(ConflictException.class);
+    }
+
+    @Test
+    void aConcurrentDuplicateInsertThatRacesPastThePreCheckStillFailsCleanly() {
+        // Two simultaneous creates both saw existsByNameIgnoreCase == false before either committed;
+        // the loser hits the DB-level uq_chapters_name constraint instead — must still surface as a
+        // clean ConflictException, not a raw DataIntegrityViolationException/500.
+        when(chapterRepository.existsByNameIgnoreCase("Nukkad Pune")).thenReturn(false);
+        when(chapterRepository.saveAndFlush(any()))
+                .thenThrow(new org.springframework.dao.DataIntegrityViolationException("uq_chapters_name"));
+
+        assertThatThrownBy(() -> service().createChapter("u1",
+                new CreateChapterRequest("Nukkad Pune", "Pune", "India", "A new hub", null)))
+                .isInstanceOf(ConflictException.class);
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
     void presidentCanUpdateTheirOwnChapter() {
         Chapter existing = chapter("c1", "u1");
         when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));

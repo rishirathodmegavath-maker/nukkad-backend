@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -16,7 +17,7 @@ import org.hibernate.annotations.UuidGenerator;
 import java.time.Instant;
 
 @Entity
-@Table(name = "chapters")
+@Table(name = "chapters", uniqueConstraints = @UniqueConstraint(name = "uq_chapters_name", columnNames = "name"))
 @Getter
 @Setter
 @NoArgsConstructor

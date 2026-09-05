@@ -20,6 +20,7 @@ import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.mapper.UserMapper;
 import com.nukkad.user.repository.UserRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -91,15 +92,27 @@ public class ChapterService {
 
     @Transactional
     public ChapterDto createChapter(String userId, CreateChapterRequest request) {
+        String name = request.name().trim();
+        if (chapterRepository.existsByNameIgnoreCase(name)) {
+            throw new ConflictException("A chapter with this name already exists");
+        }
+
         Chapter chapter = Chapter.builder()
-                .name(request.name().trim())
+                .name(name)
                 .city(request.city())
                 .country(request.country())
                 .description(request.description())
                 .coverImageUrl(request.coverImageUrl())
                 .presidentUserId(userId)
                 .build();
-        chapter = chapterRepository.saveAndFlush(chapter);
+        try {
+            chapter = chapterRepository.saveAndFlush(chapter);
+        } catch (DataIntegrityViolationException e) {
+            // Two concurrent requests both passed the existsByNameIgnoreCase check above before
+            // either committed; the loser hits the DB-level uq_chapters_name constraint (added in
+            // V49) as the final backstop — same idiom as UserController's follow-toggle race.
+            throw new ConflictException("A chapter with this name already exists");
+        }
 
         User user = userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         user.getSecurityRoles().add(SecurityRole.CHAPTER_PRESIDENT);

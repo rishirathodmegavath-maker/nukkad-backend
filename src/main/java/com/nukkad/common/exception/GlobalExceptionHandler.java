@@ -4,6 +4,7 @@ import com.nukkad.common.response.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.util.stream.Collectors;
 
@@ -21,6 +23,19 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @Value("${spring.servlet.multipart.max-file-size}")
+    private String maxUploadSize;
+
+    // Without this, an oversized upload on any endpoint (avatar, cover, feed attachment, resource
+    // file...) fell through to the generic 500 handler below — a completely predictable client
+    // mistake surfacing as "An unexpected error occurred" instead of a clear, actionable message.
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse.Error> handleUploadTooLarge(MaxUploadSizeExceededException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.Error.of("File is too large. Maximum allowed size is " + maxUploadSize + ".",
+                        "FILE_TOO_LARGE", request.getRequestURI()));
+    }
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiResponse.Error> handleApiException(ApiException ex, HttpServletRequest request) {
