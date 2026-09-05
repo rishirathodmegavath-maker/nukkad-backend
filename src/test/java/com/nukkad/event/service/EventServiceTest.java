@@ -284,4 +284,24 @@ class EventServiceTest {
     private void verify0Saves() {
         org.mockito.Mockito.verify(eventRepository, org.mockito.Mockito.never()).saveAndFlush(any());
     }
+
+    // ---- attendees: privacy ----
+
+    @Test
+    void listingAttendeesPassesTheRealViewerIdThroughToUserServiceRatherThanBypassingPrivacyWithNull() {
+        // Regression test: this endpoint used to hardcode a null viewer id, which skips
+        // UserService's whole profile-visibility check and always returns the unrestricted DTO —
+        // any authenticated caller could read a CONNECTIONS-restricted attendee's full profile
+        // (including email, before that was separately fixed) just by looking up an event they
+        // can see. The fix threads the real authenticated viewer id through instead.
+        Event openEvent = event("e1", "c1", "president1", null);
+        EventAttendee attendee = EventAttendee.builder().id("a1").eventId("e1").userId("attendee1").build();
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(openEvent));
+        when(attendeeRepository.findByEventIdOrderByRegisteredAtAsc("e1")).thenReturn(java.util.List.of(attendee));
+
+        service().getAttendees("e1", "viewer1");
+
+        org.mockito.Mockito.verify(userService).getUser("attendee1", "viewer1");
+        org.mockito.Mockito.verify(userService, org.mockito.Mockito.never()).getUser("attendee1", null);
+    }
 }

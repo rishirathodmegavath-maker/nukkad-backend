@@ -54,6 +54,10 @@ spring:
 
 server:
   port: ${SERVER_PORT:8082}
+  # Railway terminates TLS at its edge and forwards plain HTTP internally, setting X-Forwarded-*
+  # headers. Without this, request.isSecure() always reports false behind that proxy, which
+  # silently suppresses Spring Security's HSTS header (its writer only fires on secure requests).
+  forward-headers-strategy: framework
   error:
     include-message: always
     include-binding-errors: never
@@ -98,6 +102,13 @@ logging:
     org.hibernate.SQL: WARN
 
 management:
+  # Explicit rather than relying on Spring Boot's implicit default (also "health" only), so this
+  # stays correct even if that default ever changes. Everything else (env, beans, mappings,
+  # configprops, heapdump, threaddump, ...) stays unexposed — Railway only needs /actuator/health.
+  endpoints:
+    web:
+      exposure:
+        include: health
   health:
     mail:
       # Email sending is already best-effort (EmailService swallows send failures rather than

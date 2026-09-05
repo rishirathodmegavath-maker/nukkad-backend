@@ -192,6 +192,22 @@ class GroupConversationServiceTest {
     }
 
     @Test
+    void addingMembersRequiresEachOneToBeAnAcceptedConnectionOfTheAdmin() {
+        // Regression test: addMembers used to skip the connection check that createGroup already
+        // enforced, letting a group admin add an arbitrary stranger's user id into an existing
+        // group with no relationship check at all.
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group()));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice"))
+                .thenReturn(Optional.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        when(connectionRepository.existsAcceptedBetween("alice", "mallory")).thenReturn(false);
+
+        assertThatThrownBy(() -> service().addMembers("alice", "conv1", List.of("mallory")))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(participantRepository, never()).save(any());
+    }
+
+    @Test
     void theLastAdminCannotDemoteThemselvesToMember() {
         when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group()));
         when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice"))

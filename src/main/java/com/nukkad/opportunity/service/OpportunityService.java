@@ -135,6 +135,11 @@ public class OpportunityService {
         if (!startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus(userId, StartupTeamMember.Status.ACTIVE)) {
             throw new ForbiddenException("Only a founder of a startup on Nukkad can post an opportunity");
         }
+        if (request.startupId() != null
+                && !startupTeamMemberRepository.existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(
+                        request.startupId(), userId, StartupTeamMember.Status.ACTIVE)) {
+            throw new ForbiddenException("You can only attribute an opportunity to a startup you founded");
+        }
 
         Opportunity opportunity = Opportunity.builder()
                 .title(request.title().trim())
@@ -162,7 +167,13 @@ public class OpportunityService {
 
         if (request.title() != null) opportunity.setTitle(request.title());
         if (request.type() != null) opportunity.setType(OpportunityType.fromLabel(request.type()));
-        if (request.startupId() != null) opportunity.setStartupId(request.startupId());
+        if (request.startupId() != null) {
+            if (!startupTeamMemberRepository.existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(
+                    request.startupId(), userId, StartupTeamMember.Status.ACTIVE)) {
+                throw new ForbiddenException("You can only attribute an opportunity to a startup you founded");
+            }
+            opportunity.setStartupId(request.startupId());
+        }
         if (request.organizationName() != null) opportunity.setOrganizationName(request.organizationName());
         if (request.location() != null) opportunity.setLocation(request.location());
         if (request.remote() != null) opportunity.setRemote(request.remote());

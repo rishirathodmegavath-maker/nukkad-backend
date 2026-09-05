@@ -161,7 +161,7 @@ public class UserService {
                 ? userRecommendationService.listPublic(user.getId()) : List.of();
         boolean socialLinksVisible = isSelf || profilePrivacyService.isVisible(user.getId(), viewerId, ProfileSection.SOCIAL_LINKS, connectionStatus);
 
-        return userMapper.toDto(user, connectionStatus, isFollowing, sections, completeness, endorsementSummary, recommendations, socialLinksVisible);
+        return userMapper.toDto(user, connectionStatus, isFollowing, sections, completeness, endorsementSummary, recommendations, socialLinksVisible, isSelf);
     }
 
     @Transactional(readOnly = true)
@@ -541,6 +541,14 @@ public class UserService {
     @Transactional(readOnly = true)
     public List<UserDto> listUserConnections(String viewerId, String targetUserId) {
         getEntityOrThrow(targetUserId);
+        if (viewerId != null && !viewerId.equals(targetUserId)) {
+            String a = viewerId.compareTo(targetUserId) < 0 ? viewerId : targetUserId;
+            String b = viewerId.compareTo(targetUserId) < 0 ? targetUserId : viewerId;
+            String connectionStatus = resolveConnectionStatus(connectionRepository.findByUserAIdAndUserBId(a, b), viewerId);
+            if (userPrivacySettingsService.isProfileRestricted(targetUserId, viewerId, "CONNECTED".equals(connectionStatus))) {
+                return List.of();
+            }
+        }
         List<Connection> connections = connectionRepository.findAcceptedConnections(targetUserId);
         if (connections.isEmpty()) {
             return List.of();

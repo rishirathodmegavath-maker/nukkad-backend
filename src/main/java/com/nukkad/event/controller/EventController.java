@@ -54,8 +54,8 @@ public class EventController {
     }
 
     @GetMapping("/{id}/attendees")
-    public ApiResponse<List<UserDto>> attendees(@PathVariable String id) {
-        return ApiResponse.ok(eventService.getAttendees(id));
+    public ApiResponse<List<UserDto>> attendees(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(eventService.getAttendees(id, principal.id()));
     }
 
     @PostMapping

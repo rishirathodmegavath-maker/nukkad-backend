@@ -27,6 +27,7 @@ public interface StartupTeamMemberRepository extends JpaRepository<StartupTeamMe
     boolean existsByStartupIdAndUserId(String startupId, String userId);
     List<StartupTeamMember> findByStartupIdAndIsFounderTrue(String startupId);
     boolean existsByUserIdAndIsFounderTrueAndStatus(String userId, StartupTeamMember.Status status);
+    boolean existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(String startupId, String userId, StartupTeamMember.Status status);
     List<StartupTeamMember> findByUserIdAndIsFounderTrueAndStatus(String userId, StartupTeamMember.Status status);
 
     @Query("select case when count(m1) > 0 then true else false end from StartupTeamMember m1, StartupTeamMember m2 "

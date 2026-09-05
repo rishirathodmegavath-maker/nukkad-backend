@@ -83,10 +83,10 @@ public class EventService {
     }
 
     @Transactional(readOnly = true)
-    public List<UserDto> getAttendees(String eventId) {
+    public List<UserDto> getAttendees(String eventId, String viewerId) {
         getEntityOrThrow(eventId);
         return attendeeRepository.findByEventIdOrderByRegisteredAtAsc(eventId).stream()
-                .map(a -> userService.getUser(a.getUserId(), null))
+                .map(a -> userService.getUser(a.getUserId(), viewerId))
                 .toList();
     }
 

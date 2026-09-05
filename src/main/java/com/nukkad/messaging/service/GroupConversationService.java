@@ -109,6 +109,9 @@ public class GroupConversationService {
         Conversation conversation = requireGroupAdmin(viewerId, conversationId);
         for (String memberId : memberIds) {
             if (memberId.equals(viewerId)) continue;
+            if (!connectionRepository.existsAcceptedBetween(viewerId, memberId)) {
+                throw new ForbiddenException("You can only add your connections to a group");
+            }
             var existing = participantRepository.findByConversationIdAndUserId(conversationId, memberId);
             if (existing.isPresent()) {
                 ConversationParticipant participant = existing.get();

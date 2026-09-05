@@ -449,6 +449,25 @@ class OpportunityServiceTest {
         verify(opportunityRepository).saveAndFlush(any(Opportunity.class));
     }
 
+    @Test
+    void founderCannotAttributeAnOpportunityToAStartupTheyDidNotFound() {
+        // Regression test: a founder of Startup A could previously set startupId to Startup B's
+        // id with no check that they actually founded B.
+        PostOpportunityRequest requestForSomeoneElsesStartup = new PostOpportunityRequest(
+                "AI/ML Intern", "Internship", "startupB", "ABC Technologies", "Bengaluru", true,
+                "Build ML pipelines", List.of("Python"), null);
+        when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("founder1", StartupTeamMember.Status.ACTIVE))
+                .thenReturn(true);
+        when(userRepository.findById("founder1")).thenReturn(Optional.of(user("founder1", "Rishi")));
+        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(
+                "startupB", "founder1", StartupTeamMember.Status.ACTIVE)).thenReturn(false);
+
+        assertThatThrownBy(() -> service().postOpportunity("founder1", requestForSomeoneElsesStartup))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
+    }
+
     // ---- 14. Closed opportunities reject new applications and interest ----
 
     @Test

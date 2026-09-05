@@ -35,21 +35,32 @@ public class UserMapper {
 
     private static final long ONLINE_WINDOW_MINUTES = 15;
 
+    /** Self/account-context only (e.g. the login/register response) — includes email. Building
+     *  another user's DTO must go through {@link #toPublicDto} or the list-view mapper instead,
+     *  neither of which ever reveals email. */
     public UserDto toDto(User user) {
-        return toDto(user, null, null);
+        return toDto(user, null, null, ProfileSections.empty(), null, List.of(), List.of(), true, true);
     }
 
-    /** List-view mapper: cheap fields only (no per-row sub-entity queries, no completeness score, no endorsements/recommendations). */
+    /** Another user's identity with no viewer/connection context (e.g. a chapter president adding
+     *  or removing a member) — never includes their email. */
+    public UserDto toPublicDto(User user) {
+        return toDto(user, null, null, ProfileSections.empty(), null, List.of(), List.of(), true, false);
+    }
+
+    /** List-view mapper: cheap fields only (no per-row sub-entity queries, no completeness score,
+     *  no endorsements/recommendations). Always for browsing other users — never includes email. */
     public UserDto toDto(User user, String connectionStatus, Boolean isFollowing) {
-        return toDto(user, connectionStatus, isFollowing, ProfileSections.empty(), null, List.of(), List.of(), true);
+        return toDto(user, connectionStatus, isFollowing, ProfileSections.empty(), null, List.of(), List.of(), true, false);
     }
 
     /** Single-profile mapper: carries the full portfolio, completeness score, endorsement summary, public recommendations,
-     *  and whether social links should be shown (privacy-gated by the caller — this class stays privacy-agnostic otherwise,
-     *  since section-level hide/show is done by UserService substituting empty lists before calling this). */
+     *  whether social links should be shown, and whether email should be shown (both privacy-gated by the caller — this
+     *  class stays privacy-agnostic otherwise, since section-level hide/show is done by UserService substituting empty
+     *  lists before calling this). */
     public UserDto toDto(User user, String connectionStatus, Boolean isFollowing, ProfileSections sections,
                           Integer profileCompleteness, List<EndorsementSummaryDto> endorsementSummary,
-                          List<RecommendationDto> recommendations, boolean socialLinksVisible) {
+                          List<RecommendationDto> recommendations, boolean socialLinksVisible, boolean includeEmail) {
         return build(user, connectionStatus, isFollowing,
                 sections.experiences().stream().map(this::toDto).toList(),
                 sections.education().stream().map(this::toDto).toList(),
@@ -57,7 +68,7 @@ public class UserMapper {
                 sections.projects().stream().map(this::toDto).toList(),
                 sections.certifications().stream().map(this::toDto).toList(),
                 sections.publications().stream().map(this::toDto).toList(),
-                profileCompleteness, endorsementSummary, recommendations, socialLinksVisible);
+                profileCompleteness, endorsementSummary, recommendations, socialLinksVisible, includeEmail);
     }
 
     private UserDto build(User user, String connectionStatus, Boolean isFollowing,
@@ -65,7 +76,7 @@ public class UserMapper {
                            List<AchievementDto> achievements, List<ProjectDto> projects,
                            List<CertificationDto> certifications, List<PublicationDto> publications,
                            Integer profileCompleteness, List<EndorsementSummaryDto> endorsementSummary,
-                           List<RecommendationDto> recommendations, boolean socialLinksVisible) {
+                           List<RecommendationDto> recommendations, boolean socialLinksVisible, boolean includeEmail) {
         boolean online = user.getLastActiveAt() != null
                 && user.getLastActiveAt().isAfter(Instant.now().minus(ONLINE_WINDOW_MINUTES, ChronoUnit.MINUTES));
 
@@ -75,7 +86,7 @@ public class UserMapper {
         return new UserDto(
                 user.getId(),
                 user.getName(),
-                user.getEmail(),
+                includeEmail ? user.getEmail() : null,
                 user.getAvatarUrl(),
                 user.getCoverUrl(),
                 user.getHeadline(),

@@ -172,7 +172,7 @@ public class ChapterService {
         User user = userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + targetUserId));
         user.setChapterId(chapterId);
-        return userMapper.toDto(userRepository.save(user));
+        return userMapper.toPublicDto(userRepository.save(user));
     }
 
     @Transactional
@@ -190,7 +190,7 @@ public class ChapterService {
             user.setChapterId(null);
             user = userRepository.save(user);
         }
-        return userMapper.toDto(user);
+        return userMapper.toPublicDto(user);
     }
 
     @Transactional
