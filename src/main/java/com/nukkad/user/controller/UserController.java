@@ -406,6 +406,16 @@ public class UserController {
         return ApiResponse.ok(userService.listUserConnections(principal.id(), id));
     }
 
+    @GetMapping("/me/connections/incoming")
+    public ApiResponse<List<UserDto>> incomingConnectionRequests(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(userService.listIncomingRequests(principal.id()));
+    }
+
+    @GetMapping("/me/connections/sent")
+    public ApiResponse<List<UserDto>> sentConnectionRequests(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(userService.listSentRequests(principal.id()));
+    }
+
     // ---- Experience ----
 
     @GetMapping("/me/experiences")

@@ -26,6 +26,16 @@ public interface ConnectionRepository extends JpaRepository<Connection, String> 
     @Query("select c from Connection c where c.userAId = :userId or c.userBId = :userId")
     List<Connection> findAllInvolving(@Param("userId") String userId);
 
+    /** Pending requests where {@code userId} is the recipient (someone else asked to connect). */
+    @Query("select c from Connection c where (c.userAId = :userId or c.userBId = :userId) "
+            + "and c.status = com.nukkad.user.entity.Connection.Status.PENDING and c.requestedBy <> :userId")
+    List<Connection> findPendingIncoming(@Param("userId") String userId);
+
+    /** Pending requests {@code userId} sent and are still awaiting a response. */
+    @Query("select c from Connection c where c.status = com.nukkad.user.entity.Connection.Status.PENDING "
+            + "and c.requestedBy = :userId")
+    List<Connection> findPendingOutgoing(@Param("userId") String userId);
+
     @Query("select case when count(c) > 0 then true else false end from Connection c "
             + "where ((c.userAId = :a and c.userBId = :b) or (c.userAId = :b and c.userBId = :a)) "
             + "and c.status = com.nukkad.user.entity.Connection.Status.ACCEPTED")

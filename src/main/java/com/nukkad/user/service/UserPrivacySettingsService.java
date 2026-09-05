@@ -65,4 +65,16 @@ public class UserPrivacySettingsService {
         ProfileVisibility visibility = getSettings(ownerId).getProfileVisibility();
         return visibility == ProfileVisibility.CONNECTIONS && !isConnected;
     }
+
+    /** Batch lookup for list/search results — one query instead of one per row. Users with no
+     *  saved settings row default to {@link ProfileVisibility#EVERYONE}, matching {@link #getSettings}. */
+    @Transactional(readOnly = true)
+    public java.util.Map<String, ProfileVisibility> bulkProfileVisibility(java.util.Collection<String> userIds) {
+        if (userIds == null || userIds.isEmpty()) return java.util.Map.of();
+        java.util.Map<String, ProfileVisibility> result = new java.util.HashMap<>();
+        for (var settings : repository.findAllById(userIds)) {
+            result.put(settings.getUserId(), settings.getProfileVisibility());
+        }
+        return result;
+    }
 }

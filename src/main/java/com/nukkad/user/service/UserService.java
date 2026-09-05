@@ -27,6 +27,7 @@ import com.nukkad.user.entity.Connection;
 import com.nukkad.user.entity.LookingFor;
 import com.nukkad.user.entity.OpenTo;
 import com.nukkad.user.entity.ProfileSection;
+import com.nukkad.user.entity.ProfileVisibility;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.entity.UserAchievement;
 import com.nukkad.user.entity.MutedAccount;
@@ -296,6 +297,10 @@ public class UserService {
         return "NONE";
     }
 
+    /** Hard ceiling on page size regardless of what a caller requests — mirrors the cap already
+     *  applied to {@link #listSuggested}, but this endpoint had none until now. */
+    private static final int MAX_PAGE_SIZE = 50;
+
     @Transactional(readOnly = true)
     public Page<UserDto> listUsers(String viewerId, String q, String skill, String collegeOrCompany,
                                     String location, String role, String lookingFor, Integer minExperience,
@@ -312,10 +317,24 @@ public class UserService {
                 UserSpecifications.minExperience(minExperience),
                 UserSpecifications.chapterId(chapterId)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE),
+                Sort.by(Sort.Direction.DESC, "createdAt"));
         Page<User> results = userRepository.findAll(spec, pageable);
         var statusMap = bulkResolveConnectionStatuses(viewerId, results.getContent());
-        return results.map(u -> userMapper.toDto(u, statusMap.getOrDefault(u.getId(), "NONE"), null));
+        var visibilityMap = userPrivacySettingsService.bulkProfileVisibility(
+                results.getContent().stream().map(User::getId).toList());
+        return results.map(u -> toListDto(u, statusMap.getOrDefault(u.getId(), "NONE"), visibilityMap));
+    }
+
+    /** List-row mapper that additionally hides extended profile fields when the row's owner has
+     *  restricted their profile to connections-only and the viewer isn't (yet) connected to them —
+     *  the same rule {@link #getUser} already applies to a single profile, now applied to list/search
+     *  results too so browsing can't be used to read a restricted profile's fields. */
+    private UserDto toListDto(User u, String connectionStatus, java.util.Map<String, ProfileVisibility> visibilityMap) {
+        boolean connected = "CONNECTED".equals(connectionStatus);
+        ProfileVisibility visibility = visibilityMap.getOrDefault(u.getId(), ProfileVisibility.EVERYONE);
+        boolean restricted = visibility == ProfileVisibility.CONNECTIONS && !connected;
+        return restricted ? userMapper.toRestrictedDto(u, connectionStatus, null) : userMapper.toDto(u, connectionStatus, null);
     }
 
     /** Batch connection-status lookup for list views (avoids N+1 queries). */
@@ -354,7 +373,8 @@ public class UserService {
         }
 
         var statusMap = bulkResolveConnectionStatuses(viewerId, candidates);
-        return candidates.stream().map(u -> userMapper.toDto(u, statusMap.getOrDefault(u.getId(), "NONE"), null)).toList();
+        var visibilityMap = userPrivacySettingsService.bulkProfileVisibility(candidates.stream().map(User::getId).toList());
+        return candidates.stream().map(u -> toListDto(u, statusMap.getOrDefault(u.getId(), "NONE"), visibilityMap)).toList();
     }
 
     public record ConnectResult(String status, int connectionsCount) {}
@@ -558,8 +578,35 @@ public class UserService {
                 .toList();
         List<User> partnerUsers = userRepository.findAllById(partnerIds);
         var statusMap = bulkResolveConnectionStatuses(viewerId, partnerUsers);
+        var visibilityMap = userPrivacySettingsService.bulkProfileVisibility(partnerIds);
         return partnerUsers.stream()
-                .map(u -> userMapper.toDto(u, statusMap.getOrDefault(u.getId(), "NONE"), null))
+                .map(u -> toListDto(u, statusMap.getOrDefault(u.getId(), "NONE"), visibilityMap))
+                .toList();
+    }
+
+    /** Incoming connection requests: people who asked to connect with {@code viewerId} and are
+     *  still waiting on a response. */
+    @Transactional(readOnly = true)
+    public List<UserDto> listIncomingRequests(String viewerId) {
+        return mapConnectionPartners(viewerId, connectionRepository.findPendingIncoming(viewerId));
+    }
+
+    /** Sent connection requests: people {@code viewerId} asked to connect with, still pending. */
+    @Transactional(readOnly = true)
+    public List<UserDto> listSentRequests(String viewerId) {
+        return mapConnectionPartners(viewerId, connectionRepository.findPendingOutgoing(viewerId));
+    }
+
+    private List<UserDto> mapConnectionPartners(String viewerId, List<Connection> connections) {
+        if (connections.isEmpty()) return List.of();
+        List<String> partnerIds = connections.stream()
+                .map(c -> c.getUserAId().equals(viewerId) ? c.getUserBId() : c.getUserAId())
+                .toList();
+        List<User> partnerUsers = userRepository.findAllById(partnerIds);
+        var statusMap = bulkResolveConnectionStatuses(viewerId, partnerUsers);
+        var visibilityMap = userPrivacySettingsService.bulkProfileVisibility(partnerIds);
+        return partnerUsers.stream()
+                .map(u -> toListDto(u, statusMap.getOrDefault(u.getId(), "NONE"), visibilityMap))
                 .toList();
     }
 
