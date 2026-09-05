@@ -6,6 +6,7 @@ import com.nukkad.chapter.dto.UpdateChapterRequest;
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
@@ -190,6 +191,37 @@ public class ChapterService {
             user = userRepository.save(user);
         }
         return userMapper.toDto(user);
+    }
+
+    @Transactional
+    public void deleteChapter(String userId, String id) {
+        Chapter chapter = getEntityOrThrow(id);
+        if (!userId.equals(chapter.getPresidentUserId())) {
+            throw new ForbiddenException("Only this chapter's president can delete it");
+        }
+
+        // The president isn't necessarily counted as a member (chapterId is only set once they
+        // explicitly join their own chapter), so they're excluded here and handled separately below.
+        long memberCount = userRepository.countByChapterIdAndIdNot(id, userId);
+        long ideaCount = ideaRepository.countByChapterId(id);
+        long startupCount = startupRepository.countByChapterId(id);
+        long opportunityCount = opportunityRepository.countByChapterId(id);
+        long eventCount = eventRepository.countByChapterId(id);
+        long resourceCount = resourceRepository.countByChapterId(id);
+        if (memberCount > 0 || ideaCount > 0 || startupCount > 0 || opportunityCount > 0 || eventCount > 0 || resourceCount > 0) {
+            throw new ConflictException(
+                    "This chapter still has members or content attached — remove them before deleting the chapter");
+        }
+
+        // If the president had joined their own chapter, clear that reference first: users.chapter_id
+        // has no ON DELETE CASCADE, so a dangling reference would fail the delete below.
+        User president = userRepository.findById(userId).orElse(null);
+        if (president != null && id.equals(president.getChapterId())) {
+            president.setChapterId(null);
+            userRepository.save(president);
+        }
+
+        chapterRepository.delete(chapter);
     }
 
     private ChapterDto toDtoWithCounts(Chapter chapter) {

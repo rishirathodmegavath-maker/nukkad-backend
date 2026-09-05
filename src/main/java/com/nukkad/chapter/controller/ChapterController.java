@@ -62,6 +62,12 @@ public class ChapterController {
         return ApiResponse.ok(chapterService.updateChapter(principal.id(), id, request));
     }
 
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> delete(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        chapterService.deleteChapter(principal.id(), id);
+        return ApiResponse.ok(null);
+    }
+
     @PostMapping("/{id}/cover")
     public ApiResponse<ChapterDto> uploadCover(@AuthenticationPrincipal AuthenticatedUser principal,
                                                 @PathVariable String id,

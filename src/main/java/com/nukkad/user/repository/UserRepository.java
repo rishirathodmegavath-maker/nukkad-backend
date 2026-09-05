@@ -17,6 +17,7 @@ public interface UserRepository extends JpaRepository<User, String>, JpaSpecific
     boolean existsByEmail(String email);
     Optional<User> findByGoogleSubject(String googleSubject);
     long countByChapterId(String chapterId);
+    long countByChapterIdAndIdNot(String chapterId, String excludedUserId);
 
     /**
      * Login writes this on every request, including concurrent logins for the same account

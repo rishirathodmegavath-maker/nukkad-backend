@@ -6,6 +6,7 @@ import com.nukkad.chapter.dto.UpdateChapterRequest;
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.repository.EventRepository;
@@ -151,5 +152,43 @@ class ChapterServiceTest {
                 .isInstanceOf(ForbiddenException.class);
 
         verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void nonPresidentCannotDeleteAnotherChapter() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service().deleteChapter("u2", "c1"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(chapterRepository, never()).delete(any(Chapter.class));
+    }
+
+    @Test
+    void presidentCannotDeleteAChapterThatStillHasContentOrOtherMembersAttached() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(ideaRepository.countByChapterId("c1")).thenReturn(1L);
+
+        assertThatThrownBy(() -> service().deleteChapter("u1", "c1"))
+                .isInstanceOf(ConflictException.class);
+
+        verify(chapterRepository, never()).delete(any(Chapter.class));
+    }
+
+    @Test
+    void presidentCanDeleteAnEmptyChapterAndItsOwnDanglingMembershipIsClearedFirst() {
+        Chapter existing = chapter("c1", "u1");
+        User president = user("u1");
+        president.setChapterId("c1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(userRepository.findById("u1")).thenReturn(Optional.of(president));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().deleteChapter("u1", "c1");
+
+        assertThat(president.getChapterId()).isNull();
+        verify(chapterRepository).delete(existing);
     }
 }
