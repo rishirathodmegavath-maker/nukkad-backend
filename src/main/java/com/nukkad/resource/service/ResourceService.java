@@ -89,7 +89,7 @@ public class ResourceService {
             FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "resources");
             finalUrl = media.url();
         } else {
-            finalUrl = url.trim();
+            finalUrl = normalizeUrl(url);
         }
 
         String resolvedChapterId = null;
@@ -129,7 +129,7 @@ public class ResourceService {
         }
         if (request.url() != null) {
             if (request.url().isBlank()) throw new BadRequestException("URL cannot be blank");
-            resource.setUrl(request.url().trim());
+            resource.setUrl(normalizeUrl(request.url()));
         }
         if (request.chapterId() != null) {
             if (request.chapterId().isBlank()) {
@@ -162,6 +162,21 @@ public class ResourceService {
         }
         resourceSaveRepository.save(ResourceSave.builder().resourceId(resourceId).userId(userId).build());
         return true;
+    }
+
+    /**
+     * A resource's URL is either an internal path (starts with "/") or an external destination.
+     * Non-technical uploaders routinely omit the scheme (e.g. "notion.so/doc"); left as-is, that
+     * string is later rendered as {@code <a href="notion.so/doc">}, which browsers resolve
+     * relative to the current page rather than as an external URL — normalizing here (instead of
+     * only on the frontend) means the fix applies no matter what client reads this resource.
+     */
+    private String normalizeUrl(String rawUrl) {
+        String trimmed = rawUrl.trim();
+        if (trimmed.startsWith("/") || trimmed.matches("(?i)^https?://.*")) {
+            return trimmed;
+        }
+        return "https://" + trimmed;
     }
 
     private void requireUploader(String userId, Resource resource) {

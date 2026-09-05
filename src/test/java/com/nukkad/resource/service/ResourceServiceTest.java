@@ -94,6 +94,38 @@ class ResourceServiceTest {
     }
 
     @Test
+    void creatingWithASchemelessUrlNormalizesItToHttps() {
+        when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ResourceDto dto = service().createResource("u1", "Notion Doc", "desc", "Document",
+                "notion.so/doc/abc", null, null, Set.of());
+
+        assertThat(dto.url()).isEqualTo("https://notion.so/doc/abc");
+    }
+
+    @Test
+    void creatingWithAnAlreadyAbsoluteUrlIsLeftUnchanged() {
+        when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ResourceDto dto = service().createResource("u1", "Figma File", "desc", "Document",
+                "http://figma.com/file/x", null, null, Set.of());
+
+        assertThat(dto.url()).isEqualTo("http://figma.com/file/x");
+    }
+
+    @Test
+    void updatingWithASchemelessUrlNormalizesItToHttps() {
+        Resource res = resource("r1", "u1", null);
+        when(resourceRepository.findById("r1")).thenReturn(Optional.of(res));
+        when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ResourceDto dto = service().updateResource("u1", "r1",
+                new UpdateResourceRequest(null, null, null, "example.com/updated", null, null));
+
+        assertThat(dto.url()).isEqualTo("https://example.com/updated");
+    }
+
+    @Test
     void unknownResourceTypeIsRejected() {
         assertThatThrownBy(() -> service().createResource("u1", "Title", "desc", "NotAType",
                 "https://example.com", null, null, Set.of()))
