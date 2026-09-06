@@ -22,14 +22,17 @@ import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -64,6 +67,57 @@ public class FeedService {
         Set<String> savedIds = postIds.isEmpty() ? Set.of() : postSaveRepository.findSavedPostIds(viewerId, postIds);
 
         return posts.map(p -> toDto(p, likedIds.contains(p.getId()), savedIds.contains(p.getId())));
+    }
+
+    public enum SavedPostsSort { NEWEST_SAVED, OLDEST_SAVED, NEWEST_POST, OLDEST_POST }
+
+    /**
+     * Dedicated saved-posts query — unlike {@link #list}, this never depends on where a post falls
+     * in the main feed's own ordering, so a post saved long ago (and long since scrolled past in the
+     * feed) is always reachable here. Exactly 3 queries regardless of page size: the paginated
+     * PostSave page, a batch fetch of the matching Post rows, and a batch fetch of like status —
+     * no N+1. isSaved is always true by construction (every row here is one of the viewer's own
+     * saves), so unlike {@link #list} there's no need to re-check it against a fetched id set.
+     */
+    @Transactional(readOnly = true)
+    public Page<PostDto> listSaved(String viewerId, String type, String sort, int page, int size) {
+        Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
+        Pageable pageable = PageRequest.of(page, size);
+
+        Page<PostSave> saves = switch (parseSavedSort(sort)) {
+            case OLDEST_SAVED -> postSaveRepository.findByUserOrderBySavedAtAsc(viewerId, typeFilter, pageable);
+            case NEWEST_POST -> postSaveRepository.findByUserOrderByPostCreatedAtDesc(viewerId, typeFilter, pageable);
+            case OLDEST_POST -> postSaveRepository.findByUserOrderByPostCreatedAtAsc(viewerId, typeFilter, pageable);
+            case NEWEST_SAVED -> postSaveRepository.findByUserOrderBySavedAtDesc(viewerId, typeFilter, pageable);
+        };
+
+        List<String> postIds = saves.getContent().stream().map(PostSave::getPostId).toList();
+        Map<String, Instant> savedAtByPostId = saves.getContent().stream()
+                .collect(Collectors.toMap(PostSave::getPostId, PostSave::getCreatedAt, (a, b) -> a));
+        Map<String, Post> postsById = postIds.isEmpty() ? Map.of()
+                : postRepository.findAllById(postIds).stream().collect(Collectors.toMap(Post::getId, p -> p));
+        Set<String> likedIds = postIds.isEmpty() ? Set.of() : postLikeRepository.findLikedPostIds(viewerId, postIds);
+
+        // The FK cascade on post_saves guarantees a save row can't outlive its post, but this is
+        // still a second, separate query a moment later — never trust that gap blindly.
+        List<PostDto> content = postIds.stream()
+                .map(postsById::get)
+                .filter(Objects::nonNull)
+                .map(p -> toDto(p, likedIds.contains(p.getId()), true, savedAtByPostId.get(p.getId())))
+                .toList();
+
+        return new PageImpl<>(content, pageable, saves.getTotalElements());
+    }
+
+    private SavedPostsSort parseSavedSort(String sort) {
+        if (sort == null || sort.isBlank()) return SavedPostsSort.NEWEST_SAVED;
+        return switch (sort) {
+            case "newestSaved" -> SavedPostsSort.NEWEST_SAVED;
+            case "oldestSaved" -> SavedPostsSort.OLDEST_SAVED;
+            case "newestPost" -> SavedPostsSort.NEWEST_POST;
+            case "oldestPost" -> SavedPostsSort.OLDEST_POST;
+            default -> throw new BadRequestException("Invalid sort: " + sort);
+        };
     }
 
     @Transactional
@@ -320,12 +374,16 @@ public class FeedService {
     }
 
     private PostDto toDto(Post post, boolean isLiked, boolean isSaved) {
+        return toDto(post, isLiked, isSaved, null);
+    }
+
+    private PostDto toDto(Post post, boolean isLiked, boolean isSaved, Instant savedAt) {
         List<AttachmentDto> attachments = post.getAttachments().stream()
                 .map(a -> new AttachmentDto(a.getId(), a.getUrl(), a.getKind().name(), a.getFileName()))
                 .toList();
         return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
-                post.getCreatedAt(), attachments);
+                post.getCreatedAt(), attachments, savedAt);
     }
 
     private CommentDto toCommentDto(PostComment comment, int replyCount) {

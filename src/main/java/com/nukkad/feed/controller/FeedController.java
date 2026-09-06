@@ -48,6 +48,18 @@ public class FeedController {
         return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, page, size)));
     }
 
+    /** Dedicated saved-posts query — see {@link FeedService#listSaved}. Registered before the more
+     * general routes purely for readability; Spring already prefers this literal path over
+     * {@code /{id}} regardless of declaration order. */
+    @GetMapping("/saved")
+    public ApiResponse<PageResponse<PostDto>> listSaved(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                          @RequestParam(required = false) String type,
+                                                          @RequestParam(defaultValue = "newestSaved") String sort,
+                                                          @RequestParam(defaultValue = "0") int page,
+                                                          @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(PageResponse.from(feedService.listSaved(principal.id(), type, sort, page, size)));
+    }
+
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<PostDto> create(@AuthenticationPrincipal AuthenticatedUser principal, @Valid @RequestBody CreatePostRequest request) {
