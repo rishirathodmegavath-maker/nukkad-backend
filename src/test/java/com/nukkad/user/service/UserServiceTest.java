@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -285,6 +286,37 @@ class UserServiceTest {
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         verify(userRepository).findAll(any(Specification.class), pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageNumber()).isZero();
+    }
+
+    // ---- listUsers: a chapterId filter is the chapter Members tab, not the People directory ----
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void chapterMembersListDoesNotExcludeTheViewerFromTheirOwnChapter() {
+        when(userBlockRepository.findBlockedEitherWayIds("president")).thenReturn(java.util.Set.of());
+        when(userRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().listUsers("president", null, null, null, null, null, null, null, "chapter-1", 0, 20);
+
+        ArgumentCaptor<Specification<User>> specCaptor = ArgumentCaptor.forClass(Specification.class);
+        verify(userRepository).findAll(specCaptor.capture(), any(Pageable.class));
+
+        jakarta.persistence.criteria.Root<User> root = mock(jakarta.persistence.criteria.Root.class);
+        jakarta.persistence.criteria.CriteriaQuery<?> query = mock(jakarta.persistence.criteria.CriteriaQuery.class);
+        jakarta.persistence.criteria.CriteriaBuilder cb = mock(jakarta.persistence.criteria.CriteriaBuilder.class);
+        jakarta.persistence.criteria.Path<Object> path = mock(jakarta.persistence.criteria.Path.class);
+        org.mockito.Mockito.lenient().when(root.<Object>get(anyString())).thenReturn(path);
+        org.mockito.Mockito.lenient().when(cb.equal(any(), any())).thenReturn(mock(jakarta.persistence.criteria.Predicate.class));
+        org.mockito.Mockito.lenient().when(cb.and(any(), any())).thenReturn(mock(jakarta.persistence.criteria.Predicate.class));
+        org.mockito.Mockito.lenient().when(cb.conjunction()).thenReturn(mock(jakarta.persistence.criteria.Predicate.class));
+
+        specCaptor.getValue().toPredicate(root, query, cb);
+
+        // The viewer (chapter president) must not be filtered out — otherwise a chapter whose only
+        // member is its own president renders an incorrect "no members joined" empty state.
+        verify(cb, never()).notEqual(any(), eq("president"));
+        verify(cb).equal(path, "chapter-1");
     }
 
     // ---- Incoming/sent request lists: scoped to the authenticated viewer only ----

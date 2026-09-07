@@ -312,8 +312,12 @@ public class UserService {
     public Page<UserDto> listUsers(String viewerId, String q, String skill, String collegeOrCompany,
                                     String location, String role, String lookingFor, Integer minExperience,
                                     String chapterId, int page, int size) {
+        // A chapterId filter means this is the chapter Members tab, not the general People directory —
+        // the viewer should see themselves listed there when they're a member (e.g. the sole
+        // president of a freshly-created chapter), instead of an incorrect "no members" empty state.
+        boolean chapterMembersView = chapterId != null && !chapterId.isBlank();
         Specification<User> spec = UserSpecifications.combine(
-                UserSpecifications.excludeId(viewerId),
+                chapterMembersView ? null : UserSpecifications.excludeId(viewerId),
                 UserSpecifications.excludeIds(userBlockRepository.findBlockedEitherWayIds(viewerId)),
                 UserSpecifications.search(q),
                 UserSpecifications.hasSkill(skill),
