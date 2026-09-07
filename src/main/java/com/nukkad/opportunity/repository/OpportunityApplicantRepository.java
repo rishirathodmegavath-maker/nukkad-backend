@@ -16,6 +16,7 @@ public interface OpportunityApplicantRepository extends JpaRepository<Opportunit
     Optional<OpportunityApplicant> findByOpportunityIdAndUserId(String opportunityId, String userId);
     List<OpportunityApplicant> findByUserId(String userId);
     long countByOpportunityId(String opportunityId);
+    long countByOpportunityIdAndStatusNotIn(String opportunityId, List<ApplicationStatus> excludedStatuses);
 
     Page<OpportunityApplicant> findByOpportunityIdOrderByCreatedAtDesc(String opportunityId, Pageable pageable);
     Page<OpportunityApplicant> findByOpportunityIdAndStatusOrderByCreatedAtDesc(String opportunityId, ApplicationStatus status, Pageable pageable);

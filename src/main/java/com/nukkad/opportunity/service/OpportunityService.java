@@ -104,7 +104,8 @@ public class OpportunityService {
         boolean hasApplied = existingApplication.isPresent();
         String applicationStatus = existingApplication.map(a -> a.getStatus().getLabel()).orElse(null);
         boolean hasExpressedInterest = interestRepository.existsByOpportunityIdAndUserId(opportunity.getId(), viewerId);
-        int applicantCount = (int) applicantRepository.countByOpportunityId(opportunity.getId());
+        int applicantCount = (int) applicantRepository.countByOpportunityIdAndStatusNotIn(
+                opportunity.getId(), List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED));
         int interestCount = (int) interestRepository.countByOpportunityId(opportunity.getId());
         return opportunityMapper.toDto(opportunity, hasApplied, hasExpressedInterest, applicationStatus, applicantCount, interestCount);
     }

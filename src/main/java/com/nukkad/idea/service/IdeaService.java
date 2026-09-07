@@ -107,7 +107,8 @@ public class IdeaService {
     }
 
     private IdeaDto toIdeaDto(Idea idea) {
-        return ideaMapper.toDto(idea, (int) ideaInterestRepository.countByIdeaId(idea.getId()));
+        return ideaMapper.toDto(idea, (int) ideaInterestRepository.countByIdeaIdAndStatusNotIn(
+                idea.getId(), List.of(IdeaInterestStatus.WITHDRAWN, IdeaInterestStatus.REJECTED)));
     }
 
     @Transactional(readOnly = true)

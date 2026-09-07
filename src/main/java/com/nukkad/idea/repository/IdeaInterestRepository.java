@@ -13,6 +13,7 @@ public interface IdeaInterestRepository extends JpaRepository<IdeaInterest, Stri
     Optional<IdeaInterest> findByIdeaIdAndUserId(String ideaId, String userId);
     List<IdeaInterest> findByIdeaId(String ideaId);
     long countByIdeaId(String ideaId);
+    long countByIdeaIdAndStatusNotIn(String ideaId, List<IdeaInterestStatus> excludedStatuses);
     void deleteByIdeaIdAndUserId(String ideaId, String userId);
 
     Page<IdeaInterest> findByIdeaIdOrderByCreatedAtDesc(String ideaId, Pageable pageable);

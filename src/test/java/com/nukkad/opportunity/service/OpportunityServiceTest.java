@@ -521,4 +521,23 @@ class OpportunityServiceTest {
 
         verify(opportunityRepository, never()).saveAndFlush(any());
     }
+
+    // ---- Applicant count reflects only live applications, not withdrawn/rejected ones ----
+
+    @Test
+    void applicantCountExcludesWithdrawnAndRejectedApplications() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(applicantRepository.findByOpportunityIdAndUserId("opp1", "viewer1")).thenReturn(Optional.empty());
+        when(interestRepository.existsByOpportunityIdAndUserId("opp1", "viewer1")).thenReturn(false);
+        when(applicantRepository.countByOpportunityIdAndStatusNotIn(
+                "opp1", List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED))).thenReturn(2L);
+        when(interestRepository.countByOpportunityId("opp1")).thenReturn(0L);
+
+        service().getOpportunity("opp1", "viewer1");
+
+        verify(applicantRepository).countByOpportunityIdAndStatusNotIn(
+                "opp1", List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED));
+        verify(applicantRepository, never()).countByOpportunityId("opp1");
+    }
 }

@@ -3,6 +3,7 @@ package com.nukkad.matching.service;
 import com.nukkad.idea.dto.IdeaDto;
 import com.nukkad.idea.entity.ContributionArea;
 import com.nukkad.idea.entity.Idea;
+import com.nukkad.idea.entity.IdeaInterestStatus;
 import com.nukkad.idea.mapper.IdeaMapper;
 import com.nukkad.idea.repository.IdeaInterestRepository;
 import com.nukkad.idea.repository.IdeaRepository;
@@ -13,6 +14,7 @@ import com.nukkad.matching.dto.OpportunityMatchDto;
 import com.nukkad.matching.text.CosineSimilarity;
 import com.nukkad.matching.text.TfIdfVectorizer;
 import com.nukkad.opportunity.dto.OpportunityDto;
+import com.nukkad.opportunity.entity.ApplicationStatus;
 import com.nukkad.opportunity.entity.Opportunity;
 import com.nukkad.opportunity.mapper.OpportunityMapper;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
@@ -219,7 +221,8 @@ public class ContentMatchingService {
     }
 
     private IdeaMatchDto toIdeaMatchDto(ScoredIdea scored) {
-        IdeaDto dto = ideaMapper.toDto(scored.idea(), (int) ideaInterestRepository.countByIdeaId(scored.idea().getId()));
+        IdeaDto dto = ideaMapper.toDto(scored.idea(), (int) ideaInterestRepository.countByIdeaIdAndStatusNotIn(
+                scored.idea().getId(), List.of(IdeaInterestStatus.WITHDRAWN, IdeaInterestStatus.REJECTED)));
         return new IdeaMatchDto(dto, round(scored.score()), RecommendationWeights.toMatchLabel(scored.score()), scored.reasons());
     }
 
@@ -229,7 +232,8 @@ public class ContentMatchingService {
         // candidates the viewer already applied to or expressed interest in are filtered out of the
         // ranking before this point.
         OpportunityDto dto = opportunityMapper.toDto(opp, false, false, null,
-                (int) opportunityApplicantRepository.countByOpportunityId(opp.getId()),
+                (int) opportunityApplicantRepository.countByOpportunityIdAndStatusNotIn(
+                        opp.getId(), List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED)),
                 (int) opportunityInterestRepository.countByOpportunityId(opp.getId()));
         return new OpportunityMatchDto(dto, round(scored.score()), RecommendationWeights.toMatchLabel(scored.score()), scored.reasons());
     }
