@@ -171,6 +171,13 @@ public class UserService {
     }
 
     @Transactional
+    public UserDto completeOnboarding(String userId) {
+        User user = getEntityOrThrow(userId);
+        user.setOnboardingCompleted(true);
+        return toFullDto(user, null, null, userId);
+    }
+
+    @Transactional
     public UserDto updateCurrentUser(String userId, UpdateUserRequest request) {
         User user = getEntityOrThrow(userId);
 

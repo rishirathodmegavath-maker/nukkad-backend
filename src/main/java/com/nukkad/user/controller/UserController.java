@@ -111,6 +111,11 @@ public class UserController {
         return ApiResponse.ok(userService.updateCurrentUser(principal.id(), request));
     }
 
+    @PostMapping("/me/onboarding/complete")
+    public ApiResponse<UserDto> completeOnboarding(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(userService.completeOnboarding(principal.id()));
+    }
+
     @PostMapping("/me/avatar")
     public ApiResponse<UserDto> uploadAvatar(@AuthenticationPrincipal AuthenticatedUser principal,
                                               @RequestParam("file") MultipartFile file) {

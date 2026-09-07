@@ -117,7 +117,8 @@ public class UserMapper {
                 endorsementSummary,
                 recommendations,
                 user.getSecurityRoles().stream().map(Enum::name).collect(Collectors.toSet()),
-                user.getGoogleSubject() != null
+                user.getGoogleSubject() != null,
+                user.isOnboardingCompleted()
         );
     }
 
@@ -135,7 +136,8 @@ public class UserMapper {
                 null, null, null, 0, java.util.Set.of(), java.util.Set.of(), java.util.Set.of(), Map.of(),
                 null, null, null, null, user.getConnectionsCount(), online, user.getCreatedAt(),
                 connectionStatus, isFollowing, List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
-                null, List.of(), List.of(), java.util.Set.of(), user.getGoogleSubject() != null
+                null, List.of(), List.of(), java.util.Set.of(), user.getGoogleSubject() != null,
+                user.isOnboardingCompleted()
         );
     }
 

@@ -52,6 +52,10 @@ public class User {
     @Builder.Default
     private boolean emailVerified = false;
 
+    @Column(name = "onboarding_completed", nullable = false)
+    @Builder.Default
+    private boolean onboardingCompleted = false;
+
     @Column(name = "google_subject", length = 255, unique = true)
     private String googleSubject;
 
