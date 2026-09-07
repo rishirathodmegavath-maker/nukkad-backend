@@ -25,6 +25,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -239,6 +241,37 @@ class ConversationServiceTest {
         // Java's || short-circuits once the real connection check is true — the opportunity-based
         // exception is never even consulted for an already-connected pair.
         verify(opportunityApplicantRepository, never()).existsAcceptedApplicationBetween(any(), any());
+    }
+
+    // ---- Broadcast deferred until commit, so a recipient's mark-as-read can't race the insert ----
+
+    @Test
+    void sendMessageBroadcastIsDeferredUntilTransactionCommits() {
+        Conversation conv = conversation("friend1", "owner1");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("friend1", "owner1")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("friend1", "owner1")).thenReturn(true);
+        when(privacySettingsService.canMessage("owner1", true)).thenReturn(true);
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("owner1", "friend1");
+
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service().sendMessage("conv1", "friend1", "Hello!", null, null);
+
+            // Still "inside" the transaction (never committed) — nothing should be broadcast yet.
+            verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
+
+            for (TransactionSynchronization sync : TransactionSynchronizationManager.getSynchronizations()) {
+                sync.afterCommit();
+            }
+
+            verify(messagingTemplate).convertAndSend(eq("/topic/conversations/conv1"), any(MessageDto.class));
+            verify(messagingTemplate).convertAndSend(eq("/topic/users/owner1/conversations"), any(Object.class));
+        } finally {
+            // Thread-bound static state — must not leak into the other tests in this class.
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     // ---- "Delete for me": per-viewer message hiding (single + bulk) ----

@@ -31,6 +31,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -214,10 +216,33 @@ public class ConversationService {
         // One topic per conversation, fanned out by STOMP to every current subscriber — this line is
         // identical for DIRECT and GROUP and needs no branching. Only the per-recipient sidebar-list
         // refresh below has to loop for a group instead of resolving a single otherParticipant.
-        messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId(), dto);
-        for (String recipientId : recipientIds) {
-            messagingTemplate.convertAndSend("/topic/users/" + recipientId + "/conversations",
-                    toDto(conversation, recipientId));
+        List<ConversationDto> recipientConversationDtos = recipientIds.stream().map(id -> toDto(conversation, id)).toList();
+
+        // Broadcast only once this transaction has actually committed. Broadcasting from inside it (as
+        // this used to) let a recipient's client receive the WS push and immediately call mark-as-read
+        // — a separate request/transaction — before this message's own insert was durably visible to
+        // it, so that UPDATE matched nothing, no read-receipt ever went out, and the sender's status
+        // stayed stuck on "Sent" forever (nothing else would re-trigger a later mark-as-read). Confirmed
+        // more reproducible on SHARED_POST messages specifically, since resolving the shared post before
+        // the insert above widens this exact race window. Falls back to broadcasting immediately when no
+        // transaction is actually active (e.g. a plain unit test calling this service directly, bypassing
+        // Spring's @Transactional proxy) rather than throwing.
+        Runnable broadcast = () -> {
+            messagingTemplate.convertAndSend("/topic/conversations/" + conversation.getId(), dto);
+            for (int i = 0; i < recipientIds.size(); i++) {
+                messagingTemplate.convertAndSend("/topic/users/" + recipientIds.get(i) + "/conversations",
+                        recipientConversationDtos.get(i));
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    broadcast.run();
+                }
+            });
+        } else {
+            broadcast.run();
         }
         return dto;
     }
