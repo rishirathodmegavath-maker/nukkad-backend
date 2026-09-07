@@ -9,4 +9,7 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 public interface OpportunityRepository extends JpaRepository<Opportunity, String>, JpaSpecificationExecutor<Opportunity> {
     Page<Opportunity> findByPostedByUserId(String postedByUserId, Pageable pageable);
     long countByChapterId(String chapterId);
+
+    /** Feeds the chapter "recent activity" list — pageable's Sort (createdAt desc) determines order. */
+    java.util.List<Opportunity> findByChapterId(String chapterId, Pageable pageable);
 }

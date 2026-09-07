@@ -82,6 +82,25 @@ class ChapterServiceTest {
     }
 
     @Test
+    void creatingAChapterAutomaticallyJoinsTheCreatorAsAMember() {
+        // Regression coverage for the "No members joined yet" QA bug: a brand-new chapter's own
+        // president must show up as a member immediately, not only after separately hitting /join.
+        User creator = user("u1");
+        when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> {
+            Chapter c = inv.getArgument(0);
+            c.setId("c1");
+            return c;
+        });
+        when(userRepository.findById("u1")).thenReturn(Optional.of(creator));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().createChapter("u1", new CreateChapterRequest("Nukkad Pune", "Pune", "India", "A new hub", null));
+
+        assertThat(creator.getChapterId()).isEqualTo("c1");
+        assertThat(creator.getChapterJoinedAt()).isNotNull();
+    }
+
+    @Test
     void creatingAChapterWithAnAlreadyUsedNameIsRejected() {
         when(chapterRepository.existsByNameIgnoreCase("Nukkad Pune")).thenReturn(true);
 
@@ -191,6 +210,35 @@ class ChapterServiceTest {
     }
 
     @Test
+    void presidentCannotLeaveTheirOwnChapter() {
+        // leaveChapter is a separate code path from removeMember — without its own guard, a
+        // president could leave while chapter.presidentUserId still points at them, orphaning the
+        // chapter's presidency with no transfer mechanism to recover it.
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service().leaveChapter("u1", "c1"))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void nonPresidentMemberCanLeaveTheChapter() {
+        Chapter existing = chapter("c1", "u1");
+        User member = user("u2");
+        member.setChapterId("c1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(userRepository.findById("u2")).thenReturn(Optional.of(member));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().leaveChapter("u2", "c1");
+
+        assertThat(member.getChapterId()).isNull();
+        assertThat(member.getChapterJoinedAt()).isNull();
+    }
+
+    @Test
     void nonPresidentCannotDeleteAnotherChapter() {
         Chapter existing = chapter("c1", "u1");
         when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
@@ -226,5 +274,36 @@ class ChapterServiceTest {
 
         assertThat(president.getChapterId()).isNull();
         verify(chapterRepository).delete(existing);
+    }
+
+    @Test
+    void listRecentActivityMergesAcrossEntityTypesAndOrdersByRecency() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+
+        java.time.Instant older = java.time.Instant.parse("2026-01-01T00:00:00Z");
+        java.time.Instant newer = java.time.Instant.parse("2026-02-01T00:00:00Z");
+
+        com.nukkad.idea.entity.Idea idea = com.nukkad.idea.entity.Idea.builder()
+                .id("i1").title("An idea").creatorId("u2").createdAt(older).build();
+        com.nukkad.event.entity.Event event = com.nukkad.event.entity.Event.builder()
+                .id("e1").title("Founder Meetup").organizerUserId("u1").createdAt(newer).build();
+        when(ideaRepository.findByChapterId(org.mockito.ArgumentMatchers.eq("c1"), any())).thenReturn(java.util.List.of(idea));
+        when(eventRepository.findByChapterId(org.mockito.ArgumentMatchers.eq("c1"), any())).thenReturn(java.util.List.of(event));
+        when(startupRepository.findByChapterId(org.mockito.ArgumentMatchers.eq("c1"), any())).thenReturn(java.util.List.of());
+        when(opportunityRepository.findByChapterId(org.mockito.ArgumentMatchers.eq("c1"), any())).thenReturn(java.util.List.of());
+        when(resourceRepository.findByChapterId(org.mockito.ArgumentMatchers.eq("c1"), any())).thenReturn(java.util.List.of());
+        when(userRepository.findByChapterIdAndChapterJoinedAtIsNotNull(org.mockito.ArgumentMatchers.eq("c1"), any()))
+                .thenReturn(java.util.List.of());
+        when(userRepository.findAllById(any())).thenReturn(java.util.List.of(user("u1"), user("u2")));
+
+        java.util.List<com.nukkad.chapter.dto.ChapterActivityDto> activity = service().listRecentActivity("c1", 10);
+
+        assertThat(activity).hasSize(2);
+        assertThat(activity.get(0).type()).isEqualTo("EVENT");
+        assertThat(activity.get(0).title()).isEqualTo("Founder Meetup");
+        assertThat(activity.get(0).actorName()).isEqualTo("User u1");
+        assertThat(activity.get(1).type()).isEqualTo("IDEA");
+        assertThat(activity.get(1).actorName()).isEqualTo("User u2");
     }
 }

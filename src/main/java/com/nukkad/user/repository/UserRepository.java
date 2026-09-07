@@ -1,6 +1,7 @@
 package com.nukkad.user.repository;
 
 import com.nukkad.user.entity.User;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
@@ -18,6 +19,9 @@ public interface UserRepository extends JpaRepository<User, String>, JpaSpecific
     Optional<User> findByGoogleSubject(String googleSubject);
     long countByChapterId(String chapterId);
     long countByChapterIdAndIdNot(String chapterId, String excludedUserId);
+
+    /** Feeds the chapter "recent activity" list — pageable's Sort (chapterJoinedAt desc) determines order. */
+    List<User> findByChapterIdAndChapterJoinedAtIsNotNull(String chapterId, Pageable pageable);
 
     /**
      * Login writes this on every request, including concurrent logins for the same account

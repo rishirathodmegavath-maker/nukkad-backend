@@ -2,16 +2,22 @@ package com.nukkad.event.repository;
 
 import com.nukkad.event.entity.Event;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface EventRepository extends JpaRepository<Event, String>, JpaSpecificationExecutor<Event> {
     long countByChapterId(String chapterId);
+
+    /** Feeds the chapter "recent activity" list — pageable's Sort (createdAt desc) determines order;
+     *  {@link #findAll} elsewhere defaults to upcoming-first (startAt), which isn't what we want here. */
+    List<Event> findByChapterId(String chapterId, Pageable pageable);
 
     /**
      * Serializes concurrent RSVPs for the same event: without this, two simultaneous requests can

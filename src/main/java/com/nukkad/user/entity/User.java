@@ -94,6 +94,11 @@ public class User {
     @Column(name = "chapter_id", columnDefinition = "CHAR(36)")
     private String chapterId;
 
+    /** Null unless {@link #chapterId} is set. Drives the chapter "recent activity" feed's
+     *  member-joined entries — cleared whenever chapterId is cleared. */
+    @Column(name = "chapter_joined_at")
+    private Instant chapterJoinedAt;
+
     @Column(name = "connections_count", nullable = false)
     @Builder.Default
     private int connectionsCount = 0;

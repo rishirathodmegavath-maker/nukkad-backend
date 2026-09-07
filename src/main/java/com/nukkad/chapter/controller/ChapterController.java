@@ -1,5 +1,6 @@
 package com.nukkad.chapter.controller;
 
+import com.nukkad.chapter.dto.ChapterActivityDto;
 import com.nukkad.chapter.dto.ChapterDto;
 import com.nukkad.chapter.dto.CreateChapterRequest;
 import com.nukkad.chapter.dto.UpdateChapterRequest;
@@ -24,6 +25,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/chapters")
 @SecurityRequirement(name = "bearerAuth")
@@ -46,6 +49,12 @@ public class ChapterController {
     @GetMapping("/{id}")
     public ApiResponse<ChapterDto> get(@PathVariable String id) {
         return ApiResponse.ok(chapterService.getChapter(id));
+    }
+
+    @GetMapping("/{id}/activity")
+    public ApiResponse<List<ChapterActivityDto>> activity(@PathVariable String id,
+                                                            @RequestParam(defaultValue = "10") int limit) {
+        return ApiResponse.ok(chapterService.listRecentActivity(id, limit));
     }
 
     @PostMapping

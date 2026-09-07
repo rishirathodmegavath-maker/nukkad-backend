@@ -209,6 +209,52 @@ class ResourceServiceTest {
         assertThat(dto.chapterId()).isNull();
     }
 
+    // ---- chapter-president authorization override ----
+
+    @Test
+    void chapterPresidentCanUpdateAnotherMembersChapterResource() {
+        Resource res = resource("r1", "u2", "c1");
+        when(resourceRepository.findById("r1")).thenReturn(Optional.of(res));
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(Chapter.builder().id("c1").presidentUserId("u1").build()));
+        when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ResourceDto dto = service().updateResource("u1", "r1", new UpdateResourceRequest("Curated title", null, null, null, null, null));
+
+        assertThat(dto.title()).isEqualTo("Curated title");
+    }
+
+    @Test
+    void chapterPresidentCanDeleteAnotherMembersChapterResource() {
+        Resource res = resource("r1", "u2", "c1");
+        when(resourceRepository.findById("r1")).thenReturn(Optional.of(res));
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(Chapter.builder().id("c1").presidentUserId("u1").build()));
+
+        service().deleteResource("u1", "r1");
+
+        verify(resourceRepository).delete(res);
+    }
+
+    @Test
+    void regularMemberCannotManageAnotherMembersChapterResource() {
+        Resource res = resource("r1", "u2", "c1");
+        when(resourceRepository.findById("r1")).thenReturn(Optional.of(res));
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(Chapter.builder().id("c1").presidentUserId("u1").build()));
+
+        assertThatThrownBy(() -> service().updateResource("u3", "r1", new UpdateResourceRequest("Hijacked", null, null, null, null, null)))
+                .isInstanceOf(ForbiddenException.class);
+        verify(resourceRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void presidentOfAnotherChapterCannotManageThisChaptersResource() {
+        Resource res = resource("r1", "u2", "c1");
+        when(resourceRepository.findById("r1")).thenReturn(Optional.of(res));
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(Chapter.builder().id("c1").presidentUserId("u1").build()));
+
+        assertThatThrownBy(() -> service().deleteResource("u4", "r1")).isInstanceOf(ForbiddenException.class);
+        verify(resourceRepository, never()).delete(any(Resource.class));
+    }
+
     // ---- save/bookmark toggle ----
 
     @Test

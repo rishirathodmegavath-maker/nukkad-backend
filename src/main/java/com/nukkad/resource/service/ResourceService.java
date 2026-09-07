@@ -116,7 +116,7 @@ public class ResourceService {
     @Transactional
     public ResourceDto updateResource(String userId, String resourceId, UpdateResourceRequest request) {
         Resource resource = getEntityOrThrow(resourceId);
-        requireUploader(userId, resource);
+        requireManager(userId, resource);
 
         if (request.title() != null) resource.setTitle(request.title());
         if (request.description() != null) resource.setDescription(request.description());
@@ -148,7 +148,7 @@ public class ResourceService {
     @Transactional
     public void deleteResource(String userId, String resourceId) {
         Resource resource = getEntityOrThrow(resourceId);
-        requireUploader(userId, resource);
+        requireManager(userId, resource);
         resourceRepository.delete(resource);
     }
 
@@ -179,9 +179,21 @@ public class ResourceService {
         return "https://" + trimmed;
     }
 
-    private void requireUploader(String userId, Resource resource) {
-        if (!userId.equals(resource.getUploaderUserId())) {
-            throw new ForbiddenException("Only the uploader of this resource can perform this action");
+    /** Uploader can always manage their own resource; a chapter president can additionally manage
+     *  any resource scoped to their own chapter — this is what lets a president curate resources
+     *  other members shared, without opening that up to every member. */
+    private boolean canManage(String userId, Resource resource) {
+        if (userId == null) return false;
+        if (userId.equals(resource.getUploaderUserId())) return true;
+        if (resource.getChapterId() == null) return false;
+        return chapterRepository.findById(resource.getChapterId())
+                .map(chapter -> userId.equals(chapter.getPresidentUserId()))
+                .orElse(false);
+    }
+
+    private void requireManager(String userId, Resource resource) {
+        if (!canManage(userId, resource)) {
+            throw new ForbiddenException("Only the uploader or this resource's chapter president can perform this action");
         }
     }
 
@@ -189,7 +201,6 @@ public class ResourceService {
         String chapterName = resource.getChapterId() == null ? null
                 : chapterRepository.findById(resource.getChapterId()).map(Chapter::getName).orElse(null);
         boolean isSaved = viewerId != null && resourceSaveRepository.findByResourceIdAndUserId(resource.getId(), viewerId).isPresent();
-        boolean canManage = viewerId != null && viewerId.equals(resource.getUploaderUserId());
-        return resourceMapper.toDto(resource, chapterName, isSaved, canManage);
+        return resourceMapper.toDto(resource, chapterName, isSaved, canManage(viewerId, resource));
     }
 }
