@@ -15,6 +15,7 @@ public interface OpportunityApplicantRepository extends JpaRepository<Opportunit
     boolean existsByOpportunityIdAndUserId(String opportunityId, String userId);
     Optional<OpportunityApplicant> findByOpportunityIdAndUserId(String opportunityId, String userId);
     List<OpportunityApplicant> findByUserId(String userId);
+    List<OpportunityApplicant> findByOpportunityId(String opportunityId);
     long countByOpportunityId(String opportunityId);
     long countByOpportunityIdAndStatusNotIn(String opportunityId, List<ApplicationStatus> excludedStatuses);
 

@@ -4,17 +4,19 @@ import com.nukkad.opportunity.dto.OpportunityDto;
 import com.nukkad.opportunity.entity.Opportunity;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.ArrayList;
 
 @Component
 public class OpportunityMapper {
 
     public OpportunityDto toDto(Opportunity opportunity) {
-        return toDto(opportunity, false, false, null, 0, 0);
+        return toDto(opportunity, false, false, null, 0, 0, null);
     }
 
     public OpportunityDto toDto(Opportunity opportunity, boolean hasApplied, boolean hasExpressedInterest,
-                                 String applicationStatus, int applicantCount, int interestCount) {
+                                 String applicationStatus, int applicantCount, int interestCount,
+                                 Instant appliedAt) {
         return new OpportunityDto(
                 opportunity.getId(),
                 opportunity.getTitle(),
@@ -26,6 +28,9 @@ public class OpportunityMapper {
                 opportunity.isRemote(),
                 opportunity.getDescription(),
                 opportunity.getCompensation(),
+                opportunity.getEquity(),
+                opportunity.getExperienceLevel(),
+                opportunity.getApplicationDeadline(),
                 opportunity.getPostedByUserId(),
                 opportunity.getChapterId(),
                 new ArrayList<>(opportunity.getRequirements()),
@@ -34,6 +39,7 @@ public class OpportunityMapper {
                 applicationStatus,
                 applicantCount,
                 interestCount,
+                appliedAt,
                 opportunity.getCreatedAt(),
                 opportunity.getUpdatedAt()
         );

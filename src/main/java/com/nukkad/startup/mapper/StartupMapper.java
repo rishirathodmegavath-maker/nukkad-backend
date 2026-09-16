@@ -1,10 +1,12 @@
 package com.nukkad.startup.mapper;
 
 import com.nukkad.startup.dto.StartupDto;
+import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
 import com.nukkad.startup.entity.Startup;
+import com.nukkad.startup.entity.StartupMaterial;
 import com.nukkad.startup.entity.StartupRole;
 import com.nukkad.startup.entity.StartupTeamMember;
 import com.nukkad.startup.entity.StartupUpdate;
@@ -16,27 +18,89 @@ import java.util.HashSet;
 public class StartupMapper {
 
     public StartupDto toDto(Startup startup) {
-        return toDto(startup, false);
+        return toDto(startup, false, false, true);
     }
 
-    public StartupDto toDto(Startup startup, boolean isFollowing) {
+    /**
+     * @param canManage          true for an active founder — drives edit/delete/manage-material affordances.
+     * @param canViewFundraising true if this viewer may see real fundraising data: either the startup's
+     *                           fundraising visibility is on, or the viewer is a founder/team member of
+     *                           their own startup. When false, {@code isRaising} is also suppressed since
+     *                           that status alone reveals the startup is fundraising.
+     */
+    public StartupDto toDto(Startup startup, boolean isFollowing, boolean canManage, boolean canViewFundraising) {
         return new StartupDto(
                 startup.getId(),
                 startup.getName(),
                 startup.getLogoUrl(),
+                startup.getLocation(),
+                startup.getWebsite(),
                 startup.getTagline(),
                 startup.getSector(),
                 startup.getProblem(),
                 startup.getSolution(),
+                startup.getTargetCustomer(),
+                startup.getBusinessModel(),
+                startup.getWhatBuilding(),
                 startup.getStage().getLabel(),
                 startup.getTraction(),
+                startup.getRevenue(),
+                startup.getCustomers(),
+                startup.getUsers(),
+                startup.getGrowth(),
+                startup.getOtherTraction(),
+                startup.getKeywords(),
+                startup.getVisibility().getLabel(),
+                startup.isFundraisingVisible(),
                 startup.getIdeaId(),
                 startup.getChapterId(),
-                startup.isRaising(),
+                canViewFundraising && startup.isRaising(),
                 new HashSet<>(startup.getNeeds()),
                 isFollowing,
+                canManage,
+                profileCompletionPercent(startup),
                 startup.getCreatedAt(),
                 startup.getUpdatedAt()
+        );
+    }
+
+    /** Percentage of the optional rich-profile fields that have actually been filled in — never
+     *  a fabricated number, always derived from what's really persisted. */
+    private int profileCompletionPercent(Startup startup) {
+        String[] fields = {
+                startup.getLogoUrl(), startup.getLocation(), startup.getWebsite(), startup.getTagline(),
+                startup.getSector(), startup.getProblem(), startup.getSolution(), startup.getTargetCustomer(),
+                startup.getBusinessModel(), startup.getWhatBuilding(),
+        };
+        int filled = 0;
+        int total = fields.length + 2; // + traction-ish info + needs
+        for (String field : fields) {
+            if (field != null && !field.isBlank()) filled++;
+        }
+        boolean hasTraction = hasText(startup.getRevenue()) || hasText(startup.getCustomers())
+                || hasText(startup.getUsers()) || hasText(startup.getGrowth()) || hasText(startup.getOtherTraction());
+        if (hasTraction) filled++;
+        if (!startup.getNeeds().isEmpty()) filled++;
+        return Math.round(100f * filled / total);
+    }
+
+    private boolean hasText(String s) {
+        return s != null && !s.isBlank();
+    }
+
+    public StartupMaterialDto toDto(StartupMaterial material, boolean canManage) {
+        return new StartupMaterialDto(
+                material.getId(),
+                material.getStartupId(),
+                material.getMaterialType().getLabel(),
+                material.getTitle(),
+                material.getUrl(),
+                material.getOriginalFileName(),
+                material.getContentType(),
+                material.getSortOrder(),
+                canManage,
+                material.getCreatedAt(),
+                material.getUpdatedAt()
         );
     }
 

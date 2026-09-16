@@ -234,7 +234,7 @@ public class ContentMatchingService {
         OpportunityDto dto = opportunityMapper.toDto(opp, false, false, null,
                 (int) opportunityApplicantRepository.countByOpportunityIdAndStatusNotIn(
                         opp.getId(), List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED)),
-                (int) opportunityInterestRepository.countByOpportunityId(opp.getId()));
+                (int) opportunityInterestRepository.countByOpportunityId(opp.getId()), null);
         return new OpportunityMatchDto(dto, round(scored.score()), RecommendationWeights.toMatchLabel(scored.score()), scored.reasons());
     }
 

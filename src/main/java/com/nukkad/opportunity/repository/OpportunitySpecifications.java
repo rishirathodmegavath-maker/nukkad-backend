@@ -45,6 +45,16 @@ public final class OpportunitySpecifications {
         return (root, query, cb) -> cb.equal(root.get("chapterId"), chapterId);
     }
 
+    public static Specification<Opportunity> startupId(String startupId) {
+        if (startupId == null || startupId.isBlank()) return null;
+        return (root, query, cb) -> cb.equal(root.get("startupId"), startupId);
+    }
+
+    public static Specification<Opportunity> postedByUserId(String postedByUserId) {
+        if (postedByUserId == null || postedByUserId.isBlank()) return null;
+        return (root, query, cb) -> cb.equal(root.get("postedByUserId"), postedByUserId);
+    }
+
     /** Always applied in discovery/search — closed postings never appear in public browse results. */
     public static Specification<Opportunity> open() {
         return (root, query, cb) -> cb.isFalse(root.get("closed"));

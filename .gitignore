@@ -43,3 +43,6 @@ uploads/
 ### Local DB dumps/backups at repo root — never commit real data (migrations under
 ### src/main/resources/db/migration are unaffected, this only matches the root) ###
 /*.sql
+
+### Cloudflare Wrangler local dev cache (contains account id, not app code) ###
+cloudflare-worker/.wrangler/

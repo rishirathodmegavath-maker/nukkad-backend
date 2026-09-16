@@ -42,6 +42,12 @@ public class Startup {
     @Column(name = "logo_url", length = 500)
     private String logoUrl;
 
+    @Column(length = 200)
+    private String location;
+
+    @Column(length = 500)
+    private String website;
+
     @Column(length = 300)
     private String tagline;
 
@@ -54,13 +60,53 @@ public class Startup {
     @Column(columnDefinition = "TEXT")
     private String solution;
 
+    @Column(name = "target_customer", columnDefinition = "TEXT")
+    private String targetCustomer;
+
+    @Column(name = "business_model", columnDefinition = "TEXT")
+    private String businessModel;
+
+    @Column(name = "what_building", columnDefinition = "TEXT")
+    private String whatBuilding;
+
     @Convert(converter = StartupStageConverter.class)
     @Column(nullable = false, length = 20)
     @Builder.Default
     private StartupStage stage = StartupStage.IDEA;
 
+    /** Legacy free-text traction blob — kept exactly as-is for backward compatibility. Its value
+     *  was copied into {@code otherTraction} by V54; new writes should go through the structured
+     *  fields below instead. */
     @Column(columnDefinition = "TEXT")
     private String traction;
+
+    @Column(length = 200)
+    private String revenue;
+
+    @Column(length = 200)
+    private String customers;
+
+    @Column(length = 200)
+    private String users;
+
+    @Column(length = 200)
+    private String growth;
+
+    @Column(name = "other_traction", columnDefinition = "TEXT")
+    private String otherTraction;
+
+    /** Normalized, comma-separated free-text keywords the founder supplies for search. */
+    @Column(columnDefinition = "TEXT")
+    private String keywords;
+
+    @Convert(converter = StartupVisibilityConverter.class)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private StartupVisibility visibility = StartupVisibility.PUBLIC;
+
+    @Column(name = "fundraising_visible", nullable = false)
+    @Builder.Default
+    private boolean fundraisingVisible = true;
 
     @Column(name = "idea_id", columnDefinition = "CHAR(36)")
     private String ideaId;

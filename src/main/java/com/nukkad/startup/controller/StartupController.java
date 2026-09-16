@@ -10,6 +10,7 @@ import com.nukkad.startup.dto.JoinStartupRequest;
 import com.nukkad.startup.dto.PostStartupUpdateRequest;
 import com.nukkad.startup.dto.StartupDto;
 import com.nukkad.startup.dto.StartupJoinRequestDto;
+import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
@@ -18,6 +19,7 @@ import com.nukkad.startup.service.StartupService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -45,6 +47,10 @@ public class StartupController {
         this.startupService = startupService;
     }
 
+    // list() and get() are reachable without authentication (see SecurityConfig) so that a PUBLIC
+    // startup can be viewed via a direct link or discovery without logging in — `principal` is
+    // null for an anonymous caller, and StartupService uses that to restrict results/access to
+    // PUBLIC startups only. Every other endpoint on this controller stays fully authenticated.
     @GetMapping
     public ApiResponse<PageResponse<StartupDto>> list(@AuthenticationPrincipal AuthenticatedUser principal,
                                                         @RequestParam(required = false) String q,
@@ -55,13 +61,15 @@ public class StartupController {
                                                         @RequestParam(required = false) String memberId,
                                                         @RequestParam(defaultValue = "0") int page,
                                                         @RequestParam(defaultValue = "20") int size) {
+        String viewerId = principal == null ? null : principal.id();
         return ApiResponse.ok(PageResponse.from(
-                startupService.listStartups(q, sector, stage, isRaising, chapterId, memberId, principal.id(), page, size)));
+                startupService.listStartups(q, sector, stage, isRaising, chapterId, memberId, viewerId, page, size)));
     }
 
     @GetMapping("/{id}")
     public ApiResponse<StartupDto> get(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
-        return ApiResponse.ok(startupService.getStartup(id, principal.id()));
+        String viewerId = principal == null ? null : principal.id();
+        return ApiResponse.ok(startupService.getStartup(id, viewerId));
     }
 
     @GetMapping("/me/founding")
@@ -191,5 +199,39 @@ public class StartupController {
     @GetMapping("/{id}/roles")
     public ApiResponse<List<StartupRoleDto>> roles(@PathVariable String id) {
         return ApiResponse.ok(startupService.getRoles(id));
+    }
+
+    @GetMapping("/{id}/materials")
+    public ApiResponse<List<StartupMaterialDto>> materials(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(startupService.getMaterials(id, principal.id()));
+    }
+
+    @PostMapping(value = "/{id}/materials", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<StartupMaterialDto> addMaterial(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                          @PathVariable String id,
+                                                          @RequestParam String materialType,
+                                                          @RequestParam(required = false) String title,
+                                                          @RequestParam(required = false) String url,
+                                                          @RequestParam(required = false) MultipartFile file) {
+        return ApiResponse.ok(startupService.addMaterial(principal.id(), id, materialType, title, url, file));
+    }
+
+    @PutMapping(value = "/{id}/materials/{materialId}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<StartupMaterialDto> updateMaterial(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                             @PathVariable String id,
+                                                             @PathVariable String materialId,
+                                                             @RequestParam(required = false) String title,
+                                                             @RequestParam(required = false) String url,
+                                                             @RequestParam(required = false) MultipartFile file) {
+        return ApiResponse.ok(startupService.updateMaterial(principal.id(), materialId, title, url, file));
+    }
+
+    @DeleteMapping("/{id}/materials/{materialId}")
+    public ApiResponse<Void> deleteMaterial(@AuthenticationPrincipal AuthenticatedUser principal,
+                                              @PathVariable String id,
+                                              @PathVariable String materialId) {
+        startupService.deleteMaterial(principal.id(), materialId);
+        return ApiResponse.ok(null);
     }
 }

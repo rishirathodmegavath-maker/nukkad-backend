@@ -7,6 +7,7 @@ import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
 import com.nukkad.opportunity.dto.ApplyToOpportunityRequest;
+import com.nukkad.opportunity.dto.OpportunityDto;
 import com.nukkad.opportunity.dto.PostOpportunityRequest;
 import com.nukkad.opportunity.entity.ApplicationStatus;
 import com.nukkad.opportunity.entity.Opportunity;
@@ -48,7 +49,10 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -130,6 +134,28 @@ class OpportunityServiceTest {
         verify(notificationService).notify(eq("owner1"), eq(NotificationType.opportunity), eq("New application"),
                 message.capture(), eq("opp1"), eq("applicant1"));
         assertThat(message.getValue()).contains("Meera Joshi").contains("Product Designer");
+    }
+
+    @Test
+    void applyingAlsoNotifiesTheApplicantThemselvesThatItWasSubmitted() {
+        Opportunity opp = opportunity("owner1");
+        User applicantUser = user("applicant1", "Meera Joshi");
+
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(userRepository.findById("applicant1")).thenReturn(Optional.of(applicantUser));
+        when(applicantRepository.findByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(Optional.empty());
+        when(applicantRepository.saveAndFlush(any(OpportunityApplicant.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(userService.getUser("applicant1", "applicant1")).thenReturn(stubUserDto("applicant1"));
+
+        ApplyToOpportunityRequest request = new ApplyToOpportunityRequest(
+                "Because I love design", "I have 3 years of UX experience", null, null, null, null, null, null);
+
+        service().apply("applicant1", "opp1", request);
+
+        ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+        verify(notificationService).notify(eq("applicant1"), eq(NotificationType.opportunity), eq("Application submitted"),
+                message.capture(), eq("opp1"), isNull());
+        assertThat(message.getValue()).contains("Product Designer");
     }
 
     @Test
@@ -422,7 +448,7 @@ class OpportunityServiceTest {
 
     private PostOpportunityRequest postRequest() {
         return new PostOpportunityRequest("AI/ML Intern", "Internship", null, "ABC Technologies",
-                "Bengaluru", true, "Build ML pipelines", List.of("Python"), null);
+                "Bengaluru", true, "Build ML pipelines", List.of("Python"), null, null, null, null);
     }
 
     @Test
@@ -455,7 +481,7 @@ class OpportunityServiceTest {
         // id with no check that they actually founded B.
         PostOpportunityRequest requestForSomeoneElsesStartup = new PostOpportunityRequest(
                 "AI/ML Intern", "Internship", "startupB", "ABC Technologies", "Bengaluru", true,
-                "Build ML pipelines", List.of("Python"), null);
+                "Build ML pipelines", List.of("Python"), null, null, null, null);
         when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("founder1", StartupTeamMember.Status.ACTIVE))
                 .thenReturn(true);
         when(userRepository.findById("founder1")).thenReturn(Optional.of(user("founder1", "Rishi")));
@@ -496,6 +522,104 @@ class OpportunityServiceTest {
         verify(interestRepository, never()).save(any());
     }
 
+    @Test
+    void historicalApplicationsRemainAccessibleAfterOpportunityIsClosed() {
+        Opportunity opp = opportunity("owner1");
+        opp.setClosed(true);
+        OpportunityApplicant app = applicant("opp1", "applicant1", ApplicationStatus.PENDING);
+
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(applicantRepository.findById("app1")).thenReturn(Optional.of(app));
+        when(applicantRepository.findByOpportunityIdOrderByCreatedAtDesc(eq("opp1"), any()))
+                .thenReturn(new PageImpl<>(List.of(app)));
+        when(userService.getUser("applicant1", "owner1")).thenReturn(stubUserDto("applicant1"));
+        when(userService.getUser("applicant1", "applicant1")).thenReturn(stubUserDto("applicant1"));
+
+        // Founder can still list and open the application for a now-closed opportunity.
+        Page<ApplicationDto> page = service().listApplications("owner1", "opp1", null, 0, 20);
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(service().getApplication("owner1", "app1").id()).isEqualTo("app1");
+
+        // The applicant can still open their own historical application too.
+        assertThat(service().getApplication("applicant1", "app1").id()).isEqualTo("app1");
+    }
+
+    @Test
+    void historicalApplicationsRemainAccessibleAcrossAllTerminalStatusesAfterClosure() {
+        Opportunity opp = opportunity("owner1");
+        opp.setClosed(true);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        for (ApplicationStatus status : List.of(ApplicationStatus.SHORTLISTED, ApplicationStatus.ACCEPTED,
+                ApplicationStatus.REJECTED, ApplicationStatus.WITHDRAWN)) {
+            String appId = "app-" + status;
+            String userId = "applicant-" + status;
+            OpportunityApplicant app = OpportunityApplicant.builder()
+                    .id(appId).opportunityId("opp1").userId(userId).status(status).build();
+            when(applicantRepository.findById(appId)).thenReturn(Optional.of(app));
+            when(userService.getUser(userId, "owner1")).thenReturn(stubUserDto(userId));
+            when(userService.getUser(userId, userId)).thenReturn(stubUserDto(userId));
+
+            assertThat(service().getApplication("owner1", appId).status()).isEqualTo(status.getLabel());
+            assertThat(service().getApplication(userId, appId).status()).isEqualTo(status.getLabel());
+        }
+    }
+
+    @Test
+    void listMyApplicationsIncludesOpportunitiesThatHaveSinceBeenClosed() {
+        Opportunity closedOpp = opportunity("owner1");
+        closedOpp.setClosed(true);
+        OpportunityApplicant app = OpportunityApplicant.builder()
+                .id("app1").opportunityId("opp1").userId("applicant1").status(ApplicationStatus.ACCEPTED).build();
+
+        when(applicantRepository.findByUserId("applicant1")).thenReturn(List.of(app));
+        when(interestRepository.findByUserId("applicant1")).thenReturn(List.of());
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(closedOpp));
+        when(applicantRepository.findByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(Optional.of(app));
+        when(interestRepository.existsByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(false);
+        when(applicantRepository.countByOpportunityIdAndStatusNotIn(
+                "opp1", List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED))).thenReturn(1L);
+        when(interestRepository.countByOpportunityId("opp1")).thenReturn(0L);
+        when(opportunityMapper.toDto(eq(closedOpp), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any()))
+                .thenAnswer(inv -> new OpportunityDto(closedOpp.getId(), closedOpp.getTitle(), null, closedOpp.isClosed(),
+                        null, null, null, false, null, null, null, null, null, closedOpp.getPostedByUserId(), null,
+                        List.of(), true, false, "Accepted", 1, 0, null, null, null));
+
+        // A closed opportunity must still show up in the candidate's own application history —
+        // no "open only" filter should ever leak into this query.
+        Page<OpportunityDto> page = service().listMyApplications("applicant1", 0, 20);
+
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(page.getContent().get(0).id()).isEqualTo("opp1");
+        assertThat(page.getContent().get(0).closed()).isTrue();
+    }
+
+    // ---- Poster cannot apply/express interest in their own opportunity ----
+
+    @Test
+    void posterCannotApplyToTheirOwnOpportunity() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        ApplyToOpportunityRequest request = new ApplyToOpportunityRequest("x", "y", null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> service().apply("owner1", "opp1", request))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(applicantRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void posterCannotExpressInterestInTheirOwnOpportunity() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        assertThatThrownBy(() -> service().expressInterest("owner1", "opp1"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(interestRepository, never()).save(any());
+    }
+
     // ---- 15. Close/reopen is owner-only ----
 
     @Test
@@ -503,6 +627,7 @@ class OpportunityServiceTest {
         Opportunity opp = opportunity("owner1");
         when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
         when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(applicantRepository.findByOpportunityId("opp1")).thenReturn(List.of());
 
         service().closeOpportunity("owner1", "opp1");
         assertThat(opp.isClosed()).isTrue();
@@ -520,6 +645,46 @@ class OpportunityServiceTest {
                 .isInstanceOf(ForbiddenException.class);
 
         verify(opportunityRepository, never()).saveAndFlush(any());
+    }
+
+    // ---- Closing an opportunity notifies applicants still awaiting a decision ----
+
+    @Test
+    void closingAnOpenOpportunityNotifiesOnlyNonTerminalApplicants() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        OpportunityApplicant pending = applicant("opp1", "pendingUser", ApplicationStatus.PENDING);
+        OpportunityApplicant shortlisted = applicant("opp1", "shortlistedUser", ApplicationStatus.SHORTLISTED);
+        OpportunityApplicant accepted = applicant("opp1", "acceptedUser", ApplicationStatus.ACCEPTED);
+        OpportunityApplicant rejected = applicant("opp1", "rejectedUser", ApplicationStatus.REJECTED);
+        OpportunityApplicant withdrawn = applicant("opp1", "withdrawnUser", ApplicationStatus.WITHDRAWN);
+        when(applicantRepository.findByOpportunityId("opp1"))
+                .thenReturn(List.of(pending, shortlisted, accepted, rejected, withdrawn));
+
+        service().closeOpportunity("owner1", "opp1");
+
+        verify(notificationService).notify(eq("pendingUser"), eq(NotificationType.opportunity),
+                eq("Opportunity closed"), any(), eq("opp1"), eq("owner1"));
+        verify(notificationService).notify(eq("shortlistedUser"), eq(NotificationType.opportunity),
+                eq("Opportunity closed"), any(), eq("opp1"), eq("owner1"));
+        verify(notificationService, never()).notify(eq("acceptedUser"), any(), any(), any(), any(), any());
+        verify(notificationService, never()).notify(eq("rejectedUser"), any(), any(), any(), any(), any());
+        verify(notificationService, never()).notify(eq("withdrawnUser"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void closingAnAlreadyClosedOpportunityDoesNotReNotifyApplicants() {
+        Opportunity opp = opportunity("owner1");
+        opp.setClosed(true);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().closeOpportunity("owner1", "opp1");
+
+        verify(applicantRepository, never()).findByOpportunityId(any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
     }
 
     // ---- Applicant count reflects only live applications, not withdrawn/rejected ones ----

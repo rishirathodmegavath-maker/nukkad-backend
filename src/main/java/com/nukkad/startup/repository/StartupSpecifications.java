@@ -3,6 +3,8 @@ package com.nukkad.startup.repository;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupStage;
 import com.nukkad.startup.entity.StartupTeamMember;
+import com.nukkad.startup.entity.StartupVisibility;
+import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.util.Arrays;
@@ -20,15 +22,31 @@ public final class StartupSpecifications {
                 .orElse((root, query, cb) -> cb.conjunction());
     }
 
+    /**
+     * Tokenized multi-word search across name, tagline, sector, problem, solution and keywords.
+     * Each whitespace-separated token must match at least one of those fields (case-insensitive,
+     * partial); tokens are ANDed together so "AI healthcare" matches a startup whose tagline
+     * contains "AI" and whose sector is "Healthcare", without requiring the whole phrase in one field.
+     */
     public static Specification<Startup> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
-        return (root, query, cb) -> cb.or(
-                cb.like(cb.lower(root.get("name")), like),
-                cb.like(cb.lower(cb.coalesce(root.get("tagline"), "")), like),
-                cb.like(cb.lower(cb.coalesce(root.get("problem"), "")), like),
-                cb.like(cb.lower(cb.coalesce(root.get("solution"), "")), like)
-        );
+        String[] tokens = q.trim().toLowerCase().split("\\s+");
+        return (root, query, cb) -> {
+            Predicate all = cb.conjunction();
+            for (String token : tokens) {
+                String like = "%" + token + "%";
+                Predicate anyField = cb.or(
+                        cb.like(cb.lower(root.get("name")), like),
+                        cb.like(cb.lower(cb.coalesce(root.get("tagline"), "")), like),
+                        cb.like(cb.lower(cb.coalesce(root.get("sector"), "")), like),
+                        cb.like(cb.lower(cb.coalesce(root.get("problem"), "")), like),
+                        cb.like(cb.lower(cb.coalesce(root.get("solution"), "")), like),
+                        cb.like(cb.lower(cb.coalesce(root.get("keywords"), "")), like)
+                );
+                all = cb.and(all, anyField);
+            }
+            return all;
+        };
     }
 
     public static Specification<Startup> sector(String sector) {
@@ -64,5 +82,12 @@ public final class StartupSpecifications {
             ));
             return root.get("id").in(subquery);
         };
+    }
+
+    /** An anonymous (unauthenticated) viewer may only ever see PUBLIC startups; an authenticated
+     *  viewer — any signed-in Nukkad user — may see both PUBLIC and NUKKAD_MEMBERS startups. */
+    public static Specification<Startup> visibleTo(boolean authenticated) {
+        if (authenticated) return null;
+        return (root, query, cb) -> cb.equal(root.get("visibility"), StartupVisibility.PUBLIC);
     }
 }

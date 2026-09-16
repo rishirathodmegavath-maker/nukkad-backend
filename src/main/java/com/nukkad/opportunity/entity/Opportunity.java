@@ -67,6 +67,15 @@ public class Opportunity {
     @Column(length = 200)
     private String compensation;
 
+    @Column(length = 100)
+    private String equity;
+
+    @Column(name = "experience_level", length = 100)
+    private String experienceLevel;
+
+    @Column(name = "application_deadline")
+    private Instant applicationDeadline;
+
     @Column(name = "posted_by_user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String postedByUserId;
 

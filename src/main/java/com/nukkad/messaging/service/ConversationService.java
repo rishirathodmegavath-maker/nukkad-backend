@@ -19,10 +19,14 @@ import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.messaging.repository.MessageDeletionRepository;
 import com.nukkad.messaging.repository.MessageRepository;
+import com.nukkad.notification.entity.NotificationType;
+import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
 import com.nukkad.startup.repository.StartupTeamMemberRepository;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
 import com.nukkad.user.repository.UserBlockRepository;
+import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.service.UserPrivacySettingsService;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
@@ -56,6 +60,8 @@ public class ConversationService {
     private final IntroRequestRepository introRequestRepository;
     private final UserPrivacySettingsService privacySettingsService;
     private final FeedService feedService;
+    private final UserRepository userRepository;
+    private final NotificationService notificationService;
 
     public ConversationService(ConversationRepository conversationRepository,
                                 ConversationParticipantRepository participantRepository,
@@ -69,7 +75,9 @@ public class ConversationService {
                                 StartupTeamMemberRepository startupTeamMemberRepository,
                                 IntroRequestRepository introRequestRepository,
                                 UserPrivacySettingsService privacySettingsService,
-                                FeedService feedService) {
+                                FeedService feedService,
+                                UserRepository userRepository,
+                                NotificationService notificationService) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.messageRepository = messageRepository;
@@ -83,6 +91,8 @@ public class ConversationService {
         this.introRequestRepository = introRequestRepository;
         this.privacySettingsService = privacySettingsService;
         this.feedService = feedService;
+        this.userRepository = userRepository;
+        this.notificationService = notificationService;
     }
 
     @Transactional
@@ -211,6 +221,19 @@ public class ConversationService {
         Instant now = Instant.now();
         conversationRepository.touchUpdatedAt(conversation.getId(), now);
         conversation.setUpdatedAt(now);
+
+        // A real-time client already sees the message via the WebSocket broadcast below; this DB-backed
+        // notification is what lets a recipient who isn't actively viewing this conversation find out —
+        // same "reply" type/pattern as every other business-event notification in the app.
+        if (!trimmedContent.isEmpty()) {
+            User sender = userRepository.findById(senderId).orElse(null);
+            String senderName = sender != null ? sender.getName() : "Someone";
+            String preview = trimmedContent.length() > 120 ? trimmedContent.substring(0, 117) + "..." : trimmedContent;
+            for (String recipientId : recipientIds) {
+                notificationService.notify(recipientId, NotificationType.reply, senderName + " sent you a message",
+                        preview, conversation.getId(), senderId);
+            }
+        }
 
         MessageDto dto = toMessageDto(message, senderId);
         // One topic per conversation, fanned out by STOMP to every current subscriber — this line is

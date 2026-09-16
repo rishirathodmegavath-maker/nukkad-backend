@@ -14,10 +14,14 @@ import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.messaging.repository.MessageDeletionRepository;
 import com.nukkad.messaging.repository.MessageRepository;
+import com.nukkad.notification.entity.NotificationType;
+import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
 import com.nukkad.startup.repository.StartupTeamMemberRepository;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
 import com.nukkad.user.repository.UserBlockRepository;
+import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.service.UserPrivacySettingsService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -66,12 +70,14 @@ class ConversationServiceTest {
     @Mock private IntroRequestRepository introRequestRepository;
     @Mock private UserPrivacySettingsService privacySettingsService;
     @Mock private FeedService feedService;
+    @Mock private UserRepository userRepository;
+    @Mock private NotificationService notificationService;
 
     private ConversationService service() {
         return new ConversationService(conversationRepository, participantRepository, messageRepository, messageDeletionRepository,
                 encryptionService, messagingTemplate, userBlockRepository, connectionRepository,
                 opportunityApplicantRepository, startupTeamMemberRepository, introRequestRepository,
-                privacySettingsService, feedService);
+                privacySettingsService, feedService, userRepository, notificationService);
     }
 
     private Conversation conversation(String senderId, String recipientId) {
@@ -108,6 +114,48 @@ class ConversationServiceTest {
             m.setCreatedAt(Instant.now());
             return m;
         });
+    }
+
+    // ---- New message notifies the recipient(s) via the existing notification infrastructure ----
+
+    @Test
+    void sendingAMessageNotifiesTheRecipient() {
+        Conversation conv = conversation("sender1", "recipient1");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("sender1", "recipient1")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("sender1", "recipient1")).thenReturn(true);
+        when(privacySettingsService.canMessage("recipient1", true)).thenReturn(true);
+        when(userRepository.findById("sender1")).thenReturn(Optional.of(User.builder().id("sender1").name("Ada").build()));
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("recipient1", "sender1");
+
+        service().sendMessage("conv1", "sender1", "Hello!", null, null);
+
+        verify(notificationService).notify(eq("recipient1"), eq(NotificationType.reply), eq("Ada sent you a message"),
+                eq("Hello!"), eq("conv1"), eq("sender1"));
+    }
+
+    @Test
+    void sendingAGroupMessageNotifiesEveryOtherParticipantButNotTheSender() {
+        Conversation conv = groupConversation();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "sender1")).thenReturn(true);
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1")).thenReturn(List.of(
+                participant("sender1", ConversationParticipant.Role.MEMBER),
+                participant("member2", ConversationParticipant.Role.MEMBER),
+                participant("member3", ConversationParticipant.Role.MEMBER)));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull(eq("conv1"), anyString()))
+                .thenAnswer(inv -> Optional.of(participant(inv.getArgument(1), ConversationParticipant.Role.MEMBER)));
+        when(userRepository.findById("sender1")).thenReturn(Optional.of(User.builder().id("sender1").name("Ada").build()));
+        stubMessagePersistenceAndEncryption();
+        when(messageRepository.findLatestVisibleForViewer(eq("conv1"), anyString(), any())).thenReturn(List.of());
+        when(messageRepository.countUnreadSinceForViewer(eq("conv1"), anyString(), any())).thenReturn(0L);
+
+        service().sendMessage("conv1", "sender1", "Hey team", null, null);
+
+        verify(notificationService).notify(eq("member2"), eq(NotificationType.reply), any(), any(), eq("conv1"), eq("sender1"));
+        verify(notificationService).notify(eq("member3"), eq(NotificationType.reply), any(), any(), eq("conv1"), eq("sender1"));
+        verify(notificationService, never()).notify(eq("sender1"), any(), any(), any(), any(), any());
     }
 
     // ---- 14 & 15. Accepted application unlocks messaging without creating a real Connection ----

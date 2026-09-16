@@ -103,11 +103,12 @@ public class OpportunityService {
         var existingApplication = applicantRepository.findByOpportunityIdAndUserId(opportunity.getId(), viewerId);
         boolean hasApplied = existingApplication.isPresent();
         String applicationStatus = existingApplication.map(a -> a.getStatus().getLabel()).orElse(null);
+        Instant appliedAt = existingApplication.map(OpportunityApplicant::getCreatedAt).orElse(null);
         boolean hasExpressedInterest = interestRepository.existsByOpportunityIdAndUserId(opportunity.getId(), viewerId);
         int applicantCount = (int) applicantRepository.countByOpportunityIdAndStatusNotIn(
                 opportunity.getId(), List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED));
         int interestCount = (int) interestRepository.countByOpportunityId(opportunity.getId());
-        return opportunityMapper.toDto(opportunity, hasApplied, hasExpressedInterest, applicationStatus, applicantCount, interestCount);
+        return opportunityMapper.toDto(opportunity, hasApplied, hasExpressedInterest, applicationStatus, applicantCount, interestCount, appliedAt);
     }
 
     @Transactional(readOnly = true)
@@ -117,12 +118,15 @@ public class OpportunityService {
 
     @Transactional(readOnly = true)
     public Page<OpportunityDto> listOpportunities(String q, String type, Boolean remote, String chapterId,
+                                                   String startupId, String postedByUserId,
                                                    String viewerId, int page, int size) {
         Specification<Opportunity> spec = OpportunitySpecifications.combine(
                 OpportunitySpecifications.search(q),
                 OpportunitySpecifications.type(type),
                 OpportunitySpecifications.remote(remote),
                 OpportunitySpecifications.chapterId(chapterId),
+                OpportunitySpecifications.startupId(startupId),
+                OpportunitySpecifications.postedByUserId(postedByUserId),
                 OpportunitySpecifications.open()
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
@@ -151,6 +155,9 @@ public class OpportunityService {
                 .remote(request.remote())
                 .description(request.description())
                 .compensation(request.compensation())
+                .equity(request.equity())
+                .experienceLevel(request.experienceLevel())
+                .applicationDeadline(request.applicationDeadline())
                 .postedByUserId(userId)
                 .chapterId(poster.getChapterId())
                 .requirements(request.requirements() == null ? new ArrayList<>() : new ArrayList<>(request.requirements()))
@@ -180,6 +187,9 @@ public class OpportunityService {
         if (request.remote() != null) opportunity.setRemote(request.remote());
         if (request.description() != null) opportunity.setDescription(request.description());
         if (request.compensation() != null) opportunity.setCompensation(request.compensation());
+        if (request.equity() != null) opportunity.setEquity(request.equity());
+        if (request.experienceLevel() != null) opportunity.setExperienceLevel(request.experienceLevel());
+        if (request.applicationDeadline() != null) opportunity.setApplicationDeadline(request.applicationDeadline());
         if (request.requirements() != null) opportunity.setRequirements(new ArrayList<>(request.requirements()));
 
         return opportunityMapper.toDto(opportunityRepository.saveAndFlush(opportunity));
@@ -196,8 +206,19 @@ public class OpportunityService {
     public OpportunityDto closeOpportunity(String userId, String id) {
         Opportunity opportunity = getEntityOrThrow(id);
         requirePoster(userId, opportunity);
+        boolean wasAlreadyClosed = opportunity.isClosed();
         opportunity.setClosed(true);
-        return opportunityMapper.toDto(opportunityRepository.saveAndFlush(opportunity));
+        opportunity = opportunityRepository.saveAndFlush(opportunity);
+
+        if (!wasAlreadyClosed) {
+            String title = opportunity.getTitle();
+            applicantRepository.findByOpportunityId(id).stream()
+                    .filter(a -> !a.getStatus().isTerminal())
+                    .forEach(a -> notificationService.notify(a.getUserId(), NotificationType.opportunity,
+                            "Opportunity closed", "\"" + title + "\" is no longer accepting applications", id, userId));
+        }
+
+        return opportunityMapper.toDto(opportunity);
     }
 
     @Transactional
@@ -211,6 +232,9 @@ public class OpportunityService {
     @Transactional
     public void expressInterest(String userId, String id) {
         Opportunity opportunity = getEntityOrThrow(id);
+        if (opportunity.getPostedByUserId().equals(userId)) {
+            throw new BadRequestException("You can't express interest in your own opportunity");
+        }
         if (opportunity.isClosed()) {
             throw new BadRequestException("This opportunity is no longer accepting applications");
         }
@@ -226,6 +250,9 @@ public class OpportunityService {
     @Transactional
     public ApplicationDto apply(String userId, String id, ApplyToOpportunityRequest request) {
         Opportunity opportunity = getEntityOrThrow(id);
+        if (opportunity.getPostedByUserId().equals(userId)) {
+            throw new BadRequestException("You can't apply to your own opportunity");
+        }
         if (opportunity.isClosed()) {
             throw new BadRequestException("This opportunity is no longer accepting applications");
         }
@@ -265,6 +292,8 @@ public class OpportunityService {
         auditService.log(userId, AuditAction.APPLY_OPPORTUNITY, "Opportunity", id, null);
         notificationService.notify(opportunity.getPostedByUserId(), NotificationType.opportunity,
                 "New application", applicantUser.getName() + " applied to \"" + opportunity.getTitle() + "\"", id, userId);
+        notificationService.notify(userId, NotificationType.opportunity,
+                "Application submitted", "Your application for \"" + opportunity.getTitle() + "\" has been submitted", id, null);
 
         return toApplicationDto(applicant, opportunity, userId);
     }

@@ -14,6 +14,9 @@ public record OpportunityDto(
         boolean remote,
         String description,
         String compensation,
+        String equity,
+        String experienceLevel,
+        Instant applicationDeadline,
         String postedByUserId,
         String chapterId,
         List<String> requirements,
@@ -22,6 +25,7 @@ public record OpportunityDto(
         String applicationStatus,
         int applicantCount,
         int interestCount,
+        Instant appliedAt,
         Instant createdAt,
         Instant updatedAt
 ) {

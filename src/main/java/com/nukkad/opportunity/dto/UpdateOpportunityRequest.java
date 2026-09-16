@@ -2,6 +2,7 @@ package com.nukkad.opportunity.dto;
 
 import jakarta.validation.constraints.Size;
 
+import java.time.Instant;
 import java.util.List;
 
 public record UpdateOpportunityRequest(
@@ -13,6 +14,9 @@ public record UpdateOpportunityRequest(
         Boolean remote,
         String description,
         List<String> requirements,
-        String compensation
+        String compensation,
+        String equity,
+        String experienceLevel,
+        Instant applicationDeadline
 ) {
 }

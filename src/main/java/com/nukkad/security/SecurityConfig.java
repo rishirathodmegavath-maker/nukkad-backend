@@ -2,6 +2,7 @@ package com.nukkad.security;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -79,6 +80,13 @@ public class SecurityConfig {
                         .accessDeniedHandler(accessDeniedHandler))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_PATHS).permitAll()
+                        // Narrow, method-scoped exception so a PUBLIC-visibility startup can be
+                        // viewed via a direct link or discovery without logging in. Scoped to
+                        // exactly these two GET shapes — sub-resources (members, materials,
+                        // updates...) and every write path stay fully authenticated as before.
+                        // StartupService still enforces per-startup visibility for the anonymous
+                        // case; this only decides whether the request reaches the controller.
+                        .requestMatchers(HttpMethod.GET, "/api/startups", "/api/startups/*").permitAll()
                         .anyRequest().authenticated())
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(new AuthRateLimitFilter(rateLimiter), JwtAuthenticationFilter.class);

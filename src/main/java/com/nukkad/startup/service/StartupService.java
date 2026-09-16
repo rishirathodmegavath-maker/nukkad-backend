@@ -11,19 +11,24 @@ import com.nukkad.startup.dto.CreateStartupRequest;
 import com.nukkad.startup.dto.CreateStartupRoleRequest;
 import com.nukkad.startup.dto.StartupDto;
 import com.nukkad.startup.dto.StartupJoinRequestDto;
+import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
 import com.nukkad.startup.dto.UpdateStartupRequest;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupFollow;
+import com.nukkad.startup.entity.StartupMaterial;
+import com.nukkad.startup.entity.StartupMaterialType;
 import com.nukkad.startup.entity.StartupRole;
 import com.nukkad.startup.entity.StartupRoleType;
 import com.nukkad.startup.entity.StartupStage;
 import com.nukkad.startup.entity.StartupTeamMember;
 import com.nukkad.startup.entity.StartupUpdate;
+import com.nukkad.startup.entity.StartupVisibility;
 import com.nukkad.startup.mapper.StartupMapper;
 import com.nukkad.startup.repository.StartupFollowRepository;
+import com.nukkad.startup.repository.StartupMaterialRepository;
 import com.nukkad.startup.repository.StartupRepository;
 import com.nukkad.startup.repository.StartupRoleRepository;
 import com.nukkad.startup.repository.StartupSpecifications;
@@ -41,8 +46,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 public class StartupService {
@@ -52,6 +61,7 @@ public class StartupService {
     private final StartupUpdateRepository updateRepository;
     private final StartupRoleRepository roleRepository;
     private final StartupFollowRepository followRepository;
+    private final StartupMaterialRepository materialRepository;
     private final UserRepository userRepository;
     private final UserService userService;
     private final StartupMapper startupMapper;
@@ -63,6 +73,7 @@ public class StartupService {
                            StartupUpdateRepository updateRepository,
                            StartupRoleRepository roleRepository,
                            StartupFollowRepository followRepository,
+                           StartupMaterialRepository materialRepository,
                            UserRepository userRepository,
                            UserService userService,
                            StartupMapper startupMapper,
@@ -73,6 +84,7 @@ public class StartupService {
         this.updateRepository = updateRepository;
         this.roleRepository = roleRepository;
         this.followRepository = followRepository;
+        this.materialRepository = materialRepository;
         this.userRepository = userRepository;
         this.userService = userService;
         this.startupMapper = startupMapper;
@@ -88,7 +100,11 @@ public class StartupService {
     @Transactional(readOnly = true)
     public StartupDto getStartup(String id, String viewerId) {
         Startup startup = getEntityOrThrow(id);
-        return startupMapper.toDto(startup, followRepository.existsByUserIdAndStartupId(viewerId, id));
+        requireVisible(startup, viewerId);
+        return startupMapper.toDto(startup,
+                viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, id),
+                isFounderMember(viewerId, id),
+                canViewFundraising(startup, viewerId));
     }
 
     @Transactional(readOnly = true)
@@ -100,18 +116,24 @@ public class StartupService {
                 StartupSpecifications.stage(stage),
                 StartupSpecifications.isRaising(isRaising),
                 StartupSpecifications.chapterId(chapterId),
-                StartupSpecifications.memberId(memberId)
+                StartupSpecifications.memberId(memberId),
+                StartupSpecifications.visibleTo(viewerId != null)
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return startupRepository.findAll(spec, pageable)
-                .map(s -> startupMapper.toDto(s, followRepository.existsByUserIdAndStartupId(viewerId, s.getId())));
+                .map(s -> startupMapper.toDto(s,
+                        viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
+                        isFounderMember(viewerId, s.getId()),
+                        canViewFundraising(s, viewerId)));
     }
 
     @Transactional(readOnly = true)
     public List<StartupDto> listMyFoundedStartups(String userId) {
         List<String> startupIds = teamMemberRepository.findByUserIdAndIsFounderTrueAndStatus(userId, StartupTeamMember.Status.ACTIVE)
                 .stream().map(StartupTeamMember::getStartupId).toList();
-        return startupRepository.findAllById(startupIds).stream().map(startupMapper::toDto).toList();
+        return startupRepository.findAllById(startupIds).stream()
+                .map(s -> startupMapper.toDto(s, false, true, true))
+                .toList();
     }
 
     @Transactional
@@ -136,7 +158,7 @@ public class StartupService {
                 .status(StartupTeamMember.Status.ACTIVE)
                 .build());
 
-        return startupMapper.toDto(startup);
+        return startupMapper.toDto(startup, false, true, true);
     }
 
     @Transactional
@@ -146,16 +168,36 @@ public class StartupService {
 
         if (request.name() != null) startup.setName(request.name());
         if (request.logoUrl() != null) startup.setLogoUrl(request.logoUrl());
+        if (request.location() != null) startup.setLocation(blankToNull(request.location()));
+        if (request.website() != null) startup.setWebsite(normalizeAndValidateUrl(request.website(), "Website"));
         if (request.tagline() != null) startup.setTagline(request.tagline());
         if (request.sector() != null) startup.setSector(request.sector());
         if (request.problem() != null) startup.setProblem(request.problem());
         if (request.solution() != null) startup.setSolution(request.solution());
+        if (request.targetCustomer() != null) startup.setTargetCustomer(blankToNull(request.targetCustomer()));
+        if (request.businessModel() != null) startup.setBusinessModel(blankToNull(request.businessModel()));
+        if (request.whatBuilding() != null) startup.setWhatBuilding(blankToNull(request.whatBuilding()));
         if (request.traction() != null) startup.setTraction(request.traction());
+        if (request.revenue() != null) startup.setRevenue(blankToNull(request.revenue()));
+        if (request.customers() != null) startup.setCustomers(blankToNull(request.customers()));
+        if (request.users() != null) startup.setUsers(blankToNull(request.users()));
+        if (request.growth() != null) startup.setGrowth(blankToNull(request.growth()));
+        if (request.otherTraction() != null) startup.setOtherTraction(blankToNull(request.otherTraction()));
+        if (request.keywords() != null) startup.setKeywords(normalizeKeywords(request.keywords()));
+        if (request.visibility() != null) {
+            try {
+                startup.setVisibility(StartupVisibility.fromLabel(request.visibility()));
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException("Unknown visibility: " + request.visibility());
+            }
+        }
+        if (request.fundraisingVisible() != null) startup.setFundraisingVisible(request.fundraisingVisible());
         if (request.isRaising() != null) startup.setRaising(request.isRaising());
         if (request.stage() != null) startup.setStage(StartupStage.fromLabel(request.stage()));
         if (request.needs() != null) startup.setNeeds(new java.util.HashSet<>(request.needs()));
 
-        return startupMapper.toDto(startupRepository.saveAndFlush(startup));
+        Startup saved = startupRepository.saveAndFlush(startup);
+        return startupMapper.toDto(saved, false, true, true);
     }
 
     @Transactional
@@ -170,7 +212,7 @@ public class StartupService {
         Startup startup = getEntityOrThrow(startupId);
         requireFounder(founderId, startupId);
         startup.setLogoUrl(fileStorageService.storeImage(file, "startup-logos"));
-        return startupMapper.toDto(startupRepository.save(startup));
+        return startupMapper.toDto(startupRepository.save(startup), false, true, true);
     }
 
     @Transactional
@@ -178,7 +220,7 @@ public class StartupService {
         Startup startup = getEntityOrThrow(startupId);
         requireFounder(founderId, startupId);
         startup.setLogoUrl(null);
-        return startupMapper.toDto(startupRepository.save(startup));
+        return startupMapper.toDto(startupRepository.save(startup), false, true, true);
     }
 
     @Transactional(readOnly = true)
@@ -413,11 +455,129 @@ public class StartupService {
         return startupMapper.toDto(role);
     }
 
+    // ---- Startup materials ----
+
+    @Transactional(readOnly = true)
+    public List<StartupMaterialDto> getMaterials(String startupId, String viewerId) {
+        getEntityOrThrow(startupId);
+        boolean canManage = isFounderMember(viewerId, startupId);
+        return materialRepository.findByStartupIdOrderBySortOrderAscCreatedAtAsc(startupId).stream()
+                .map(m -> startupMapper.toDto(m, canManage))
+                .toList();
+    }
+
+    @Transactional
+    public StartupMaterialDto addMaterial(String userId, String startupId, String materialTypeLabel,
+                                           String title, String url, MultipartFile file) {
+        getEntityOrThrow(startupId);
+        requireFounder(userId, startupId);
+        StartupMaterialType type = parseMaterialType(materialTypeLabel);
+
+        StartupMaterial.StartupMaterialBuilder builder = StartupMaterial.builder()
+                .startupId(startupId)
+                .materialType(type)
+                .title(blankToNull(title))
+                .createdByUserId(userId);
+
+        if (type.isExternalLink()) {
+            if (file != null && !file.isEmpty()) {
+                throw new BadRequestException(type.getLabel() + " is a link, not a file — provide a URL");
+            }
+            if (url == null || url.isBlank()) {
+                throw new BadRequestException(type.getLabel() + " requires a URL");
+            }
+            builder.url(normalizeAndValidateUrl(url, type.getLabel()));
+        } else {
+            if (url != null && !url.isBlank()) {
+                throw new BadRequestException(type.getLabel() + " must be an uploaded file, not a URL");
+            }
+            if (file == null || file.isEmpty()) {
+                throw new BadRequestException(type.getLabel() + " requires a file to upload");
+            }
+            FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "startup-materials");
+            requireExpectedKind(type, media.kind());
+            builder.url(media.url())
+                    .originalFileName(file.getOriginalFilename())
+                    .contentType(file.getContentType());
+        }
+
+        StartupMaterial saved = materialRepository.saveAndFlush(builder.build());
+        return startupMapper.toDto(saved, true);
+    }
+
+    @Transactional
+    public StartupMaterialDto updateMaterial(String userId, String materialId, String title, String url, MultipartFile file) {
+        StartupMaterial material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new ResourceNotFoundException("Material not found: " + materialId));
+        requireFounder(userId, material.getStartupId());
+
+        if (title != null) material.setTitle(blankToNull(title));
+
+        if (material.getMaterialType().isExternalLink()) {
+            if (url != null) {
+                if (url.isBlank()) throw new BadRequestException("URL cannot be blank");
+                material.setUrl(normalizeAndValidateUrl(url, material.getMaterialType().getLabel()));
+            }
+        } else if (file != null && !file.isEmpty()) {
+            FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "startup-materials");
+            requireExpectedKind(material.getMaterialType(), media.kind());
+            material.setUrl(media.url());
+            material.setOriginalFileName(file.getOriginalFilename());
+            material.setContentType(file.getContentType());
+        }
+
+        return startupMapper.toDto(materialRepository.saveAndFlush(material), true);
+    }
+
+    @Transactional
+    public void deleteMaterial(String userId, String materialId) {
+        StartupMaterial material = materialRepository.findById(materialId)
+                .orElseThrow(() -> new ResourceNotFoundException("Material not found: " + materialId));
+        requireFounder(userId, material.getStartupId());
+        materialRepository.delete(material);
+    }
+
+    private StartupMaterialType parseMaterialType(String label) {
+        try {
+            return StartupMaterialType.fromLabel(label);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Unknown material type: " + label);
+        }
+    }
+
+    /** Keeps uploads honest about what each category is for, without loosening the underlying
+     *  image/video/PDF whitelist already enforced by FileStorageService. */
+    private void requireExpectedKind(StartupMaterialType type, FileStorageService.AttachmentKind kind) {
+        boolean ok = switch (type) {
+            case SCREENSHOTS -> kind == FileStorageService.AttachmentKind.IMAGE;
+            case PITCH_DECK, OTHER_DOCUMENT -> kind == FileStorageService.AttachmentKind.PDF;
+            case PRODUCT_DEMO -> kind == FileStorageService.AttachmentKind.IMAGE || kind == FileStorageService.AttachmentKind.VIDEO;
+            default -> true;
+        };
+        if (!ok) {
+            String expected = switch (type) {
+                case SCREENSHOTS -> "an image";
+                case PITCH_DECK, OTHER_DOCUMENT -> "a PDF";
+                case PRODUCT_DEMO -> "an image or video";
+                default -> "a supported file";
+            };
+            throw new BadRequestException(type.getLabel() + " must be " + expected);
+        }
+    }
+
+    // ---- authorization / visibility helpers ----
+
     private void requireFounder(String userId, String startupId) {
-        boolean isFounder = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
-                .map(StartupTeamMember::isFounder)
+        if (!isFounderMember(userId, startupId)) {
+            throw new ForbiddenException("Only a founder of this startup can perform this action");
+        }
+    }
+
+    private boolean isFounderMember(String userId, String startupId) {
+        if (userId == null) return false;
+        return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
+                .map(m -> m.isFounder() && m.getStatus() == StartupTeamMember.Status.ACTIVE)
                 .orElse(false);
-        if (!isFounder) throw new ForbiddenException("Only a founder of this startup can perform this action");
     }
 
     private void requireTeamMember(String userId, String startupId) {
@@ -425,5 +585,56 @@ public class StartupService {
                 .map(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
                 .orElse(false);
         if (!isMember) throw new ForbiddenException("Only a team member of this startup can perform this action");
+    }
+
+    private boolean isActiveTeamMember(String userId, String startupId) {
+        if (userId == null) return false;
+        return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
+                .map(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .orElse(false);
+    }
+
+    /** An anonymous caller may only ever reach a PUBLIC startup; never leaks that a member-only
+     *  startup exists by returning a different error for that case. */
+    private void requireVisible(Startup startup, String viewerId) {
+        if (viewerId == null && startup.getVisibility() == StartupVisibility.NUKKAD_MEMBERS) {
+            throw new ResourceNotFoundException("Startup not found: " + startup.getId());
+        }
+    }
+
+    /** Fundraising data is visible to the founder/team of the startup regardless of the toggle,
+     *  and to everyone else only when the founder has switched fundraising visibility on. */
+    private boolean canViewFundraising(Startup startup, String viewerId) {
+        return startup.isFundraisingVisible() || isActiveTeamMember(viewerId, startup.getId());
+    }
+
+    private String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s;
+    }
+
+    private String normalizeKeywords(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String joined = Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.joining(", "));
+        return joined.isBlank() ? null : joined;
+    }
+
+    /** Mirrors ResourceService's scheme-optional normalization, plus rejects strings that still
+     *  don't parse as a URL afterwards (e.g. containing spaces or no host at all). */
+    private String normalizeAndValidateUrl(String rawUrl, String fieldLabel) {
+        String trimmed = rawUrl == null ? "" : rawUrl.trim();
+        if (trimmed.isEmpty()) return null;
+        String candidate = trimmed.matches("(?i)^https?://.*") ? trimmed : "https://" + trimmed;
+        try {
+            URI uri = new URI(candidate);
+            if (uri.getHost() == null || uri.getHost().isBlank()) {
+                throw new BadRequestException(fieldLabel + " is not a valid URL");
+            }
+        } catch (URISyntaxException e) {
+            throw new BadRequestException(fieldLabel + " is not a valid URL");
+        }
+        return candidate;
     }
 }

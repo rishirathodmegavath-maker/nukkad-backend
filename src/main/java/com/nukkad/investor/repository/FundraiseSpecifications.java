@@ -2,7 +2,9 @@ package com.nukkad.investor.repository;
 
 import com.nukkad.investor.entity.Fundraise;
 import com.nukkad.investor.entity.FundraiseStatus;
+import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupStage;
+import com.nukkad.startup.entity.StartupTeamMember;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.util.Arrays;
@@ -30,5 +32,33 @@ public final class FundraiseSpecifications {
         if (stageLabel == null || stageLabel.isBlank()) return null;
         StartupStage stage = StartupStage.fromLabel(stageLabel.trim());
         return (root, query, cb) -> cb.equal(root.get("fundingStage"), stage);
+    }
+
+    /** Excludes fundraises belonging to a startup that has switched fundraising visibility off,
+     *  unless the viewer is an active team member of that same startup. Applied unconditionally
+     *  in list() so a hidden fundraise's existence is never revealed by browsing all fundraises. */
+    public static Specification<Fundraise> visibleTo(String viewerId) {
+        return (root, query, cb) -> {
+            var startupSub = query.subquery(String.class);
+            var startup = startupSub.from(Startup.class);
+            startupSub.select(startup.get("id")).where(cb.and(
+                    cb.equal(startup.get("id"), root.get("startupId")),
+                    cb.isTrue(startup.get("fundraisingVisible"))
+            ));
+            var visibleByFlag = cb.exists(startupSub);
+
+            if (viewerId == null) return visibleByFlag;
+
+            var teamSub = query.subquery(String.class);
+            var member = teamSub.from(StartupTeamMember.class);
+            teamSub.select(member.get("startupId")).where(cb.and(
+                    cb.equal(member.get("startupId"), root.get("startupId")),
+                    cb.equal(member.get("userId"), viewerId),
+                    cb.equal(member.get("status"), StartupTeamMember.Status.ACTIVE)
+            ));
+            var isTeamMember = cb.exists(teamSub);
+
+            return cb.or(visibleByFlag, isTeamMember);
+        };
     }
 }

@@ -51,20 +51,41 @@ public class FundraiseService {
     public Page<FundraiseDto> list(String status, String stage, String viewerId, int page, int size) {
         Specification<Fundraise> spec = FundraiseSpecifications.combine(
                 FundraiseSpecifications.status(status),
-                FundraiseSpecifications.stage(stage)
+                FundraiseSpecifications.stage(stage),
+                FundraiseSpecifications.visibleTo(viewerId)
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return fundraiseRepository.findAll(spec, pageable).map(f -> toDto(f, viewerId));
     }
 
+    /** Direct fetch by fundraise id must not bypass fundraising-visibility — treated as "not
+     *  found" for a viewer who isn't allowed to see it, same as StartupService does for a
+     *  member-only startup viewed anonymously. */
     @Transactional(readOnly = true)
     public FundraiseDto get(String id, String viewerId) {
-        return toDto(getEntityOrThrow(id), viewerId);
+        Fundraise fundraise = getEntityOrThrow(id);
+        if (!canView(fundraise, viewerId)) {
+            throw new ResourceNotFoundException("Fundraise not found: " + id);
+        }
+        return toDto(fundraise, viewerId);
     }
 
     @Transactional(readOnly = true)
     public FundraiseDto getByStartup(String startupId, String viewerId) {
-        return fundraiseRepository.findByStartupId(startupId).map(f -> toDto(f, viewerId)).orElse(null);
+        return fundraiseRepository.findByStartupId(startupId)
+                .filter(f -> canView(f, viewerId))
+                .map(f -> toDto(f, viewerId))
+                .orElse(null);
+    }
+
+    private boolean canView(Fundraise fundraise, String viewerId) {
+        Startup startup = startupRepository.findById(fundraise.getStartupId()).orElse(null);
+        if (startup == null) return false;
+        if (startup.isFundraisingVisible()) return true;
+        if (viewerId == null) return false;
+        return teamMemberRepository.findByStartupIdAndUserId(startup.getId(), viewerId)
+                .map(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .orElse(false);
     }
 
     @Transactional

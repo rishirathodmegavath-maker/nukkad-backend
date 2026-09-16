@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.time.Instant;
 import java.util.List;
 
 public record PostOpportunityRequest(
@@ -15,6 +16,9 @@ public record PostOpportunityRequest(
         boolean remote,
         @NotBlank String description,
         List<String> requirements,
-        String compensation
+        String compensation,
+        String equity,
+        String experienceLevel,
+        Instant applicationDeadline
 ) {
 }
