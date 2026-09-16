@@ -88,6 +88,7 @@ public class ContentMatchingService {
         List<Idea> candidates = ideaRepository
                 .findAll(PageRequest.of(0, CANDIDATE_WINDOW_SIZE, Sort.by(Sort.Direction.DESC, "createdAt")))
                 .getContent().stream()
+                .filter(idea -> idea.getStartupId() == null)
                 .filter(idea -> !idea.getCreatorId().equals(viewerId))
                 .filter(idea -> !idea.getTeamMemberIds().contains(viewerId))
                 .filter(idea -> !blocked.contains(idea.getCreatorId()))

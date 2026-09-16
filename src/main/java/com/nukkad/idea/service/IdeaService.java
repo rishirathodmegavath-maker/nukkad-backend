@@ -190,6 +190,9 @@ public class IdeaService {
     @Transactional
     public IdeaInterestDto expressInterest(String userId, String ideaId, ExpressInterestRequest request) {
         Idea idea = getEntityOrThrow(ideaId);
+        if (idea.getStartupId() != null) {
+            throw new BadRequestException("This idea has already become a startup and is no longer looking for team members");
+        }
         if (idea.getCreatorId().equals(userId)) {
             throw new BadRequestException("You cannot express interest in your own idea");
         }
@@ -358,6 +361,9 @@ public class IdeaService {
     public IdeaDto addToTeam(String callerId, String ideaId, String userId) {
         Idea idea = getEntityOrThrow(ideaId);
         requireCreator(callerId, idea);
+        if (idea.getStartupId() != null) {
+            throw new BadRequestException("This idea has already become a startup — manage its team from the startup page instead");
+        }
         userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
         Set<String> team = new HashSet<>(idea.getTeamMemberIds());
@@ -432,7 +438,7 @@ public class IdeaService {
         String startupId = startup.getId();
         String startupName = startup.getName();
         idea.getTeamMemberIds().forEach(memberId ->
-                notificationService.notify(memberId, NotificationType.idea_interest,
+                notificationService.notify(memberId, NotificationType.startup,
                         "Idea became a startup", "\"" + idea.getTitle() + "\" is now the startup " + startupName,
                         startupId, callerId));
 

@@ -366,16 +366,25 @@ public class UserService {
         User viewer = getEntityOrThrow(viewerId);
 
         var blockedIds = userBlockRepository.findBlockedEitherWayIds(viewerId);
+        // A "suggested for you" widget exists to surface people the viewer doesn't already know —
+        // exclude anyone with an existing connection row (any status), matching the exclusion
+        // PeopleRecommendationService/CandidatePoolService already apply for the same purpose.
+        var alreadyRelatedIds = new java.util.HashSet<String>();
+        for (Connection c : connectionRepository.findAllInvolving(viewerId)) {
+            alreadyRelatedIds.add(c.getUserAId().equals(viewerId) ? c.getUserBId() : c.getUserAId());
+        }
         Specification<User> spec = UserSpecifications.combine(
                 UserSpecifications.excludeId(viewerId),
                 UserSpecifications.excludeIds(blockedIds),
+                UserSpecifications.excludeIds(alreadyRelatedIds),
                 viewer.getChapterId() != null ? UserSpecifications.chapterId(viewer.getChapterId()) : null
         );
         Pageable pageable = PageRequest.of(0, Math.min(Math.max(limit, 1), 50), Sort.by(Sort.Direction.DESC, "connectionsCount"));
         List<User> candidates = new java.util.ArrayList<>(userRepository.findAll(spec, pageable).getContent());
 
         if (candidates.size() < limit && viewer.getChapterId() != null) {
-            Specification<User> fallback = UserSpecifications.combine(UserSpecifications.excludeId(viewerId), UserSpecifications.excludeIds(blockedIds));
+            Specification<User> fallback = UserSpecifications.combine(UserSpecifications.excludeId(viewerId),
+                    UserSpecifications.excludeIds(blockedIds), UserSpecifications.excludeIds(alreadyRelatedIds));
             List<User> more = userRepository.findAll(fallback, PageRequest.of(0, limit)).getContent();
             for (User u : more) {
                 if (candidates.size() >= limit) break;
