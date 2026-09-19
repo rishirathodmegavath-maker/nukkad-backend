@@ -17,7 +17,7 @@ case "$target" in
   frontend)
     git -C frontend pull --ff-only
     rm -rf .frontend-build && mkdir .frontend-build
-    docker buildx build --target export -o .frontend-build       --build-arg VITE_API_BASE_URL=https://api.buildadda.com/api       --build-arg VITE_GOOGLE_CLIENT_ID=125583444613-5ihqtuescs4r6nu7eq1qn0lblme4cq4k.apps.googleusercontent.com       frontend
+    docker buildx build --target export -o .frontend-build       --build-arg VITE_API_BASE_URL=https://api.buildadda.com/api       --build-arg VITE_GOOGLE_CLIENT_ID=213678785899-jlooi4qr57hh6ognkng7k9ov5s3e487k.apps.googleusercontent.com       frontend
     mkdir -p frontend-dist
     rsync -a --delete .frontend-build/ frontend-dist/
     rm -rf .frontend-build
