@@ -1,0 +1,14 @@
+app.buildadda.com {
+	root * /srv/frontend-dist
+	encode gzip
+	try_files {path} /index.html
+	file_server
+}
+
+api.buildadda.com {
+	reverse_proxy backend:8082
+}
+
+media.buildadda.com {
+	reverse_proxy minio:9000
+}

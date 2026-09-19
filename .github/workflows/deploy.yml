@@ -1,0 +1,29 @@
+name: Deploy backend to VPS
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'deploy/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pull, rebuild and restart the backend on the VPS
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          # Pinned host key (public) so the deploy can't be redirected to another machine.
+          echo "187.126.113.106 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID530cAJJ8zhrNy10GKGmOCKkfVDL8QBbCJzxAlMiBiy" > ~/.ssh/known_hosts
+          # The key on the VPS is restricted to /srv/nukkad/deploy.sh, which only accepts: backend | frontend
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes root@187.126.113.106 backend
