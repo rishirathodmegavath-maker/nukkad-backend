@@ -1,5 +1,6 @@
 package com.nukkad.investor.repository;
 
+import com.nukkad.investor.entity.IntroDirection;
 import com.nukkad.investor.entity.IntroRequest;
 import com.nukkad.investor.entity.IntroRequestStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -13,6 +14,7 @@ public interface IntroRequestRepository extends JpaRepository<IntroRequest, Stri
 
     List<IntroRequest> findByRecipientIdOrderByCreatedAtDesc(String recipientId);
     List<IntroRequest> findByRequesterIdOrderByCreatedAtDesc(String requesterId);
+    long countByRecipientIdAndDirection(String recipientId, IntroDirection direction);
 
     @Query("select case when count(r) > 0 then true else false end from IntroRequest r "
             + "where r.status = com.nukkad.investor.entity.IntroRequestStatus.ACCEPTED "

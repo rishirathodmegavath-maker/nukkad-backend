@@ -56,6 +56,21 @@ public class User {
     @Builder.Default
     private boolean onboardingCompleted = false;
 
+    /** Admin-controlled account standing. Never set by the user themselves. */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private AccountStatus status = AccountStatus.ACTIVE;
+
+    /** Bumped by an Admin status change (never by the user). Embedded in every access token at
+     *  issuance; {@link com.nukkad.security.JwtAuthenticationFilter} rejects any token whose
+     *  embedded version no longer matches this current value — the mechanism that makes account
+     *  suspension/disable invalidate already-issued, still-unexpired access tokens immediately,
+     *  not just block future logins/refreshes. */
+    @Column(name = "token_version", nullable = false)
+    @Builder.Default
+    private int tokenVersion = 0;
+
     @Column(name = "google_subject", length = 255, unique = true)
     private String googleSubject;
 

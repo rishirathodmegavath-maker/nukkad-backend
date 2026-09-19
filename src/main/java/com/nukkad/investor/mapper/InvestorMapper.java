@@ -2,9 +2,11 @@ package com.nukkad.investor.mapper;
 
 import com.nukkad.investor.dto.FundraiseDto;
 import com.nukkad.investor.dto.IntroRequestDto;
+import com.nukkad.investor.dto.InvestorActivationRequestDto;
 import com.nukkad.investor.dto.InvestorProfileDto;
 import com.nukkad.investor.entity.Fundraise;
 import com.nukkad.investor.entity.IntroRequest;
+import com.nukkad.investor.entity.InvestorActivationRequest;
 import com.nukkad.investor.entity.InvestorProfile;
 import com.nukkad.user.dto.UserDto;
 import org.springframework.stereotype.Component;
@@ -52,7 +54,29 @@ public class InvestorMapper {
         );
     }
 
-    public IntroRequestDto toDto(IntroRequest request, UserDto requester, UserDto recipient, String startupName, String ideaTitle) {
+    public InvestorActivationRequestDto toDto(InvestorActivationRequest request) {
+        return new InvestorActivationRequestDto(
+                request.getId(),
+                request.getStatus().name(),
+                request.getInvestorType().getLabel(),
+                request.getFirmName(),
+                request.getThesis(),
+                new HashSet<>(request.getSectors()),
+                new HashSet<>(request.getStages()),
+                new HashSet<>(request.getGeographies()),
+                request.getTicketMin(),
+                request.getTicketMax(),
+                request.getPortfolioCount(),
+                request.getWebsite(),
+                request.getResultingProfileId(),
+                request.getReviewNote(),
+                request.getCreatedAt(),
+                request.getReviewedAt()
+        );
+    }
+
+    public IntroRequestDto toDto(IntroRequest request, UserDto requester, UserDto recipient, String startupName,
+                                  String ideaTitle, String conversationId) {
         return new IntroRequestDto(
                 request.getId(),
                 request.getRequesterId(),
@@ -67,7 +91,8 @@ public class InvestorMapper {
                 request.getMessage(),
                 request.getStatus().getLabel(),
                 request.getCreatedAt(),
-                request.getReviewedAt()
+                request.getReviewedAt(),
+                conversationId
         );
     }
 }

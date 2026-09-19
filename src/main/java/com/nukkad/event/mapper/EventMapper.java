@@ -1,13 +1,17 @@
 package com.nukkad.event.mapper;
 
 import com.nukkad.event.dto.EventDto;
+import com.nukkad.event.dto.EventStartupSummaryDto;
 import com.nukkad.event.entity.Event;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 @Component
 public class EventMapper {
 
-    public EventDto toDto(Event event, String chapterName, long attendeeCount, boolean isAttending, boolean canManage) {
+    public EventDto toDto(Event event, String chapterName, long attendeeCount, boolean isAttending, boolean canManage,
+                           List<EventStartupSummaryDto> startups) {
         return new EventDto(
                 event.getId(),
                 event.getTitle(),
@@ -25,6 +29,7 @@ public class EventMapper {
                 attendeeCount,
                 isAttending,
                 canManage,
+                startups,
                 event.getCreatedAt(),
                 event.getUpdatedAt()
         );

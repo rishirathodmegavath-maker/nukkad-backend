@@ -1,5 +1,6 @@
 package com.nukkad.feed.service;
 
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
@@ -46,9 +47,11 @@ class FeedServiceTest {
     @Mock private PostCommentRepository postCommentRepository;
     @Mock private PostSaveRepository postSaveRepository;
     @Mock private FileStorageService fileStorageService;
+    @Mock private AuditService auditService;
 
     private FeedService service() {
-        return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository, fileStorageService);
+        return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
+                fileStorageService, auditService);
     }
 
     private Post post(String id) {
@@ -351,5 +354,41 @@ class FeedServiceTest {
         var page = service().listSaved("user-1", null, null, 0, 20);
 
         assertThat(page.getContent()).extracting("id").containsExactly("post-1");
+    }
+
+    @Test
+    void gettingARemovedPostIsNotFoundForEveryoneIncludingItsAuthor() {
+        Post post = post("post-1");
+        post.setRemovedByAdmin(true);
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+
+        assertThatThrownBy(() -> service().get("author-1", "post-1")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void publicListingExcludesRemovedPosts() {
+        when(postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", null, 0, 20);
+
+        verify(postRepository).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
+        verify(postRepository, never()).findAllByOrderByCreatedAtDesc(any());
+    }
+
+    @Test
+    void removingAPostLogsAuditAndRestoringReversesIt() {
+        Post post = post("post-1");
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        var removed = service().setRemovedByAdmin("admin-1", "post-1", true, "spam", "127.0.0.1");
+        assertThat(removed.removedByAdmin()).isTrue();
+        assertThat(removed.removalReason()).isEqualTo("spam");
+        verify(auditService).log(eq("admin-1"), any(), eq("Post"), eq("post-1"), any(), any());
+
+        var restored = service().setRemovedByAdmin("admin-1", "post-1", false, null, "127.0.0.1");
+        assertThat(restored.removedByAdmin()).isFalse();
+        assertThat(restored.removalReason()).isNull();
     }
 }

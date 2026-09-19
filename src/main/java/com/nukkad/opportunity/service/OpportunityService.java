@@ -3,8 +3,10 @@ package com.nukkad.opportunity.service;
 import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
@@ -17,6 +19,7 @@ import com.nukkad.opportunity.entity.Opportunity;
 import com.nukkad.opportunity.entity.OpportunityApplicant;
 import com.nukkad.opportunity.entity.OpportunityInterest;
 import com.nukkad.opportunity.entity.OpportunityType;
+import com.nukkad.opportunity.entity.WorkMode;
 import com.nukkad.opportunity.mapper.OpportunityMapper;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
 import com.nukkad.opportunity.repository.OpportunityInterestRepository;
@@ -54,6 +57,10 @@ import java.util.stream.Collectors;
 
 @Service
 public class OpportunityService {
+
+    /** Founder + Admin — who may post/attribute an opportunity to a startup. */
+    private static final List<StartupTeamMember.TeamRole> MANAGER_ROLES =
+            List.of(StartupTeamMember.TeamRole.FOUNDER, StartupTeamMember.TeamRole.ADMIN);
 
     private final OpportunityRepository opportunityRepository;
     private final OpportunityApplicantRepository applicantRepository;
@@ -113,37 +120,136 @@ public class OpportunityService {
 
     @Transactional(readOnly = true)
     public OpportunityDto getOpportunity(String id, String viewerId) {
+        Opportunity opportunity = getEntityOrThrow(id);
+        if (opportunity.isRemovedByAdmin()) {
+            throw new ResourceNotFoundException("Opportunity not found: " + id);
+        }
+        // Pre-publish gate: a PENDING/REJECTED posting is only visible to the user who posted it
+        // (so they can see their own submission's review status) or an admin (via
+        // getOpportunityForAdmin below).
+        if (opportunity.getModerationStatus() != ModerationStatus.APPROVED
+                && !opportunity.getPostedByUserId().equals(viewerId)) {
+            throw new ResourceNotFoundException("Opportunity not found: " + id);
+        }
+        return toOpportunityDto(opportunity, viewerId);
+    }
+
+    // Admin-only: bypasses the removed-by-admin check above so a removed posting can still be
+    // reviewed (and restored) from the admin panel.
+    @Transactional(readOnly = true)
+    public OpportunityDto getOpportunityForAdmin(String id, String viewerId) {
         return toOpportunityDto(getEntityOrThrow(id), viewerId);
     }
 
+    // PUBLIC listing — excludes non-approved postings unless the caller is explicitly filtering to
+    // their own postings (postedByUserId == viewerId). A founder's profile page and "Posted by Me"
+    // both reuse this endpoint, so a user's own pending/rejected postings must stay visible to them.
     @Transactional(readOnly = true)
-    public Page<OpportunityDto> listOpportunities(String q, String type, Boolean remote, String chapterId,
+    public Page<OpportunityDto> listOpportunities(String q, String type, String workMode, String chapterId,
                                                    String startupId, String postedByUserId,
                                                    String viewerId, int page, int size) {
+        boolean ownContent = postedByUserId != null && postedByUserId.equals(viewerId);
         Specification<Opportunity> spec = OpportunitySpecifications.combine(
                 OpportunitySpecifications.search(q),
                 OpportunitySpecifications.type(type),
-                OpportunitySpecifications.remote(remote),
+                OpportunitySpecifications.workMode(workMode),
                 OpportunitySpecifications.chapterId(chapterId),
                 OpportunitySpecifications.startupId(startupId),
                 OpportunitySpecifications.postedByUserId(postedByUserId),
-                OpportunitySpecifications.open()
+                OpportunitySpecifications.open(),
+                OpportunitySpecifications.notRemoved(),
+                ownContent ? null : OpportunitySpecifications.approved()
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return opportunityRepository.findAll(spec, pageable).map(o -> toOpportunityDto(o, viewerId));
+    }
+
+    // ADMIN-ONLY escape hatch: everywhere else, closed/removed/non-approved postings are
+    // unconditionally excluded from listings so public discovery never surfaces a filled, taken-down,
+    // or not-yet-reviewed role. Admin oversight needs to find and review any of them (e.g. one tied
+    // to a report, or one still PENDING), so it alone can opt in via these independent filters.
+    @Transactional(readOnly = true)
+    public Page<OpportunityDto> listOpportunitiesForAdmin(String q, String type, String workMode, String chapterId,
+                                                           String startupId, String postedByUserId, String viewerId,
+                                                           boolean includeClosed, boolean includeRemoved,
+                                                           ModerationStatus moderationStatus, int page, int size) {
+        Specification<Opportunity> spec = OpportunitySpecifications.combine(
+                OpportunitySpecifications.search(q),
+                OpportunitySpecifications.type(type),
+                OpportunitySpecifications.workMode(workMode),
+                OpportunitySpecifications.chapterId(chapterId),
+                OpportunitySpecifications.startupId(startupId),
+                OpportunitySpecifications.postedByUserId(postedByUserId),
+                includeClosed ? null : OpportunitySpecifications.open(),
+                includeRemoved ? null : OpportunitySpecifications.notRemoved(),
+                OpportunitySpecifications.moderationStatus(moderationStatus)
+        );
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        return opportunityRepository.findAll(spec, pageable).map(o -> toOpportunityDto(o, viewerId));
+    }
+
+    // See IdeaService.setRemovedByAdmin for the shared rationale behind this moderation model.
+    @Transactional
+    public OpportunityDto setRemovedByAdmin(String adminId, String opportunityId, boolean removed, String reason, String ip) {
+        Opportunity opportunity = getEntityOrThrow(opportunityId);
+        opportunity.setRemovedByAdmin(removed);
+        opportunity.setRemovalReason(removed ? reason : null);
+        opportunity = opportunityRepository.saveAndFlush(opportunity);
+
+        java.util.Map<String, Object> details = new java.util.HashMap<>();
+        details.put("entityType", "Opportunity");
+        if (removed && reason != null && !reason.isBlank()) details.put("reason", reason);
+        auditService.log(adminId, removed ? AuditAction.ADMIN_CONTENT_REMOVED : AuditAction.ADMIN_CONTENT_RESTORED,
+                "Opportunity", opportunityId, ip, details);
+
+        return toOpportunityDto(opportunity, adminId);
+    }
+
+    // Pre-publish approval gate: a posting may be reviewed exactly once (PENDING -> APPROVED/REJECTED)
+    // — see ReportService.resolve for the identical "reviewed once" rationale. A rejection reason is
+    // required so the poster understands why.
+    @Transactional
+    public OpportunityDto reviewModeration(String adminId, String opportunityId, boolean approved, String reason, String ip) {
+        Opportunity opportunity = getEntityOrThrow(opportunityId);
+        if (opportunity.getModerationStatus() != ModerationStatus.PENDING) {
+            throw new ConflictException("This opportunity has already been reviewed");
+        }
+        if (!approved && (reason == null || reason.isBlank())) {
+            throw new BadRequestException("A reason is required when rejecting an opportunity");
+        }
+
+        opportunity.setModerationStatus(approved ? ModerationStatus.APPROVED : ModerationStatus.REJECTED);
+        opportunity.setRejectionReason(approved ? null : reason);
+        opportunity.setModerationReviewedBy(adminId);
+        opportunity.setModerationReviewedAt(Instant.now());
+        opportunity = opportunityRepository.saveAndFlush(opportunity);
+
+        java.util.Map<String, Object> details = new java.util.HashMap<>();
+        details.put("entityType", "Opportunity");
+        if (!approved) details.put("reason", reason);
+        auditService.log(adminId, approved ? AuditAction.ADMIN_CONTENT_APPROVED : AuditAction.ADMIN_CONTENT_REJECTED,
+                "Opportunity", opportunityId, ip, details);
+
+        notificationService.notify(opportunity.getPostedByUserId(), NotificationType.opportunity,
+                approved ? "Your opportunity was approved" : "Your opportunity was not approved",
+                approved ? "\"" + opportunity.getTitle() + "\" is now visible to the community."
+                        : "\"" + opportunity.getTitle() + "\" was not approved: " + reason,
+                opportunityId, adminId);
+
+        return toOpportunityDto(opportunity, adminId);
     }
 
     @Transactional
     public OpportunityDto postOpportunity(String userId, PostOpportunityRequest request) {
         User poster = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
-        if (!startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus(userId, StartupTeamMember.Status.ACTIVE)) {
-            throw new ForbiddenException("Only a founder of a startup on Nukkad can post an opportunity");
+        if (!startupTeamMemberRepository.existsByUserIdAndTeamRoleInAndStatus(userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)) {
+            throw new ForbiddenException("Only a founder or admin of a startup on Nukkad can post an opportunity");
         }
         if (request.startupId() != null
-                && !startupTeamMemberRepository.existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(
-                        request.startupId(), userId, StartupTeamMember.Status.ACTIVE)) {
-            throw new ForbiddenException("You can only attribute an opportunity to a startup you founded");
+                && !startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                        request.startupId(), userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)) {
+            throw new ForbiddenException("You can only attribute an opportunity to a startup you manage");
         }
 
         Opportunity opportunity = Opportunity.builder()
@@ -152,8 +258,9 @@ public class OpportunityService {
                 .startupId(request.startupId())
                 .organizationName(request.organizationName().trim())
                 .location(request.location())
-                .remote(request.remote())
+                .workMode(WorkMode.fromLabel(request.workMode()))
                 .description(request.description())
+                .responsibilities(request.responsibilities())
                 .compensation(request.compensation())
                 .equity(request.equity())
                 .experienceLevel(request.experienceLevel())
@@ -161,6 +268,7 @@ public class OpportunityService {
                 .postedByUserId(userId)
                 .chapterId(poster.getChapterId())
                 .requirements(request.requirements() == null ? new ArrayList<>() : new ArrayList<>(request.requirements()))
+                .requiredSkills(request.requiredSkills() == null ? new ArrayList<>() : new ArrayList<>(request.requiredSkills()))
                 .build();
 
         opportunity = opportunityRepository.saveAndFlush(opportunity);
@@ -176,21 +284,23 @@ public class OpportunityService {
         if (request.title() != null) opportunity.setTitle(request.title());
         if (request.type() != null) opportunity.setType(OpportunityType.fromLabel(request.type()));
         if (request.startupId() != null) {
-            if (!startupTeamMemberRepository.existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(
-                    request.startupId(), userId, StartupTeamMember.Status.ACTIVE)) {
-                throw new ForbiddenException("You can only attribute an opportunity to a startup you founded");
+            if (!startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                    request.startupId(), userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)) {
+                throw new ForbiddenException("You can only attribute an opportunity to a startup you manage");
             }
             opportunity.setStartupId(request.startupId());
         }
         if (request.organizationName() != null) opportunity.setOrganizationName(request.organizationName());
         if (request.location() != null) opportunity.setLocation(request.location());
-        if (request.remote() != null) opportunity.setRemote(request.remote());
+        if (request.workMode() != null) opportunity.setWorkMode(WorkMode.fromLabel(request.workMode()));
         if (request.description() != null) opportunity.setDescription(request.description());
+        if (request.responsibilities() != null) opportunity.setResponsibilities(request.responsibilities());
         if (request.compensation() != null) opportunity.setCompensation(request.compensation());
         if (request.equity() != null) opportunity.setEquity(request.equity());
         if (request.experienceLevel() != null) opportunity.setExperienceLevel(request.experienceLevel());
         if (request.applicationDeadline() != null) opportunity.setApplicationDeadline(request.applicationDeadline());
         if (request.requirements() != null) opportunity.setRequirements(new ArrayList<>(request.requirements()));
+        if (request.requiredSkills() != null) opportunity.setRequiredSkills(new ArrayList<>(request.requiredSkills()));
 
         return opportunityMapper.toDto(opportunityRepository.saveAndFlush(opportunity));
     }

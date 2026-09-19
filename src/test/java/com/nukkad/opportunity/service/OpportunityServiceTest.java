@@ -1,8 +1,11 @@
 package com.nukkad.opportunity.service;
 
+import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
@@ -51,6 +54,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
@@ -66,6 +70,9 @@ import static org.mockito.Mockito.when;
  */
 @ExtendWith(MockitoExtension.class)
 class OpportunityServiceTest {
+
+    private static final List<StartupTeamMember.TeamRole> MANAGER_ROLES =
+            List.of(StartupTeamMember.TeamRole.FOUNDER, StartupTeamMember.TeamRole.ADMIN);
 
     @Mock private OpportunityRepository opportunityRepository;
     @Mock private OpportunityApplicantRepository applicantRepository;
@@ -87,7 +94,8 @@ class OpportunityServiceTest {
     }
 
     private Opportunity opportunity(String posterId) {
-        return Opportunity.builder().id("opp1").title("Product Designer").postedByUserId(posterId).build();
+        return Opportunity.builder().id("opp1").title("Product Designer").postedByUserId(posterId)
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
     }
 
     private OpportunityApplicant applicant(String opportunityId, String userId, ApplicationStatus status) {
@@ -448,13 +456,13 @@ class OpportunityServiceTest {
 
     private PostOpportunityRequest postRequest() {
         return new PostOpportunityRequest("AI/ML Intern", "Internship", null, "ABC Technologies",
-                "Bengaluru", true, "Build ML pipelines", List.of("Python"), null, null, null, null);
+                "Bengaluru", "Remote", "Build ML pipelines", null, List.of("Python"), null, null, null, null, null);
     }
 
     @Test
     void nonFounderCannotPostAnOpportunity() {
         when(userRepository.findById("user1")).thenReturn(Optional.of(user("user1", "Alex")));
-        when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("user1", StartupTeamMember.Status.ACTIVE))
+        when(startupTeamMemberRepository.existsByUserIdAndTeamRoleInAndStatus("user1", MANAGER_ROLES, StartupTeamMember.Status.ACTIVE))
                 .thenReturn(false);
 
         assertThatThrownBy(() -> service().postOpportunity("user1", postRequest()))
@@ -465,7 +473,7 @@ class OpportunityServiceTest {
 
     @Test
     void founderOfAStartupCanPostAnOpportunity() {
-        when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("founder1", StartupTeamMember.Status.ACTIVE))
+        when(startupTeamMemberRepository.existsByUserIdAndTeamRoleInAndStatus("founder1", MANAGER_ROLES, StartupTeamMember.Status.ACTIVE))
                 .thenReturn(true);
         when(userRepository.findById("founder1")).thenReturn(Optional.of(user("founder1", "Rishi")));
         when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -480,13 +488,13 @@ class OpportunityServiceTest {
         // Regression test: a founder of Startup A could previously set startupId to Startup B's
         // id with no check that they actually founded B.
         PostOpportunityRequest requestForSomeoneElsesStartup = new PostOpportunityRequest(
-                "AI/ML Intern", "Internship", "startupB", "ABC Technologies", "Bengaluru", true,
-                "Build ML pipelines", List.of("Python"), null, null, null, null);
-        when(startupTeamMemberRepository.existsByUserIdAndIsFounderTrueAndStatus("founder1", StartupTeamMember.Status.ACTIVE))
+                "AI/ML Intern", "Internship", "startupB", "ABC Technologies", "Bengaluru", "Remote",
+                "Build ML pipelines", null, List.of("Python"), null, null, null, null, null);
+        when(startupTeamMemberRepository.existsByUserIdAndTeamRoleInAndStatus("founder1", MANAGER_ROLES, StartupTeamMember.Status.ACTIVE))
                 .thenReturn(true);
         when(userRepository.findById("founder1")).thenReturn(Optional.of(user("founder1", "Rishi")));
-        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(
-                "startupB", "founder1", StartupTeamMember.Status.ACTIVE)).thenReturn(false);
+        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                "startupB", "founder1", MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)).thenReturn(false);
 
         assertThatThrownBy(() -> service().postOpportunity("founder1", requestForSomeoneElsesStartup))
                 .isInstanceOf(ForbiddenException.class);
@@ -581,9 +589,37 @@ class OpportunityServiceTest {
                 "opp1", List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED))).thenReturn(1L);
         when(interestRepository.countByOpportunityId("opp1")).thenReturn(0L);
         when(opportunityMapper.toDto(eq(closedOpp), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any()))
-                .thenAnswer(inv -> new OpportunityDto(closedOpp.getId(), closedOpp.getTitle(), null, closedOpp.isClosed(),
-                        null, null, null, false, null, null, null, null, null, closedOpp.getPostedByUserId(), null,
-                        List.of(), true, false, "Accepted", 1, 0, null, null, null));
+                .thenAnswer(inv -> new OpportunityDto(
+                        closedOpp.getId(),           // id
+                        closedOpp.getTitle(),         // title
+                        null,                          // type
+                        closedOpp.isClosed(),         // closed
+                        false,                         // removedByAdmin
+                        null,                          // removalReason
+                        null,                          // moderationStatus
+                        null,                          // rejectionReason
+                        null,                          // startupId
+                        null,                          // organizationName
+                        null,                          // location
+                        null,                          // workMode
+                        null,                          // description
+                        null,                          // responsibilities
+                        null,                          // compensation
+                        null,                          // equity
+                        null,                          // experienceLevel
+                        null,                          // applicationDeadline
+                        closedOpp.getPostedByUserId(), // postedByUserId
+                        null,                          // chapterId
+                        List.of(),                     // requirements
+                        List.of(),                     // requiredSkills
+                        true,                           // hasApplied
+                        false,                          // hasExpressedInterest
+                        "Accepted",                     // applicationStatus
+                        1,                              // applicantCount
+                        0,                              // interestCount
+                        null,                           // appliedAt
+                        null,                           // createdAt
+                        null));                         // updatedAt
 
         // A closed opportunity must still show up in the candidate's own application history —
         // no "open only" filter should ever leak into this query.
@@ -704,5 +740,128 @@ class OpportunityServiceTest {
         verify(applicantRepository).countByOpportunityIdAndStatusNotIn(
                 "opp1", List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED));
         verify(applicantRepository, never()).countByOpportunityId("opp1");
+    }
+
+    // ---- Admin moderation ----
+
+    @Test
+    void publicGetterThrowsNotFoundForARemovedOpportunity() {
+        Opportunity opp = opportunity("owner1");
+        opp.setRemovedByAdmin(true);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        assertThatThrownBy(() -> service().getOpportunity("opp1", "viewer1")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void adminGetterStillReturnsARemovedOpportunityWithoutThrowing() {
+        Opportunity opp = opportunity("owner1");
+        opp.setRemovedByAdmin(true);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(applicantRepository.findByOpportunityIdAndUserId(any(), any())).thenReturn(Optional.empty());
+        when(interestRepository.existsByOpportunityIdAndUserId(any(), any())).thenReturn(false);
+        when(applicantRepository.countByOpportunityIdAndStatusNotIn(any(), any())).thenReturn(0L);
+        when(interestRepository.countByOpportunityId(any())).thenReturn(0L);
+
+        service().getOpportunityForAdmin("opp1", "admin1");
+
+        verify(opportunityMapper).toDto(eq(opp), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any());
+    }
+
+    @Test
+    void adminCanRemoveAndRestoreAnOpportunityWithAudit() {
+        Opportunity opp = opportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(applicantRepository.findByOpportunityIdAndUserId(any(), any())).thenReturn(Optional.empty());
+        when(interestRepository.existsByOpportunityIdAndUserId(any(), any())).thenReturn(false);
+        when(applicantRepository.countByOpportunityIdAndStatusNotIn(any(), any())).thenReturn(0L);
+        when(interestRepository.countByOpportunityId(any())).thenReturn(0L);
+
+        service().setRemovedByAdmin("admin1", "opp1", true, "Scam", "5.5.5.5");
+        assertThat(opp.isRemovedByAdmin()).isTrue();
+        assertThat(opp.getRemovalReason()).isEqualTo("Scam");
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_REMOVED), eq("Opportunity"), eq("opp1"), eq("5.5.5.5"), any());
+
+        service().setRemovedByAdmin("admin1", "opp1", false, null, "5.5.5.5");
+        assertThat(opp.isRemovedByAdmin()).isFalse();
+        assertThat(opp.getRemovalReason()).isNull();
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_RESTORED), eq("Opportunity"), eq("opp1"), eq("5.5.5.5"), any());
+    }
+
+    // ---- Pre-publish moderation ----
+
+    private Opportunity pendingOpportunity(String posterId) {
+        Opportunity opp = opportunity(posterId);
+        opp.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.PENDING);
+        return opp;
+    }
+
+    @Test
+    void publicGetterHidesAPendingOpportunityFromEveryoneButItsPoster() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(pendingOpportunity("owner1")));
+
+        assertThatThrownBy(() -> service().getOpportunity("opp1", "viewer1")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    /** {@code opportunityMapper} is a bare mock (unlike ideaMapper/startupMapper in the sibling test
+     *  files), so any test that inspects the returned DTO's moderationStatus needs this stub. */
+    private void stubMapperReflectingModerationStatus() {
+        when(opportunityMapper.toDto(any(Opportunity.class), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any()))
+                .thenAnswer(inv -> {
+                    Opportunity o = inv.getArgument(0);
+                    return new OpportunityDto(o.getId(), o.getTitle(), null, o.isClosed(), o.isRemovedByAdmin(),
+                            o.getRemovalReason(), o.getModerationStatus().name(), o.getRejectionReason(),
+                            o.getStartupId(), o.getOrganizationName(), null, null, null, null, null, null, null, null,
+                            o.getPostedByUserId(), null, List.of(), List.of(), false, false, null, 0, 0, null, null, null);
+                });
+    }
+
+    @Test
+    void publicGetterStillShowsAPendingOpportunityToItsPoster() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(pendingOpportunity("owner1")));
+        when(applicantRepository.findByOpportunityIdAndUserId(any(), any())).thenReturn(Optional.empty());
+        when(interestRepository.existsByOpportunityIdAndUserId(any(), any())).thenReturn(false);
+        when(applicantRepository.countByOpportunityIdAndStatusNotIn(any(), any())).thenReturn(0L);
+        when(interestRepository.countByOpportunityId(any())).thenReturn(0L);
+        stubMapperReflectingModerationStatus();
+
+        OpportunityDto dto = service().getOpportunity("opp1", "owner1");
+
+        assertThat(dto.moderationStatus()).isEqualTo("PENDING");
+    }
+
+    @Test
+    void approvingAPendingOpportunityLogsAuditAndNotifiesThePoster() {
+        Opportunity opp = pendingOpportunity("owner1");
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(applicantRepository.findByOpportunityIdAndUserId(any(), any())).thenReturn(Optional.empty());
+        when(interestRepository.existsByOpportunityIdAndUserId(any(), any())).thenReturn(false);
+        when(applicantRepository.countByOpportunityIdAndStatusNotIn(any(), any())).thenReturn(0L);
+        when(interestRepository.countByOpportunityId(any())).thenReturn(0L);
+        stubMapperReflectingModerationStatus();
+
+        OpportunityDto dto = service().reviewModeration("admin1", "opp1", true, null, "1.2.3.4");
+
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_APPROVED), eq("Opportunity"), eq("opp1"), eq("1.2.3.4"), any());
+        verify(notificationService).notify(eq("owner1"), any(), anyString(), anyString(), eq("opp1"), eq("admin1"));
+    }
+
+    @Test
+    void rejectingAPendingOpportunityRequiresAReason() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(pendingOpportunity("owner1")));
+
+        assertThatThrownBy(() -> service().reviewModeration("admin1", "opp1", false, null, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void anAlreadyReviewedOpportunityCannotBeReviewedAgain() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunity("owner1"))); // fixture defaults to APPROVED
+
+        assertThatThrownBy(() -> service().reviewModeration("admin1", "opp1", true, null, "1.2.3.4"))
+                .isInstanceOf(ConflictException.class);
     }
 }

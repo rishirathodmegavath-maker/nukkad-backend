@@ -1,5 +1,6 @@
 package com.nukkad.security;
 
+import com.nukkad.user.repository.UserRepository;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -23,9 +24,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private static final String BEARER_PREFIX = "Bearer ";
 
     private final JwtService jwtService;
+    private final UserRepository userRepository;
 
-    public JwtAuthenticationFilter(JwtService jwtService) {
+    public JwtAuthenticationFilter(JwtService jwtService, UserRepository userRepository) {
         this.jwtService = jwtService;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -38,12 +41,24 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             try {
                 var claims = jwtService.parseAndValidate(token);
                 AuthenticatedUser principal = jwtService.toAuthenticatedUser(claims);
-                List<GrantedAuthority> authorities = principal.roles().stream()
-                        .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
-                        .map(GrantedAuthority.class::cast)
-                        .toList();
-                var authentication = new UsernamePasswordAuthenticationToken(principal, null, authorities);
-                SecurityContextHolder.getContext().setAuthentication(authentication);
+
+                // The one DB round trip that makes suspension/disable invalidate an already-issued,
+                // still-unexpired access token immediately rather than waiting out its TTL: a
+                // single indexed scalar lookup by primary key, as cheap as a per-request check can
+                // be. A missing row (deleted account) or a version that no longer matches what was
+                // embedded in the token both fail closed — same as an invalid/expired JWT.
+                Integer currentTokenVersion = userRepository.findTokenVersionById(principal.id()).orElse(null);
+                if (currentTokenVersion == null || currentTokenVersion != principal.tokenVersion()) {
+                    log.debug("Rejected access token with stale or unknown token version for user {}", principal.id());
+                    SecurityContextHolder.clearContext();
+                } else {
+                    List<GrantedAuthority> authorities = principal.roles().stream()
+                            .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
+                            .map(GrantedAuthority.class::cast)
+                            .toList();
+                    var authentication = new UsernamePasswordAuthenticationToken(principal, null, authorities);
+                    SecurityContextHolder.getContext().setAuthentication(authentication);
+                }
             } catch (JwtException | IllegalArgumentException ex) {
                 log.debug("Rejected invalid access token: {}", ex.getMessage());
                 SecurityContextHolder.clearContext();

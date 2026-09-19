@@ -4,11 +4,14 @@ import com.nukkad.auth.dto.LoginRequest;
 import com.nukkad.auth.dto.RegisterRequest;
 import com.nukkad.auth.dto.RegisterResponse;
 import com.nukkad.auth.entity.EmailVerificationToken;
+import com.nukkad.auth.entity.RefreshToken;
 import com.nukkad.auth.repository.EmailVerificationTokenRepository;
 import com.nukkad.auth.repository.PasswordResetTokenRepository;
 import com.nukkad.auth.repository.RefreshTokenRepository;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.email.EmailService;
+import com.nukkad.common.exception.AccountDisabledException;
+import com.nukkad.common.exception.AccountSuspendedException;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.EmailNotVerifiedException;
@@ -16,6 +19,7 @@ import com.nukkad.common.exception.GoogleAccountNotFoundException;
 import com.nukkad.common.exception.GoogleAccountNotLinkedException;
 import com.nukkad.common.exception.GoogleEmailMismatchException;
 import com.nukkad.security.JwtService;
+import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.mapper.UserMapper;
@@ -37,7 +41,9 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -138,7 +144,7 @@ class AuthServiceTest {
         when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
         when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh");
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(jwtService.issueAccessToken(any(), any(), any())).thenReturn("access-token");
+        when(jwtService.issueAccessToken(any(), any(), any(), anyInt())).thenReturn("access-token");
         stubRefreshTokenSaveEcho();
 
         var response = service().login(new LoginRequest("verified@nukkad.test", "Str0ng!Passw0rd"), "127.0.0.1", "agent");
@@ -155,6 +161,100 @@ class AuthServiceTest {
 
         assertThatThrownBy(() -> service().login(new LoginRequest("verified@nukkad.test", "wrong"), "127.0.0.1", "agent"))
                 .isInstanceOf(BadCredentialsException.class);
+    }
+
+    @Test
+    void loginRejectsSuspendedAccount() {
+        User u = user("u1", "suspended@nukkad.test", true, null);
+        u.setStatus(AccountStatus.SUSPENDED);
+        when(userRepository.findByEmail("suspended@nukkad.test")).thenReturn(Optional.of(u));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().login(
+                new LoginRequest("suspended@nukkad.test", "Str0ng!Passw0rd"), "127.0.0.1", "agent"))
+                .isInstanceOf(AccountSuspendedException.class);
+        verify(refreshTokenRepository, never()).save(any());
+    }
+
+    @Test
+    void loginRejectsDisabledAccount() {
+        User u = user("u1", "disabled@nukkad.test", true, null);
+        u.setStatus(AccountStatus.DISABLED);
+        when(userRepository.findByEmail("disabled@nukkad.test")).thenReturn(Optional.of(u));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().login(
+                new LoginRequest("disabled@nukkad.test", "Str0ng!Passw0rd"), "127.0.0.1", "agent"))
+                .isInstanceOf(AccountDisabledException.class);
+        verify(refreshTokenRepository, never()).save(any());
+    }
+
+    @Test
+    void loginIssuesAccessTokenEmbeddingTheUsersCurrentTokenVersion() {
+        User u = user("u1", "verified@nukkad.test", true, null);
+        u.setTokenVersion(7);
+        when(userRepository.findByEmail("verified@nukkad.test")).thenReturn(Optional.of(u));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+        when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh");
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(jwtService.issueAccessToken(any(), any(), any(), anyInt())).thenReturn("access-token");
+        stubRefreshTokenSaveEcho();
+
+        service().login(new LoginRequest("verified@nukkad.test", "Str0ng!Passw0rd"), "127.0.0.1", "agent");
+
+        verify(jwtService).issueAccessToken(eq("u1"), eq("verified@nukkad.test"), any(), eq(7));
+    }
+
+    // ---- refresh ----
+
+    private RefreshToken activeRefreshToken(String userId) {
+        return RefreshToken.builder()
+                .id("rt1").userId(userId).tokenHash("hashed-refresh")
+                .expiresAt(Instant.now().plusSeconds(600))
+                .build();
+    }
+
+    @Test
+    void refreshSucceedsForActiveUserAndEmbedsCurrentTokenVersion() {
+        User u = user("u1", "verified@nukkad.test", true, null);
+        u.setTokenVersion(5);
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(userRepository.findById("u1")).thenReturn(Optional.of(u));
+        when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh-2");
+        when(jwtService.issueAccessToken(any(), any(), any(), anyInt())).thenReturn("new-access-token");
+        stubRefreshTokenSaveEcho();
+
+        var response = service().refresh("raw-refresh", "127.0.0.1", "agent");
+
+        assertThat(response.accessToken()).isEqualTo("new-access-token");
+        verify(jwtService).issueAccessToken(eq("u1"), eq("verified@nukkad.test"), any(), eq(5));
+    }
+
+    @Test
+    void refreshRejectsSuspendedAccount() {
+        User u = user("u1", "suspended@nukkad.test", true, null);
+        u.setStatus(AccountStatus.SUSPENDED);
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(userRepository.findById("u1")).thenReturn(Optional.of(u));
+
+        assertThatThrownBy(() -> service().refresh("raw-refresh", "127.0.0.1", "agent"))
+                .isInstanceOf(AccountSuspendedException.class);
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void refreshRejectsDisabledAccount() {
+        User u = user("u1", "disabled@nukkad.test", true, null);
+        u.setStatus(AccountStatus.DISABLED);
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(userRepository.findById("u1")).thenReturn(Optional.of(u));
+
+        assertThatThrownBy(() -> service().refresh("raw-refresh", "127.0.0.1", "agent"))
+                .isInstanceOf(AccountDisabledException.class);
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
     }
 
     // ---- verifyEmail ----
@@ -216,7 +316,7 @@ class AuthServiceTest {
         when(userRepository.findByGoogleSubject("google-sub-1")).thenReturn(Optional.of(u));
         when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh");
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(jwtService.issueAccessToken(any(), any(), any())).thenReturn("access-token");
+        when(jwtService.issueAccessToken(any(), any(), any(), anyInt())).thenReturn("access-token");
         stubRefreshTokenSaveEcho();
 
         var response = service().loginWithGoogle("id-token", "127.0.0.1", "agent");
@@ -250,7 +350,7 @@ class AuthServiceTest {
         when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh");
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(jwtService.issueAccessToken(any(), any(), any())).thenReturn("access-token");
+        when(jwtService.issueAccessToken(any(), any(), any(), anyInt())).thenReturn("access-token");
         stubRefreshTokenSaveEcho();
 
         var response = service().loginWithGoogle("id-token", "127.0.0.1", "agent");

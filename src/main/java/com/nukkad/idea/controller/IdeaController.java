@@ -57,7 +57,8 @@ public class IdeaController {
     }
 
     @GetMapping
-    public ApiResponse<PageResponse<IdeaDto>> list(@RequestParam(required = false) String q,
+    public ApiResponse<PageResponse<IdeaDto>> list(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                     @RequestParam(required = false) String q,
                                                      @RequestParam(required = false) String stage,
                                                      @RequestParam(required = false) String category,
                                                      @RequestParam(required = false) String helpNeeded,
@@ -65,12 +66,13 @@ public class IdeaController {
                                                      @RequestParam(required = false) String creatorId,
                                                      @RequestParam(defaultValue = "0") int page,
                                                      @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(PageResponse.from(ideaService.listIdeas(q, stage, category, helpNeeded, chapterId, creatorId, page, size)));
+        return ApiResponse.ok(PageResponse.from(
+                ideaService.listIdeas(q, stage, category, helpNeeded, chapterId, creatorId, principal.id(), page, size)));
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<IdeaDto> get(@PathVariable String id) {
-        return ApiResponse.ok(ideaService.getIdea(id));
+    public ApiResponse<IdeaDto> get(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(ideaService.getIdea(id, principal.id()));
     }
 
     @PostMapping

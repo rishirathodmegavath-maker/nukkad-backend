@@ -25,10 +25,11 @@ public interface StartupTeamMemberRepository extends JpaRepository<StartupTeamMe
     List<StartupTeamMember> findByStartupIdAndStatus(String startupId, StartupTeamMember.Status status);
     Optional<StartupTeamMember> findByStartupIdAndUserId(String startupId, String userId);
     boolean existsByStartupIdAndUserId(String startupId, String userId);
-    List<StartupTeamMember> findByStartupIdAndIsFounderTrue(String startupId);
-    boolean existsByUserIdAndIsFounderTrueAndStatus(String userId, StartupTeamMember.Status status);
-    boolean existsByStartupIdAndUserIdAndIsFounderTrueAndStatus(String startupId, String userId, StartupTeamMember.Status status);
-    List<StartupTeamMember> findByUserIdAndIsFounderTrueAndStatus(String userId, StartupTeamMember.Status status);
+    List<StartupTeamMember> findByStartupIdAndTeamRole(String startupId, StartupTeamMember.TeamRole teamRole);
+    List<StartupTeamMember> findByStartupIdAndTeamRoleIn(String startupId, List<StartupTeamMember.TeamRole> teamRoles);
+    boolean existsByUserIdAndTeamRoleInAndStatus(String userId, List<StartupTeamMember.TeamRole> teamRoles, StartupTeamMember.Status status);
+    boolean existsByStartupIdAndUserIdAndTeamRoleInAndStatus(String startupId, String userId, List<StartupTeamMember.TeamRole> teamRoles, StartupTeamMember.Status status);
+    List<StartupTeamMember> findByUserIdAndTeamRoleInAndStatus(String userId, List<StartupTeamMember.TeamRole> teamRoles, StartupTeamMember.Status status);
 
     @Query("select case when count(m1) > 0 then true else false end from StartupTeamMember m1, StartupTeamMember m2 "
             + "where m1.startupId = m2.startupId and m1.status = com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE "

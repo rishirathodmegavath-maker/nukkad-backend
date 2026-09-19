@@ -7,4 +7,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface StartupFollowRepository extends JpaRepository<StartupFollow, StartupFollowId> {
     boolean existsByUserIdAndStartupId(String userId, String startupId);
     void deleteByUserIdAndStartupId(String userId, String startupId);
+    long countByStartupId(String startupId);
 }

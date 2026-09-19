@@ -33,6 +33,10 @@ public record StartupDto(
         boolean isFollowing,
         boolean canManage,
         int profileCompletionPercent,
+        boolean removedByAdmin,
+        String removalReason,
+        String moderationStatus,
+        String rejectionReason,
         Instant createdAt,
         Instant updatedAt
 ) {

@@ -1,10 +1,13 @@
 package com.nukkad.startup.entity;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -117,6 +120,27 @@ public class Startup {
     @Column(name = "is_raising", nullable = false)
     @Builder.Default
     private boolean isRaising = false;
+
+    @Column(name = "removed_by_admin", nullable = false)
+    @Builder.Default
+    private boolean removedByAdmin = false;
+
+    @Column(name = "removal_reason", length = 500)
+    private String removalReason;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_status", nullable = false, length = 20)
+    @Builder.Default
+    private ModerationStatus moderationStatus = ModerationStatus.PENDING;
+
+    @Column(name = "rejection_reason", length = 500)
+    private String rejectionReason;
+
+    @Column(name = "moderation_reviewed_by", columnDefinition = "CHAR(36)")
+    private String moderationReviewedBy;
+
+    @Column(name = "moderation_reviewed_at")
+    private Instant moderationReviewedAt;
 
     @ElementCollection(fetch = FetchType.LAZY)
     @CollectionTable(name = "startup_needs", joinColumns = @JoinColumn(name = "startup_id"))

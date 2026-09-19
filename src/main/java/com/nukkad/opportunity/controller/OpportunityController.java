@@ -57,14 +57,14 @@ public class OpportunityController {
     public ApiResponse<PageResponse<OpportunityDto>> list(@AuthenticationPrincipal AuthenticatedUser principal,
                                                             @RequestParam(required = false) String q,
                                                             @RequestParam(required = false) String type,
-                                                            @RequestParam(required = false) Boolean remote,
+                                                            @RequestParam(required = false) String workMode,
                                                             @RequestParam(required = false) String chapterId,
                                                             @RequestParam(required = false) String startupId,
                                                             @RequestParam(required = false) String postedByUserId,
                                                             @RequestParam(defaultValue = "0") int page,
                                                             @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(PageResponse.from(
-                opportunityService.listOpportunities(q, type, remote, chapterId, startupId, postedByUserId, principal.id(), page, size)));
+                opportunityService.listOpportunities(q, type, workMode, chapterId, startupId, postedByUserId, principal.id(), page, size)));
     }
 
     @GetMapping("/{id}")

@@ -1,5 +1,6 @@
 package com.nukkad.startup.repository;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupStage;
 import com.nukkad.startup.entity.StartupTeamMember;
@@ -89,5 +90,19 @@ public final class StartupSpecifications {
     public static Specification<Startup> visibleTo(boolean authenticated) {
         if (authenticated) return null;
         return (root, query, cb) -> cb.equal(root.get("visibility"), StartupVisibility.PUBLIC);
+    }
+
+    public static Specification<Startup> notRemoved() {
+        return (root, query, cb) -> cb.isFalse(root.get("removedByAdmin"));
+    }
+
+    /** Pre-publish gate for public discovery — see ModerationStatus. */
+    public static Specification<Startup> approved() {
+        return (root, query, cb) -> cb.equal(root.get("moderationStatus"), ModerationStatus.APPROVED);
+    }
+
+    public static Specification<Startup> moderationStatus(ModerationStatus status) {
+        if (status == null) return null;
+        return (root, query, cb) -> cb.equal(root.get("moderationStatus"), status);
     }
 }

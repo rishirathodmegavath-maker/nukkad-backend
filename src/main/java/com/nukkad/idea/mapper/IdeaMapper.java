@@ -27,6 +27,10 @@ public class IdeaMapper {
                 idea.getHelpNeeded().stream().map(ContributionArea::getLabel).collect(Collectors.toSet()),
                 new HashSet<>(idea.getTeamMemberIds()),
                 interestCount,
+                idea.isRemovedByAdmin(),
+                idea.getRemovalReason(),
+                idea.getModerationStatus().name(),
+                idea.getRejectionReason(),
                 idea.getCreatedAt(),
                 idea.getUpdatedAt()
         );

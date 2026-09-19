@@ -14,6 +14,7 @@ import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
+import com.nukkad.startup.dto.UpdateMemberRoleRequest;
 import com.nukkad.startup.dto.UpdateStartupRequest;
 import com.nukkad.startup.service.StartupService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -23,6 +24,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -69,7 +71,9 @@ public class StartupController {
     @GetMapping("/{id}")
     public ApiResponse<StartupDto> get(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         String viewerId = principal == null ? null : principal.id();
-        return ApiResponse.ok(startupService.getStartup(id, viewerId));
+        StartupDto dto = startupService.getStartup(id, viewerId);
+        startupService.recordProfileView(id, viewerId);
+        return ApiResponse.ok(dto);
     }
 
     @GetMapping("/me/founding")
@@ -146,7 +150,7 @@ public class StartupController {
     public ApiResponse<StartupTeamMemberDto> addMember(@AuthenticationPrincipal AuthenticatedUser principal,
                                                           @PathVariable String id,
                                                           @Valid @RequestBody AddTeamMemberRequest request) {
-        return ApiResponse.ok(startupService.addMember(principal.id(), id, request.userId(), request.roleId()));
+        return ApiResponse.ok(startupService.addMember(principal.id(), id, request.userId(), request.roleId(), request.teamRole()));
     }
 
     @DeleteMapping("/{id}/members/{userId}")
@@ -155,6 +159,14 @@ public class StartupController {
                                             @PathVariable String userId) {
         startupService.removeMember(principal.id(), id, userId);
         return ApiResponse.ok(null);
+    }
+
+    @PatchMapping("/{id}/members/{userId}/role")
+    public ApiResponse<StartupTeamMemberDto> updateMemberRole(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                                 @PathVariable String id,
+                                                                 @PathVariable String userId,
+                                                                 @Valid @RequestBody UpdateMemberRoleRequest request) {
+        return ApiResponse.ok(startupService.updateMemberRole(principal.id(), id, userId, request.teamRole()));
     }
 
     @PostMapping("/join-requests/{memberId}/accept")

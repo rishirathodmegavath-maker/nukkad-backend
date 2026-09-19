@@ -1,5 +1,6 @@
 package com.nukkad.investor.repository;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.investor.entity.Fundraise;
 import com.nukkad.investor.entity.FundraiseStatus;
 import com.nukkad.startup.entity.Startup;
@@ -43,7 +44,8 @@ public final class FundraiseSpecifications {
             var startup = startupSub.from(Startup.class);
             startupSub.select(startup.get("id")).where(cb.and(
                     cb.equal(startup.get("id"), root.get("startupId")),
-                    cb.isTrue(startup.get("fundraisingVisible"))
+                    cb.isTrue(startup.get("fundraisingVisible")),
+                    cb.equal(startup.get("moderationStatus"), ModerationStatus.APPROVED)
             ));
             var visibleByFlag = cb.exists(startupSub);
 

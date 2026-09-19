@@ -1,5 +1,6 @@
 package com.nukkad.idea.repository;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.idea.entity.ContributionArea;
 import com.nukkad.idea.entity.Idea;
 import com.nukkad.idea.entity.IdeaStage;
@@ -63,5 +64,19 @@ public final class IdeaSpecifications {
 
     public static Specification<Idea> notConvertedToStartup() {
         return (root, query, cb) -> cb.isNull(root.get("startupId"));
+    }
+
+    public static Specification<Idea> notRemoved() {
+        return (root, query, cb) -> cb.isFalse(root.get("removedByAdmin"));
+    }
+
+    /** Pre-publish gate for public discovery — see ModerationStatus. */
+    public static Specification<Idea> approved() {
+        return (root, query, cb) -> cb.equal(root.get("moderationStatus"), ModerationStatus.APPROVED);
+    }
+
+    public static Specification<Idea> moderationStatus(ModerationStatus status) {
+        if (status == null) return null;
+        return (root, query, cb) -> cb.equal(root.get("moderationStatus"), status);
     }
 }

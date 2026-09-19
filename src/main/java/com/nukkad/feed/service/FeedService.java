@@ -1,5 +1,7 @@
 package com.nukkad.feed.service;
 
+import com.nukkad.common.audit.AuditAction;
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
@@ -44,23 +46,25 @@ public class FeedService {
     private final PostCommentRepository postCommentRepository;
     private final PostSaveRepository postSaveRepository;
     private final FileStorageService fileStorageService;
+    private final AuditService auditService;
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
                         PostCommentRepository postCommentRepository, PostSaveRepository postSaveRepository,
-                        FileStorageService fileStorageService) {
+                        FileStorageService fileStorageService, AuditService auditService) {
         this.postRepository = postRepository;
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
         this.postSaveRepository = postSaveRepository;
         this.fileStorageService = fileStorageService;
+        this.auditService = auditService;
     }
 
     @Transactional(readOnly = true)
     public Page<PostDto> list(String viewerId, String authorId, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
         Page<Post> posts = (authorId == null || authorId.isBlank())
-                ? postRepository.findAllByOrderByCreatedAtDesc(pageable)
-                : postRepository.findByAuthorIdOrderByCreatedAtDesc(authorId, pageable);
+                ? postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(pageable)
+                : postRepository.findByAuthorIdAndRemovedByAdminFalseOrderByCreatedAtDesc(authorId, pageable);
 
         List<String> postIds = posts.getContent().stream().map(Post::getId).toList();
         Set<String> likedIds = postIds.isEmpty() ? Set.of() : postLikeRepository.findLikedPostIds(viewerId, postIds);
@@ -103,6 +107,7 @@ public class FeedService {
         List<PostDto> content = postIds.stream()
                 .map(postsById::get)
                 .filter(Objects::nonNull)
+                .filter(p -> !p.isRemovedByAdmin())
                 .map(p -> toDto(p, likedIds.contains(p.getId()), true, savedAtByPostId.get(p.getId())))
                 .toList();
 
@@ -203,7 +208,47 @@ public class FeedService {
     public PostDto get(String viewerId, String postId) {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        if (post.isRemovedByAdmin()) {
+            throw new ResourceNotFoundException("Post not found: " + postId);
+        }
         return toDto(post, viewerId);
+    }
+
+    // ADMIN-ONLY — bypasses the removed check above.
+    @Transactional(readOnly = true)
+    public PostDto getForAdmin(String postId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        return toDto(post, false, false);
+    }
+
+    // ADMIN-ONLY listing — never excludes removed posts; includeRemoved just narrows the choice
+    // between "everything" and "only what's currently live", mirroring the other Admin*Controllers.
+    @Transactional(readOnly = true)
+    public Page<PostDto> listForAdmin(boolean includeRemoved, int page, int size) {
+        Pageable pageable = PageRequest.of(page, size);
+        Page<Post> posts = includeRemoved
+                ? postRepository.findAllByOrderByCreatedAtDesc(pageable)
+                : postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(pageable);
+        return posts.map(p -> toDto(p, false, false));
+    }
+
+    // Admin-only moderation toggle — mirrors IdeaService.setRemovedByAdmin exactly. There's no
+    // pre-publish queue for posts (that would gut the feed's real-time nature); this reactive
+    // takedown, plus the report path in ReportService, is the moderation lever for Feed.
+    @Transactional
+    public PostDto setRemovedByAdmin(String adminId, String postId, boolean removed, String reason, String ip) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        post.setRemovedByAdmin(removed);
+        post.setRemovalReason(removed ? reason : null);
+        post = postRepository.save(post);
+
+        auditService.log(adminId, removed ? AuditAction.ADMIN_CONTENT_REMOVED : AuditAction.ADMIN_CONTENT_RESTORED,
+                "Post", postId, ip, removed && reason != null && !reason.isBlank()
+                        ? Map.of("entityType", "Post", "reason", reason) : Map.of("entityType", "Post"));
+
+        return toDto(post, false, false);
     }
 
     @Transactional
@@ -383,7 +428,7 @@ public class FeedService {
                 .toList();
         return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
-                post.getCreatedAt(), attachments, savedAt);
+                post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason());
     }
 
     private CommentDto toCommentDto(PostComment comment, int replyCount) {

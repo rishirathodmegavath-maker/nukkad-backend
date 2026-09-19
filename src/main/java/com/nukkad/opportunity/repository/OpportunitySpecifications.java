@@ -1,7 +1,9 @@
 package com.nukkad.opportunity.repository;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.opportunity.entity.Opportunity;
 import com.nukkad.opportunity.entity.OpportunityType;
+import com.nukkad.opportunity.entity.WorkMode;
 import org.springframework.data.jpa.domain.Specification;
 
 import java.util.Arrays;
@@ -35,9 +37,10 @@ public final class OpportunitySpecifications {
         return (root, query, cb) -> cb.equal(root.get("type"), type);
     }
 
-    public static Specification<Opportunity> remote(Boolean remote) {
-        if (remote == null) return null;
-        return (root, query, cb) -> cb.equal(root.get("remote"), remote);
+    public static Specification<Opportunity> workMode(String workModeLabel) {
+        if (workModeLabel == null || workModeLabel.isBlank()) return null;
+        WorkMode workMode = WorkMode.fromLabel(workModeLabel.trim());
+        return (root, query, cb) -> cb.equal(root.get("workMode"), workMode);
     }
 
     public static Specification<Opportunity> chapterId(String chapterId) {
@@ -58,5 +61,19 @@ public final class OpportunitySpecifications {
     /** Always applied in discovery/search — closed postings never appear in public browse results. */
     public static Specification<Opportunity> open() {
         return (root, query, cb) -> cb.isFalse(root.get("closed"));
+    }
+
+    public static Specification<Opportunity> notRemoved() {
+        return (root, query, cb) -> cb.isFalse(root.get("removedByAdmin"));
+    }
+
+    /** Pre-publish gate for public discovery — see ModerationStatus. */
+    public static Specification<Opportunity> approved() {
+        return (root, query, cb) -> cb.equal(root.get("moderationStatus"), ModerationStatus.APPROVED);
+    }
+
+    public static Specification<Opportunity> moderationStatus(ModerationStatus status) {
+        if (status == null) return null;
+        return (root, query, cb) -> cb.equal(root.get("moderationStatus"), status);
     }
 }

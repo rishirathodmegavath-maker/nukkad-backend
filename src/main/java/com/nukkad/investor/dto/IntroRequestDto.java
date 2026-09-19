@@ -18,6 +18,7 @@ public record IntroRequestDto(
         String message,
         String status,
         Instant createdAt,
-        Instant reviewedAt
+        Instant reviewedAt,
+        String conversationId
 ) {
 }

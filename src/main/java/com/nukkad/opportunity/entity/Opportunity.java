@@ -1,10 +1,13 @@
 package com.nukkad.opportunity.entity;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -48,6 +51,27 @@ public class Opportunity {
     @Builder.Default
     private boolean closed = false;
 
+    @Column(name = "removed_by_admin", nullable = false)
+    @Builder.Default
+    private boolean removedByAdmin = false;
+
+    @Column(name = "removal_reason", length = 500)
+    private String removalReason;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "moderation_status", nullable = false, length = 20)
+    @Builder.Default
+    private ModerationStatus moderationStatus = ModerationStatus.PENDING;
+
+    @Column(name = "rejection_reason", length = 500)
+    private String rejectionReason;
+
+    @Column(name = "moderation_reviewed_by", columnDefinition = "CHAR(36)")
+    private String moderationReviewedBy;
+
+    @Column(name = "moderation_reviewed_at")
+    private Instant moderationReviewedAt;
+
     @Column(name = "startup_id", columnDefinition = "CHAR(36)")
     private String startupId;
 
@@ -57,12 +81,16 @@ public class Opportunity {
     @Column(length = 200)
     private String location;
 
-    @Column(nullable = false)
+    @Convert(converter = WorkModeConverter.class)
+    @Column(name = "work_mode", nullable = false, length = 20)
     @Builder.Default
-    private boolean remote = false;
+    private WorkMode workMode = WorkMode.IN_PERSON;
 
     @Column(nullable = false, columnDefinition = "TEXT")
     private String description;
+
+    @Column(columnDefinition = "TEXT")
+    private String responsibilities;
 
     @Column(length = 200)
     private String compensation;
@@ -88,6 +116,13 @@ public class Opportunity {
     @Column(name = "requirement", nullable = false)
     @Builder.Default
     private List<String> requirements = new ArrayList<>();
+
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "opportunity_required_skills", joinColumns = @JoinColumn(name = "opportunity_id"))
+    @OrderColumn(name = "sort_order")
+    @Column(name = "skill", nullable = false)
+    @Builder.Default
+    private List<String> requiredSkills = new ArrayList<>();
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

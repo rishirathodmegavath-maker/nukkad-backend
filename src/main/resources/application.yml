@@ -40,6 +40,18 @@ spring:
       max-file-size: 50MB
       max-request-size: 50MB
 
+  mvc:
+    # Without this, a request to a completely unmapped path silently falls through to Spring's
+    # default (a plain Whitelabel/servlet-container 404) instead of GlobalExceptionHandler's
+    # NoHandlerFoundException handler, so it never gets the app's own ApiResponse JSON envelope.
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      # This is a pure REST API with no static assets to serve — required alongside the property
+      # above, since the static-resource handler would otherwise intercept an unmapped path first
+      # and produce its own 404 before DispatcherServlet ever gets a chance to throw.
+      add-mappings: false
+
   mail:
     host: ${SMTP_HOST:localhost}
     port: ${SMTP_PORT:1025}
@@ -89,6 +101,14 @@ nukkad:
     frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5174}
   messaging:
     encryption-key: ${MESSAGE_ENCRYPTION_KEY}
+  admin:
+    # Optional, one-time bootstrap for the very first Admin account — see .env.example. Leave all
+    # three unset in normal operation; the app never falls back to a default admin credential.
+    bootstrap-email: ${ADMIN_BOOTSTRAP_EMAIL:}
+    bootstrap-password: ${ADMIN_BOOTSTRAP_PASSWORD:}
+    # Only consulted when bootstrap-email already belongs to an existing account without ADMIN —
+    # must be explicitly "true" to promote it. Otherwise that account is left untouched.
+    bootstrap-allow-promotion: ${ADMIN_BOOTSTRAP_ALLOW_PROMOTION:false}
   storage:
     bucket: ${S3_BUCKET:nukkad-uploads}
     region: ${S3_REGION:us-east-1}

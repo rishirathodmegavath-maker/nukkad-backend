@@ -1,5 +1,7 @@
 package com.nukkad.user.repository;
 
+import com.nukkad.user.entity.AccountStatus;
+import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -38,4 +40,19 @@ public interface UserRepository extends JpaRepository<User, String>, JpaSpecific
      *  when scoring many users at once. Each row is {@code [user_id, skill]}. */
     @Query(value = "select user_id, skill from user_skills where user_id in :userIds", nativeQuery = true)
     List<Object[]> findSkillsByUserIds(@Param("userIds") Collection<String> userIds);
+
+    long countByStatus(AccountStatus status);
+
+    @Query("SELECT COUNT(u) FROM User u JOIN u.securityRoles r WHERE r = :role")
+    long countByRole(@Param("role") SecurityRole role);
+
+    /**
+     * Single-column projection by primary key — used on every authenticated request by
+     * {@link com.nukkad.security.JwtAuthenticationFilter} to detect a revoked access token.
+     * Deliberately not a full {@code findById}: loading the whole entity (and its eager
+     * {@code securityRoles} collection) per request would be needlessly heavier than this
+     * PK-indexed scalar lookup, which is the cheapest possible per-request DB round trip.
+     */
+    @Query("SELECT u.tokenVersion FROM User u WHERE u.id = :id")
+    Optional<Integer> findTokenVersionById(@Param("id") String id);
 }

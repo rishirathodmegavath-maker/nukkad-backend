@@ -22,15 +22,23 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
 
     private record Limit(int max, Duration window) {}
 
-    private static final Map<String, Limit> LIMITS = Map.of(
-            "/api/auth/register", new Limit(5, Duration.ofHours(1)),
-            "/api/auth/login", new Limit(10, Duration.ofMinutes(15)),
-            "/api/auth/refresh", new Limit(30, Duration.ofMinutes(15)),
-            "/api/auth/google", new Limit(20, Duration.ofMinutes(15)),
-            "/api/auth/google/code", new Limit(20, Duration.ofMinutes(15)),
-            "/api/auth/google/link", new Limit(10, Duration.ofHours(1)),
-            "/api/auth/resend-verification", new Limit(5, Duration.ofHours(1)),
-            "/api/auth/password-reset/request", new Limit(5, Duration.ofHours(1))
+    private static final Map<String, Limit> LIMITS = Map.ofEntries(
+            Map.entry("/api/auth/register", new Limit(5, Duration.ofHours(1))),
+            Map.entry("/api/auth/login", new Limit(10, Duration.ofMinutes(15))),
+            Map.entry("/api/auth/refresh", new Limit(30, Duration.ofMinutes(15))),
+            Map.entry("/api/auth/google", new Limit(20, Duration.ofMinutes(15))),
+            Map.entry("/api/auth/google/code", new Limit(20, Duration.ofMinutes(15))),
+            Map.entry("/api/auth/google/link", new Limit(10, Duration.ofHours(1))),
+            Map.entry("/api/auth/resend-verification", new Limit(5, Duration.ofHours(1))),
+            Map.entry("/api/auth/password-reset/request", new Limit(5, Duration.ofHours(1))),
+            // Token/password-guessing endpoints: change-password is the highest-risk one, since a
+            // stolen access token otherwise gets unlimited attempts at the real password with no
+            // throttling at all — same 10/15min bound as login. verify-email and
+            // password-reset/confirm are lower-risk (guessing a random token, not a password) but
+            // were still completely unthrottled before this, unlike every other sensitive endpoint.
+            Map.entry("/api/auth/change-password", new Limit(10, Duration.ofMinutes(15))),
+            Map.entry("/api/auth/verify-email", new Limit(10, Duration.ofHours(1))),
+            Map.entry("/api/auth/password-reset/confirm", new Limit(10, Duration.ofHours(1)))
     );
 
     private final RateLimiter rateLimiter;

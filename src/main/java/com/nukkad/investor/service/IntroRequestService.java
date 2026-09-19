@@ -16,6 +16,9 @@ import com.nukkad.investor.entity.IntroRequestStatus;
 import com.nukkad.investor.mapper.InvestorMapper;
 import com.nukkad.investor.repository.IntroRequestRepository;
 import com.nukkad.investor.repository.InvestorProfileRepository;
+import com.nukkad.messaging.entity.Conversation;
+import com.nukkad.messaging.repository.ConversationRepository;
+import com.nukkad.messaging.service.ConversationService;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.startup.entity.Startup;
@@ -41,6 +44,8 @@ public class IntroRequestService {
     private final InvestorMapper investorMapper;
     private final NotificationService notificationService;
     private final AuditService auditService;
+    private final ConversationService conversationService;
+    private final ConversationRepository conversationRepository;
 
     public IntroRequestService(IntroRequestRepository introRequestRepository,
                                 InvestorProfileRepository investorProfileRepository,
@@ -50,7 +55,9 @@ public class IntroRequestService {
                                 UserService userService,
                                 InvestorMapper investorMapper,
                                 NotificationService notificationService,
-                                AuditService auditService) {
+                                AuditService auditService,
+                                ConversationService conversationService,
+                                ConversationRepository conversationRepository) {
         this.introRequestRepository = introRequestRepository;
         this.investorProfileRepository = investorProfileRepository;
         this.startupRepository = startupRepository;
@@ -60,6 +67,8 @@ public class IntroRequestService {
         this.investorMapper = investorMapper;
         this.notificationService = notificationService;
         this.auditService = auditService;
+        this.conversationService = conversationService;
+        this.conversationRepository = conversationRepository;
     }
 
     public IntroRequest getEntityOrThrow(String id) {
@@ -154,10 +163,15 @@ public class IntroRequestService {
         request.setReviewedAt(Instant.now());
         request = introRequestRepository.saveAndFlush(request);
 
+        // Accepting an introduction is what unlocks messaging between these two users, so the
+        // conversation is opened right here as part of accepting it, rather than leaving it to the
+        // frontend to make a second call — a direct API caller gets the same guaranteed result.
+        String conversationId = conversationService.getOrCreate(request.getRecipientId(), request.getRequesterId()).id();
+
         notificationService.notify(request.getRequesterId(), NotificationType.investor,
                 "Introduction accepted", "Your introduction request was accepted", request.getId(), userId);
 
-        return toDto(request, userId);
+        return toDto(request, userId, conversationId);
     }
 
     @Transactional
@@ -206,12 +220,25 @@ public class IntroRequestService {
     }
 
     private IntroRequestDto toDto(IntroRequest request, String viewerId) {
+        String conversationId = request.getStatus() == IntroRequestStatus.ACCEPTED
+                ? findExistingConversationId(request.getRequesterId(), request.getRecipientId())
+                : null;
+        return toDto(request, viewerId, conversationId);
+    }
+
+    private IntroRequestDto toDto(IntroRequest request, String viewerId, String conversationId) {
         UserDto requester = userService.getUser(request.getRequesterId(), viewerId);
         UserDto recipient = userService.getUser(request.getRecipientId(), viewerId);
         String startupName = request.getStartupId() == null ? null
                 : startupRepository.findById(request.getStartupId()).map(Startup::getName).orElse(null);
         String ideaTitle = request.getIdeaId() == null ? null
                 : ideaRepository.findById(request.getIdeaId()).map(Idea::getTitle).orElse(null);
-        return investorMapper.toDto(request, requester, recipient, startupName, ideaTitle);
+        return investorMapper.toDto(request, requester, recipient, startupName, ideaTitle, conversationId);
+    }
+
+    private String findExistingConversationId(String userId1, String userId2) {
+        String a = userId1.compareTo(userId2) < 0 ? userId1 : userId2;
+        String b = userId1.compareTo(userId2) < 0 ? userId2 : userId1;
+        return conversationRepository.findByUserAIdAndUserBId(a, b).map(Conversation::getId).orElse(null);
     }
 }

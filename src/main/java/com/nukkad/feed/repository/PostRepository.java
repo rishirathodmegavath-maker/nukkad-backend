@@ -9,8 +9,13 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface PostRepository extends JpaRepository<Post, String> {
+    // Unfiltered — admin-only use (sees removed posts too).
     Page<Post> findAllByOrderByCreatedAtDesc(Pageable pageable);
     Page<Post> findByAuthorIdOrderByCreatedAtDesc(String authorId, Pageable pageable);
+
+    // PUBLIC — excludes anything an admin has taken down.
+    Page<Post> findByRemovedByAdminFalseOrderByCreatedAtDesc(Pageable pageable);
+    Page<Post> findByAuthorIdAndRemovedByAdminFalseOrderByCreatedAtDesc(String authorId, Pageable pageable);
 
     /**
      * Atomic single-statement counter updates. A read-modify-write via the loaded entity

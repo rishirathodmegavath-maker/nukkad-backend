@@ -59,6 +59,10 @@ public class StartupMapper {
                 isFollowing,
                 canManage,
                 profileCompletionPercent(startup),
+                startup.isRemovedByAdmin(),
+                startup.getRemovalReason(),
+                startup.getModerationStatus().name(),
+                startup.getRejectionReason(),
                 startup.getCreatedAt(),
                 startup.getUpdatedAt()
         );
@@ -110,7 +114,10 @@ public class StartupMapper {
                 member.getStartupId(),
                 member.getUserId(),
                 member.getRole(),
+                member.getTeamRole().name(),
                 member.isFounder(),
+                member.isAdmin(),
+                member.canManage(),
                 member.getStatus().name(),
                 member.getRoleId(),
                 member.getCreatedAt(),

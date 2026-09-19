@@ -1,6 +1,8 @@
 package com.nukkad.user.repository;
 
+import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.LookingFor;
+import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import org.springframework.data.jpa.domain.Specification;
 
@@ -91,5 +93,31 @@ public final class UserSpecifications {
     public static Specification<User> chapterId(String chapterId) {
         if (chapterId == null || chapterId.isBlank()) return null;
         return (root, query, cb) -> cb.equal(root.get("chapterId"), chapterId);
+    }
+
+    /** Admin-only: also matches on email, unlike {@link #search}, which is used by the public
+     *  People search and must never let one user discover another purely by email address. */
+    public static Specification<User> adminSearch(String q) {
+        if (q == null || q.isBlank()) return null;
+        String like = "%" + q.trim().toLowerCase() + "%";
+        return (root, query, cb) -> cb.or(
+                cb.like(cb.lower(root.get("name")), like),
+                cb.like(cb.lower(root.get("email")), like),
+                cb.like(cb.lower(cb.coalesce(root.get("headline"), "")), like)
+        );
+    }
+
+    public static Specification<User> hasSecurityRole(SecurityRole role) {
+        if (role == null) return null;
+        return (root, query, cb) -> {
+            query.distinct(true);
+            jakarta.persistence.criteria.Join<User, SecurityRole> join = root.join("securityRoles");
+            return cb.equal(join, role);
+        };
+    }
+
+    public static Specification<User> status(AccountStatus status) {
+        if (status == null) return null;
+        return (root, query, cb) -> cb.equal(root.get("status"), status);
     }
 }

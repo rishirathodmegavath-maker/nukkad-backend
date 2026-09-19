@@ -10,12 +10,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.NoHandlerFoundException;
 
 import java.util.stream.Collectors;
 
@@ -86,6 +88,23 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse.Error> handleIllegalArgument(IllegalArgumentException ex, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ApiResponse.Error.of(ex.getMessage(), "BAD_REQUEST", request.getRequestURI()));
+    }
+
+    // Without these two, a request to a real path with the wrong HTTP method (e.g. POST on a
+    // GET-only endpoint) or to a path with no mapping at all fell through to the generic 500
+    // handler below — a routine client/API-consumer mistake surfacing as "An unexpected error
+    // occurred" instead of the correct, standard 405/404.
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiResponse.Error> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
+                .body(ApiResponse.Error.of("HTTP method '" + ex.getMethod() + "' is not supported for this endpoint",
+                        "METHOD_NOT_ALLOWED", request.getRequestURI()));
+    }
+
+    @ExceptionHandler(NoHandlerFoundException.class)
+    public ResponseEntity<ApiResponse.Error> handleNoHandlerFound(NoHandlerFoundException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.Error.of("No such endpoint", "NOT_FOUND", request.getRequestURI()));
     }
 
     @ExceptionHandler(Exception.class)

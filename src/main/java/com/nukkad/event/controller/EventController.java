@@ -4,6 +4,7 @@ import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.event.dto.CreateEventRequest;
 import com.nukkad.event.dto.EventDto;
+import com.nukkad.event.dto.StartupEventSummaryDto;
 import com.nukkad.event.dto.UpdateEventRequest;
 import com.nukkad.event.service.EventService;
 import com.nukkad.security.AuthenticatedUser;
@@ -56,6 +57,12 @@ public class EventController {
     @GetMapping("/{id}/attendees")
     public ApiResponse<List<UserDto>> attendees(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         return ApiResponse.ok(eventService.getAttendees(id, principal.id()));
+    }
+
+    /** Events a given startup is tagged on — powers the startup profile's "Events" card. */
+    @GetMapping("/by-startup/{startupId}")
+    public ApiResponse<List<StartupEventSummaryDto>> byStartup(@PathVariable String startupId) {
+        return ApiResponse.ok(eventService.getEventsForStartup(startupId));
     }
 
     @PostMapping

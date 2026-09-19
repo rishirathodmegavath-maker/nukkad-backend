@@ -2,24 +2,20 @@ package com.nukkad.investor.controller;
 
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
-import com.nukkad.investor.dto.CreateInvestorProfileRequest;
 import com.nukkad.investor.dto.InvestorProfileDto;
 import com.nukkad.investor.dto.UpdateInvestorProfileRequest;
 import com.nukkad.investor.service.InvestorProfileService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -62,12 +58,10 @@ public class InvestorProfileController {
         return ApiResponse.ok(investorProfileService.get(id, principal.id()));
     }
 
-    @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<InvestorProfileDto> create(@AuthenticationPrincipal AuthenticatedUser principal,
-                                                    @Valid @RequestBody CreateInvestorProfileRequest request) {
-        return ApiResponse.ok(investorProfileService.create(principal.id(), request));
-    }
+    // Deliberately no public create endpoint here — a profile is only ever created by
+    // AdminInvestorActivationService.approve() once an admin has reviewed a submitted
+    // InvestorActivationRequest (POST /api/investors/activation-requests). See the V77 migration
+    // for why: self-service creation used to bypass review entirely.
 
     @PutMapping("/{id}")
     public ApiResponse<InvestorProfileDto> update(@AuthenticationPrincipal AuthenticatedUser principal,

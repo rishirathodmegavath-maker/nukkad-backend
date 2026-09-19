@@ -13,6 +13,8 @@ import com.nukkad.auth.repository.RefreshTokenRepository;
 import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.email.EmailService;
+import com.nukkad.common.exception.AccountDisabledException;
+import com.nukkad.common.exception.AccountSuspendedException;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.EmailNotVerifiedException;
@@ -122,9 +124,21 @@ public class AuthService {
         if (!user.isEmailVerified()) {
             throw new EmailNotVerifiedException("Please verify your email before signing in.");
         }
+        requireActiveAccount(user);
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
         return issueAuthResponse(user, ip, userAgent);
+    }
+
+    /** Blocks sign-in and token refresh for an Admin-suspended/disabled account. A currently-valid
+     *  access token (15 min TTL) still works until it naturally expires — suspending a user revokes
+     *  their refresh tokens immediately, so no new session can be started or renewed. */
+    private void requireActiveAccount(User user) {
+        switch (user.getStatus()) {
+            case SUSPENDED -> throw new AccountSuspendedException("Your account has been suspended. Contact support for details.");
+            case DISABLED -> throw new AccountDisabledException("Your account has been disabled.");
+            case ACTIVE -> { /* no-op */ }
+        }
     }
 
     @Transactional
@@ -205,6 +219,7 @@ public class AuthService {
                     return userRepository.save(existingByEmail);
                 });
 
+        requireActiveAccount(user);
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
         return issueAuthResponse(user, ip, userAgent);
@@ -248,13 +263,14 @@ public class AuthService {
 
         User user = userRepository.findById(existing.getUserId())
                 .orElseThrow(() -> new UnauthorizedException("User no longer exists"));
+        requireActiveAccount(user);
 
         RefreshToken rotated = issueRefreshToken(user.getId(), ip, userAgent);
         existing.setRevokedAt(Instant.now());
         existing.setReplacedByTokenId(rotated.getId());
         refreshTokenRepository.save(existing);
 
-        String accessToken = jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user));
+        String accessToken = jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user), user.getTokenVersion());
         return new com.nukkad.auth.dto.RefreshTokenResponse(accessToken, rotated.rawTokenTransient, jwtService.getAccessExpirationSeconds());
     }
 
@@ -319,7 +335,7 @@ public class AuthService {
      * the caller immediately throws afterward (e.g. refresh-token-reuse detection) — otherwise
      * Spring's default rollback-on-RuntimeException would undo this side effect along with it.
      */
-    private void revokeAllForUser(String userId) {
+    public void revokeAllForUser(String userId) {
         requiresNewTransactionTemplate.executeWithoutResult(status ->
                 refreshTokenRepository.findByUserIdAndRevokedAtIsNull(userId)
                         .forEach(t -> t.setRevokedAt(Instant.now())));
@@ -360,7 +376,7 @@ public class AuthService {
 
     private AuthResponse issueAuthResponse(User user, String ip, String userAgent) {
         RefreshToken refreshToken = issueRefreshToken(user.getId(), ip, userAgent);
-        String accessToken = jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user));
+        String accessToken = jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user), user.getTokenVersion());
         return new AuthResponse(userMapper.toDto(user), accessToken, refreshToken.rawTokenTransient, jwtService.getAccessExpirationSeconds());
     }
 

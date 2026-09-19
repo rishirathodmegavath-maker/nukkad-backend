@@ -1,6 +1,7 @@
 package com.nukkad.event.dto;
 
 import java.time.Instant;
+import java.util.List;
 
 public record EventDto(
         String id,
@@ -19,6 +20,7 @@ public record EventDto(
         long attendeeCount,
         boolean isAttending,
         boolean canManage,
+        List<EventStartupSummaryDto> startups,
         Instant createdAt,
         Instant updatedAt
 ) {

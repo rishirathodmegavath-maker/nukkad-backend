@@ -1,6 +1,8 @@
 package com.nukkad.startup.service;
 
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
@@ -17,10 +19,13 @@ import com.nukkad.startup.entity.StartupVisibility;
 import com.nukkad.startup.mapper.StartupMapper;
 import com.nukkad.startup.repository.StartupFollowRepository;
 import com.nukkad.startup.repository.StartupMaterialRepository;
+import com.nukkad.startup.repository.StartupProfileViewRepository;
 import com.nukkad.startup.repository.StartupRepository;
 import com.nukkad.startup.repository.StartupRoleRepository;
 import com.nukkad.startup.repository.StartupTeamMemberRepository;
+import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.repository.StartupUpdateRepository;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.service.UserService;
 import org.junit.jupiter.api.Test;
@@ -29,11 +34,13 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -50,28 +57,41 @@ class StartupServiceTest {
     @Mock private StartupRoleRepository roleRepository;
     @Mock private StartupFollowRepository followRepository;
     @Mock private StartupMaterialRepository materialRepository;
+    @Mock private StartupProfileViewRepository profileViewRepository;
     @Mock private UserRepository userRepository;
     @Mock private UserService userService;
     @Mock private NotificationService notificationService;
     @Mock private FileStorageService fileStorageService;
+    @Mock private AuditService auditService;
 
     private final StartupMapper startupMapper = new StartupMapper();
 
     private StartupService service() {
         return new StartupService(startupRepository, teamMemberRepository, updateRepository, roleRepository,
-                followRepository, materialRepository, userRepository, userService, startupMapper,
-                notificationService, fileStorageService);
+                followRepository, materialRepository, profileViewRepository, userRepository, userService, startupMapper,
+                notificationService, fileStorageService, auditService);
     }
 
     private Startup startup(String id, StartupVisibility visibility, boolean isRaising, boolean fundraisingVisible) {
         return Startup.builder().id(id).name("Rocket Labs").stage(StartupStage.MVP)
                 .visibility(visibility).isRaising(isRaising).fundraisingVisible(fundraisingVisible)
-                .needs(new java.util.HashSet<>()).build();
+                .needs(new java.util.HashSet<>())
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
     }
 
     private StartupTeamMember founder(String startupId, String userId) {
         return StartupTeamMember.builder().id("m1").startupId(startupId).userId(userId)
-                .isFounder(true).status(StartupTeamMember.Status.ACTIVE).build();
+                .teamRole(StartupTeamMember.TeamRole.FOUNDER).status(StartupTeamMember.Status.ACTIVE).build();
+    }
+
+    private StartupTeamMember admin(String startupId, String userId) {
+        return StartupTeamMember.builder().id("m-" + userId).startupId(startupId).userId(userId)
+                .teamRole(StartupTeamMember.TeamRole.ADMIN).status(StartupTeamMember.Status.ACTIVE).build();
+    }
+
+    private StartupTeamMember member(String startupId, String userId) {
+        return StartupTeamMember.builder().id("m-" + userId).startupId(startupId).userId(userId)
+                .teamRole(StartupTeamMember.TeamRole.MEMBER).status(StartupTeamMember.Status.ACTIVE).build();
     }
 
     /** Every UpdateStartupRequest field, defaulted to null/false, so each test only has to
@@ -120,6 +140,104 @@ class StartupServiceTest {
         assertThat(dto.id()).isEqualTo("s1");
     }
 
+    // ---- admin moderation ----
+
+    @Test
+    void publicGetterThrowsNotFoundForARemovedStartup() {
+        Startup startup = startup("s1", StartupVisibility.PUBLIC, false, true);
+        startup.setRemovedByAdmin(true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup));
+
+        assertThatThrownBy(() -> service().getStartup("s1", null)).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void adminGetterStillReturnsARemovedStartup() {
+        Startup startup = startup("s1", StartupVisibility.PUBLIC, false, true);
+        startup.setRemovedByAdmin(true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup));
+
+        StartupDto dto = service().getStartupForAdmin("s1");
+
+        assertThat(dto.removedByAdmin()).isTrue();
+    }
+
+    @Test
+    void adminCanRemoveAndRestoreAStartupWithAudit() {
+        Startup startup = startup("s1", StartupVisibility.PUBLIC, false, true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup));
+        when(startupRepository.saveAndFlush(any(Startup.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupDto removed = service().setRemovedByAdmin("admin1", "s1", true, "Fraudulent", "9.9.9.9");
+        assertThat(removed.removedByAdmin()).isTrue();
+        assertThat(removed.removalReason()).isEqualTo("Fraudulent");
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_CONTENT_REMOVED),
+                eq("Startup"), eq("s1"), eq("9.9.9.9"), any());
+
+        StartupDto restored = service().setRemovedByAdmin("admin1", "s1", false, null, "9.9.9.9");
+        assertThat(restored.removedByAdmin()).isFalse();
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_CONTENT_RESTORED),
+                eq("Startup"), eq("s1"), eq("9.9.9.9"), any());
+    }
+
+    // ---- pre-publish moderation ----
+
+    private Startup pendingStartup() {
+        Startup startup = startup("s1", StartupVisibility.PUBLIC, false, true);
+        startup.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.PENDING);
+        return startup;
+    }
+
+    @Test
+    void publicGetterHidesAPendingStartupFromANonFounder() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(pendingStartup()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "randomUser")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().getStartup("s1", "randomUser")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void publicGetterStillShowsAPendingStartupToItsFounder() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(pendingStartup()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.of(founder("s1", "founder1")));
+
+        StartupDto dto = service().getStartup("s1", "founder1");
+
+        assertThat(dto.moderationStatus()).isEqualTo("PENDING");
+    }
+
+    @Test
+    void approvingAPendingStartupLogsAuditAndNotifiesTheFounder() {
+        Startup startup = pendingStartup();
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup));
+        when(startupRepository.saveAndFlush(any(Startup.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(teamMemberRepository.findByStartupIdAndTeamRoleIn(eq("s1"), any()))
+                .thenReturn(List.of(founder("s1", "founder1")));
+
+        StartupDto dto = service().reviewModeration("admin1", "s1", true, null, "1.2.3.4");
+
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_CONTENT_APPROVED),
+                eq("Startup"), eq("s1"), eq("1.2.3.4"), any());
+        verify(notificationService).notify(eq("founder1"), any(), anyString(), anyString(), eq("s1"), eq("admin1"));
+    }
+
+    @Test
+    void rejectingAPendingStartupRequiresAReason() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(pendingStartup()));
+
+        assertThatThrownBy(() -> service().reviewModeration("admin1", "s1", false, null, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void anAlreadyReviewedStartupCannotBeReviewedAgain() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+
+        assertThatThrownBy(() -> service().reviewModeration("admin1", "s1", true, null, "1.2.3.4"))
+                .isInstanceOf(ConflictException.class);
+    }
+
     // ---- fundraising status suppression ----
 
     @Test
@@ -148,7 +266,7 @@ class StartupServiceTest {
         when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, true, false)));
         when(teamMemberRepository.findByStartupIdAndUserId("s1", "teammate"))
                 .thenReturn(Optional.of(StartupTeamMember.builder().startupId("s1").userId("teammate")
-                        .isFounder(false).status(StartupTeamMember.Status.ACTIVE).build()));
+                        .teamRole(StartupTeamMember.TeamRole.MEMBER).status(StartupTeamMember.Status.ACTIVE).build()));
 
         StartupDto dto = service().getStartup("s1", "teammate");
 
@@ -343,5 +461,182 @@ class StartupServiceTest {
         assertThat(bareDto.profileCompletionPercent()).isZero();
         assertThat(fullerDto.profileCompletionPercent()).isGreaterThan(bareDto.profileCompletionPercent());
         assertThat(fullerDto.profileCompletionPercent()).isEqualTo(100);
+    }
+
+    // ---- 3-tier team roles: Founder / Admin / Member ----
+
+    @Test
+    void adminCanUpdateTheStartup() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(startupRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        UpdateBuilder u = new UpdateBuilder();
+        u.tagline = "Updated by admin";
+
+        StartupDto dto = service().updateStartup("a1", "s1", u.build());
+
+        assertThat(dto.tagline()).isEqualTo("Updated by admin");
+    }
+
+    @Test
+    void plainMemberCannotUpdateTheStartup() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "m1")).thenReturn(Optional.of(member("s1", "m1")));
+
+        UpdateBuilder u = new UpdateBuilder();
+        u.tagline = "Hijacked";
+
+        assertThatThrownBy(() -> service().updateStartup("m1", "s1", u.build())).isInstanceOf(ForbiddenException.class);
+        verify(startupRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void adminCannotDeleteTheStartup() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+
+        assertThatThrownBy(() -> service().deleteStartup("a1", "s1")).isInstanceOf(ForbiddenException.class);
+        verify(startupRepository, never()).deleteById(any());
+    }
+
+    @Test
+    void founderCanDeleteTheStartup() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+
+        service().deleteStartup("f1", "s1");
+
+        verify(startupRepository).deleteById("s1");
+    }
+
+    @Test
+    void adminCanAddATeammateAsAMember() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(userRepository.findById("newUser")).thenReturn(Optional.of(User.builder().id("newUser").build()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "newUser")).thenReturn(Optional.empty());
+        when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupTeamMemberDto dto = service().addMember("a1", "s1", "newUser", null, null);
+
+        assertThat(dto.teamRole()).isEqualTo("MEMBER");
+    }
+
+    @Test
+    void adminCannotGrantAdminAtAddTime() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(userRepository.findById("newUser")).thenReturn(Optional.of(User.builder().id("newUser").build()));
+
+        assertThatThrownBy(() -> service().addMember("a1", "s1", "newUser", null, "ADMIN"))
+                .isInstanceOf(ForbiddenException.class);
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void founderCanGrantAdminAtAddTime() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(userRepository.findById("newUser")).thenReturn(Optional.of(User.builder().id("newUser").build()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "newUser")).thenReturn(Optional.empty());
+        when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupTeamMemberDto dto = service().addMember("f1", "s1", "newUser", null, "ADMIN");
+
+        assertThat(dto.teamRole()).isEqualTo("ADMIN");
+    }
+
+    @Test
+    void plainMemberCannotAddATeammate() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "m1")).thenReturn(Optional.of(member("s1", "m1")));
+
+        assertThatThrownBy(() -> service().addMember("m1", "s1", "newUser", null, null))
+                .isInstanceOf(ForbiddenException.class);
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void adminCannotRemoveAnotherAdmin() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a2")).thenReturn(Optional.of(admin("s1", "a2")));
+
+        assertThatThrownBy(() -> service().removeMember("a1", "s1", "a2")).isInstanceOf(ForbiddenException.class);
+        verify(teamMemberRepository, never()).delete(any(StartupTeamMember.class));
+    }
+
+    @Test
+    void adminCanRemoveAPlainMember() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "m1")).thenReturn(Optional.of(member("s1", "m1")));
+
+        service().removeMember("a1", "s1", "m1");
+
+        verify(teamMemberRepository).delete(any(StartupTeamMember.class));
+    }
+
+    @Test
+    void founderCanRemoveAnAdmin() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+
+        service().removeMember("f1", "s1", "a1");
+
+        verify(teamMemberRepository).delete(any(StartupTeamMember.class));
+    }
+
+    @Test
+    void founderCanPromoteAMemberToAdmin() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "m1")).thenReturn(Optional.of(member("s1", "m1")));
+        when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupTeamMemberDto dto = service().updateMemberRole("f1", "s1", "m1", "ADMIN");
+
+        assertThat(dto.teamRole()).isEqualTo("ADMIN");
+    }
+
+    @Test
+    void founderCanDemoteAnAdminBackToMember() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupTeamMemberDto dto = service().updateMemberRole("f1", "s1", "a1", "MEMBER");
+
+        assertThat(dto.teamRole()).isEqualTo("MEMBER");
+    }
+
+    @Test
+    void nonFounderCannotChangeAnyonesRole() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+
+        assertThatThrownBy(() -> service().updateMemberRole("a1", "s1", "m1", "ADMIN"))
+                .isInstanceOf(ForbiddenException.class);
+    }
+
+    @Test
+    void theFoundersOwnRoleCanNeverBeChanged() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+
+        assertThatThrownBy(() -> service().updateMemberRole("f1", "s1", "f1", "ADMIN"))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void founderRoleCanNeverBeAssignedThroughTheApi() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+
+        assertThatThrownBy(() -> service().updateMemberRole("f1", "s1", "m1", "FOUNDER"))
+                .isInstanceOf(BadRequestException.class);
     }
 }

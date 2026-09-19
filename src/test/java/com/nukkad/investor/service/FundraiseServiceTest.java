@@ -1,8 +1,10 @@
 package com.nukkad.investor.service;
 
+import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.investor.dto.CreateFundraiseRequest;
 import com.nukkad.investor.dto.FundraiseDto;
 import com.nukkad.investor.dto.UpdateFundraiseRequest;
@@ -43,11 +45,12 @@ class FundraiseServiceTest {
     }
 
     private Startup startup(String id) {
-        return Startup.builder().id(id).name("Ledgerly").build();
+        return Startup.builder().id(id).name("Ledgerly").moderationStatus(ModerationStatus.APPROVED).build();
     }
 
     private StartupTeamMember founder(String startupId, String userId) {
-        return StartupTeamMember.builder().startupId(startupId).userId(userId).isFounder(true).status(StartupTeamMember.Status.ACTIVE).build();
+        return StartupTeamMember.builder().startupId(startupId).userId(userId)
+                .teamRole(StartupTeamMember.TeamRole.FOUNDER).status(StartupTeamMember.Status.ACTIVE).build();
     }
 
     private Fundraise fundraise(String id, String startupId) {
@@ -89,6 +92,45 @@ class FundraiseServiceTest {
 
         assertThatThrownBy(() -> service().create("founder1", new CreateFundraiseRequest("s1", 100000L, "MVP", null, null)))
                 .isInstanceOf(ConflictException.class);
+    }
+
+    @Test
+    void creatingAFundraiseForAStillPendingStartupIsRejected() {
+        Startup pending = startup("s1");
+        pending.setModerationStatus(ModerationStatus.PENDING);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(pending));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.of(founder("s1", "founder1")));
+
+        assertThatThrownBy(() -> service().create("founder1", new CreateFundraiseRequest("s1", 100000L, "MVP", null, null)))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(fundraiseRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aFundraiseForAStillPendingStartupIsHiddenFromNonTeamViewers() {
+        Fundraise fundraise = fundraise("f1", "s1");
+        Startup pending = startup("s1");
+        pending.setModerationStatus(ModerationStatus.PENDING);
+        when(fundraiseRepository.findById("f1")).thenReturn(Optional.of(fundraise));
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(pending));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "stranger1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().get("f1", "stranger1")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void aFundraiseForAStillPendingStartupIsStillVisibleToItsOwnTeam() {
+        Fundraise fundraise = fundraise("f1", "s1");
+        Startup pending = startup("s1");
+        pending.setModerationStatus(ModerationStatus.PENDING);
+        when(fundraiseRepository.findById("f1")).thenReturn(Optional.of(fundraise));
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(pending));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.of(founder("s1", "founder1")));
+
+        FundraiseDto dto = service().get("f1", "founder1");
+
+        assertThat(dto.startupId()).isEqualTo("s1");
     }
 
     @Test

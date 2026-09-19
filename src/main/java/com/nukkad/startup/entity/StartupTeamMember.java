@@ -29,6 +29,8 @@ public class StartupTeamMember {
 
     public enum Status { ACTIVE, PENDING, REJECTED }
 
+    public enum TeamRole { FOUNDER, ADMIN, MEMBER }
+
     @Id
     @UuidGenerator
     @Column(columnDefinition = "CHAR(36)", updatable = false, nullable = false)
@@ -43,9 +45,10 @@ public class StartupTeamMember {
     @Column(length = 150)
     private String role;
 
-    @Column(name = "is_founder", nullable = false)
+    @Enumerated(EnumType.STRING)
+    @Column(name = "team_role", nullable = false, length = 10)
     @Builder.Default
-    private boolean isFounder = false;
+    private TeamRole teamRole = TeamRole.MEMBER;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 10)
@@ -68,4 +71,17 @@ public class StartupTeamMember {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
+
+    public boolean isFounder() {
+        return teamRole == TeamRole.FOUNDER;
+    }
+
+    public boolean isAdmin() {
+        return teamRole == TeamRole.ADMIN;
+    }
+
+    /** Founder or Admin — the tier that unlocks edit-startup/manage-team/post-jobs/edit-fundraising. */
+    public boolean canManage() {
+        return teamRole == TeamRole.FOUNDER || teamRole == TeamRole.ADMIN;
+    }
 }

@@ -1,9 +1,12 @@
 package com.nukkad.startup.service;
 
+import com.nukkad.common.audit.AuditAction;
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
@@ -20,6 +23,7 @@ import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupFollow;
 import com.nukkad.startup.entity.StartupMaterial;
 import com.nukkad.startup.entity.StartupMaterialType;
+import com.nukkad.startup.entity.StartupProfileView;
 import com.nukkad.startup.entity.StartupRole;
 import com.nukkad.startup.entity.StartupRoleType;
 import com.nukkad.startup.entity.StartupStage;
@@ -29,6 +33,7 @@ import com.nukkad.startup.entity.StartupVisibility;
 import com.nukkad.startup.mapper.StartupMapper;
 import com.nukkad.startup.repository.StartupFollowRepository;
 import com.nukkad.startup.repository.StartupMaterialRepository;
+import com.nukkad.startup.repository.StartupProfileViewRepository;
 import com.nukkad.startup.repository.StartupRepository;
 import com.nukkad.startup.repository.StartupRoleRepository;
 import com.nukkad.startup.repository.StartupSpecifications;
@@ -56,17 +61,23 @@ import java.util.stream.Collectors;
 @Service
 public class StartupService {
 
+    /** Founder + Admin — the tier that unlocks edit-startup/manage-team/post-jobs/edit-fundraising. */
+    private static final List<StartupTeamMember.TeamRole> MANAGER_ROLES =
+            List.of(StartupTeamMember.TeamRole.FOUNDER, StartupTeamMember.TeamRole.ADMIN);
+
     private final StartupRepository startupRepository;
     private final StartupTeamMemberRepository teamMemberRepository;
     private final StartupUpdateRepository updateRepository;
     private final StartupRoleRepository roleRepository;
     private final StartupFollowRepository followRepository;
     private final StartupMaterialRepository materialRepository;
+    private final StartupProfileViewRepository profileViewRepository;
     private final UserRepository userRepository;
     private final UserService userService;
     private final StartupMapper startupMapper;
     private final NotificationService notificationService;
     private final FileStorageService fileStorageService;
+    private final AuditService auditService;
 
     public StartupService(StartupRepository startupRepository,
                            StartupTeamMemberRepository teamMemberRepository,
@@ -74,22 +85,26 @@ public class StartupService {
                            StartupRoleRepository roleRepository,
                            StartupFollowRepository followRepository,
                            StartupMaterialRepository materialRepository,
+                           StartupProfileViewRepository profileViewRepository,
                            UserRepository userRepository,
                            UserService userService,
                            StartupMapper startupMapper,
                            NotificationService notificationService,
-                           FileStorageService fileStorageService) {
+                           FileStorageService fileStorageService,
+                           AuditService auditService) {
         this.startupRepository = startupRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.updateRepository = updateRepository;
         this.roleRepository = roleRepository;
         this.followRepository = followRepository;
         this.materialRepository = materialRepository;
+        this.profileViewRepository = profileViewRepository;
         this.userRepository = userRepository;
         this.userService = userService;
         this.startupMapper = startupMapper;
         this.notificationService = notificationService;
         this.fileStorageService = fileStorageService;
+        this.auditService = auditService;
     }
 
     public Startup getEntityOrThrow(String id) {
@@ -101,15 +116,47 @@ public class StartupService {
     public StartupDto getStartup(String id, String viewerId) {
         Startup startup = getEntityOrThrow(id);
         requireVisible(startup, viewerId);
+        if (startup.isRemovedByAdmin()) {
+            throw new ResourceNotFoundException("Startup not found: " + id);
+        }
+        // Pre-publish gate: a PENDING/REJECTED startup is only visible to a founder/admin of its
+        // own team (so they can see their own submission's review status) or a platform admin
+        // (via getStartupForAdmin below).
+        if (startup.getModerationStatus() != ModerationStatus.APPROVED && !canManageStartup(viewerId, id)) {
+            throw new ResourceNotFoundException("Startup not found: " + id);
+        }
         return startupMapper.toDto(startup,
                 viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, id),
-                isFounderMember(viewerId, id),
+                canManageStartup(viewerId, id),
                 canViewFundraising(startup, viewerId));
     }
 
+    // Admin-only: bypasses both the visibility and removed-by-admin checks above so a hidden or
+    // removed startup can still be reviewed from the admin panel.
+    @Transactional(readOnly = true)
+    public StartupDto getStartupForAdmin(String id) {
+        Startup startup = getEntityOrThrow(id);
+        return startupMapper.toDto(startup, false, true, true);
+    }
+
+    /** Runs as its own transaction so a view never fails (or blocks) the read it's attached to.
+     *  Skips the startup's own team so founders/admins/members browsing their own page don't
+     *  inflate the "external interest" signal the Founder Dashboard surfaces. */
+    @Transactional
+    public void recordProfileView(String startupId, String viewerId) {
+        if (viewerId != null && isActiveTeamMember(viewerId, startupId)) return;
+        if (!startupRepository.existsById(startupId)) return;
+        profileViewRepository.save(StartupProfileView.builder().startupId(startupId).viewerId(viewerId).build());
+    }
+
+    // PUBLIC listing — excludes non-approved content unless the caller is explicitly filtering to
+    // startups they're a member of (memberId == viewerId). PersonProfilePage reuses this same
+    // endpoint (not a separate "my startups" endpoint) to show a user's own pending/rejected
+    // startups on their own profile, so that case must stay visible to them.
     @Transactional(readOnly = true)
     public Page<StartupDto> listStartups(String q, String sector, String stage, Boolean isRaising,
                                           String chapterId, String memberId, String viewerId, int page, int size) {
+        boolean ownContent = memberId != null && memberId.equals(viewerId);
         Specification<Startup> spec = StartupSpecifications.combine(
                 StartupSpecifications.search(q),
                 StartupSpecifications.sector(sector),
@@ -117,19 +164,99 @@ public class StartupService {
                 StartupSpecifications.isRaising(isRaising),
                 StartupSpecifications.chapterId(chapterId),
                 StartupSpecifications.memberId(memberId),
-                StartupSpecifications.visibleTo(viewerId != null)
+                StartupSpecifications.visibleTo(viewerId != null),
+                StartupSpecifications.notRemoved(),
+                ownContent ? null : StartupSpecifications.approved()
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return startupRepository.findAll(spec, pageable)
                 .map(s -> startupMapper.toDto(s,
                         viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
-                        isFounderMember(viewerId, s.getId()),
+                        canManageStartup(viewerId, s.getId()),
                         canViewFundraising(s, viewerId)));
+    }
+
+    // ADMIN-ONLY — never applies the approved() gate; an admin must see PENDING/REJECTED startups
+    // to review them. includeRemoved and moderationStatus are independent, optional narrowing filters.
+    @Transactional(readOnly = true)
+    public Page<StartupDto> listStartupsForAdmin(String q, String sector, String stage, Boolean isRaising, String chapterId,
+                                                  String memberId, String viewerId, boolean includeRemoved,
+                                                  ModerationStatus moderationStatus, int page, int size) {
+        Specification<Startup> spec = StartupSpecifications.combine(
+                StartupSpecifications.search(q),
+                StartupSpecifications.sector(sector),
+                StartupSpecifications.stage(stage),
+                StartupSpecifications.isRaising(isRaising),
+                StartupSpecifications.chapterId(chapterId),
+                StartupSpecifications.memberId(memberId),
+                StartupSpecifications.visibleTo(viewerId != null),
+                includeRemoved ? null : StartupSpecifications.notRemoved(),
+                StartupSpecifications.moderationStatus(moderationStatus)
+        );
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        return startupRepository.findAll(spec, pageable)
+                .map(s -> startupMapper.toDto(s,
+                        viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
+                        canManageStartup(viewerId, s.getId()),
+                        canViewFundraising(s, viewerId)));
+    }
+
+    // See IdeaService.setRemovedByAdmin for the shared rationale behind this moderation model.
+    @Transactional
+    public StartupDto setRemovedByAdmin(String adminId, String startupId, boolean removed, String reason, String ip) {
+        Startup startup = getEntityOrThrow(startupId);
+        startup.setRemovedByAdmin(removed);
+        startup.setRemovalReason(removed ? reason : null);
+        startup = startupRepository.saveAndFlush(startup);
+
+        java.util.Map<String, Object> details = new java.util.HashMap<>();
+        details.put("entityType", "Startup");
+        if (removed && reason != null && !reason.isBlank()) details.put("reason", reason);
+        auditService.log(adminId, removed ? AuditAction.ADMIN_CONTENT_REMOVED : AuditAction.ADMIN_CONTENT_RESTORED,
+                "Startup", startupId, ip, details);
+
+        return startupMapper.toDto(startup, false, true, true);
+    }
+
+    // Pre-publish approval gate: a startup may be reviewed exactly once (PENDING -> APPROVED/REJECTED)
+    // — see ReportService.resolve for the identical "reviewed once" rationale. A rejection reason is
+    // required so the founder understands why.
+    @Transactional
+    public StartupDto reviewModeration(String adminId, String startupId, boolean approved, String reason, String ip) {
+        Startup startup = getEntityOrThrow(startupId);
+        if (startup.getModerationStatus() != ModerationStatus.PENDING) {
+            throw new ConflictException("This startup has already been reviewed");
+        }
+        if (!approved && (reason == null || reason.isBlank())) {
+            throw new BadRequestException("A reason is required when rejecting a startup");
+        }
+
+        startup.setModerationStatus(approved ? ModerationStatus.APPROVED : ModerationStatus.REJECTED);
+        startup.setRejectionReason(approved ? null : reason);
+        startup.setModerationReviewedBy(adminId);
+        startup.setModerationReviewedAt(Instant.now());
+        startup = startupRepository.saveAndFlush(startup);
+
+        java.util.Map<String, Object> details = new java.util.HashMap<>();
+        details.put("entityType", "Startup");
+        if (!approved) details.put("reason", reason);
+        auditService.log(adminId, approved ? AuditAction.ADMIN_CONTENT_APPROVED : AuditAction.ADMIN_CONTENT_REJECTED,
+                "Startup", startupId, ip, details);
+
+        String startupName = startup.getName();
+        teamMemberRepository.findByStartupIdAndTeamRoleIn(startupId, MANAGER_ROLES).forEach(manager ->
+                notificationService.notify(manager.getUserId(), NotificationType.startup,
+                        approved ? "Your startup was approved" : "Your startup was not approved",
+                        approved ? startupName + " is now visible to the community."
+                                : startupName + " was not approved: " + reason,
+                        startupId, adminId));
+
+        return startupMapper.toDto(startup, false, true, true);
     }
 
     @Transactional(readOnly = true)
     public List<StartupDto> listMyFoundedStartups(String userId) {
-        List<String> startupIds = teamMemberRepository.findByUserIdAndIsFounderTrueAndStatus(userId, StartupTeamMember.Status.ACTIVE)
+        List<String> startupIds = teamMemberRepository.findByUserIdAndTeamRoleInAndStatus(userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)
                 .stream().map(StartupTeamMember::getStartupId).toList();
         return startupRepository.findAllById(startupIds).stream()
                 .map(s -> startupMapper.toDto(s, false, true, true))
@@ -154,7 +281,7 @@ public class StartupService {
         teamMemberRepository.save(StartupTeamMember.builder()
                 .startupId(startup.getId())
                 .userId(creatorId)
-                .isFounder(true)
+                .teamRole(StartupTeamMember.TeamRole.FOUNDER)
                 .status(StartupTeamMember.Status.ACTIVE)
                 .build());
 
@@ -164,7 +291,7 @@ public class StartupService {
     @Transactional
     public StartupDto updateStartup(String userId, String startupId, UpdateStartupRequest request) {
         Startup startup = getEntityOrThrow(startupId);
-        requireFounder(userId, startupId);
+        requireManager(userId, startupId);
 
         if (request.name() != null) startup.setName(request.name());
         if (request.logoUrl() != null) startup.setLogoUrl(request.logoUrl());
@@ -210,7 +337,7 @@ public class StartupService {
     @Transactional
     public StartupDto updateLogo(String founderId, String startupId, MultipartFile file) {
         Startup startup = getEntityOrThrow(startupId);
-        requireFounder(founderId, startupId);
+        requireManager(founderId, startupId);
         startup.setLogoUrl(fileStorageService.storeImage(file, "startup-logos"));
         return startupMapper.toDto(startupRepository.save(startup), false, true, true);
     }
@@ -218,7 +345,7 @@ public class StartupService {
     @Transactional
     public StartupDto removeLogo(String founderId, String startupId) {
         Startup startup = getEntityOrThrow(startupId);
-        requireFounder(founderId, startupId);
+        requireManager(founderId, startupId);
         startup.setLogoUrl(null);
         return startupMapper.toDto(startupRepository.save(startup), false, true, true);
     }
@@ -242,7 +369,7 @@ public class StartupService {
     @Transactional(readOnly = true)
     public List<StartupJoinRequestDto> getJoinRequests(String founderId, String startupId) {
         Startup startup = getEntityOrThrow(startupId);
-        requireFounder(founderId, startupId);
+        requireManager(founderId, startupId);
         return teamMemberRepository.findByStartupIdAndStatus(startupId, StartupTeamMember.Status.PENDING).stream()
                 .map(m -> toJoinRequestDto(m, startup, founderId))
                 .toList();
@@ -299,8 +426,8 @@ public class StartupService {
         }
         member = teamMemberRepository.saveAndFlush(member);
 
-        teamMemberRepository.findByStartupIdAndIsFounderTrue(startupId).forEach(founder ->
-                notificationService.notify(founder.getUserId(), NotificationType.startup,
+        teamMemberRepository.findByStartupIdAndTeamRoleIn(startupId, MANAGER_ROLES).forEach(manager ->
+                notificationService.notify(manager.getUserId(), NotificationType.startup,
                         "New join request", "Someone wants to join " + startup.getName(), startupId, userId));
 
         return startupMapper.toDto(member);
@@ -324,7 +451,7 @@ public class StartupService {
         StartupTeamMember member = teamMemberRepository.findByIdForUpdate(memberId)
                 .orElseThrow(() -> new ResourceNotFoundException("Join request not found: " + memberId));
         Startup startup = getEntityOrThrow(member.getStartupId());
-        requireFounder(founderId, startup.getId());
+        requireManager(founderId, startup.getId());
 
         if (member.getStatus() != StartupTeamMember.Status.PENDING) {
             throw new BadRequestException("This request has already been decided");
@@ -353,12 +480,21 @@ public class StartupService {
     }
 
     @Transactional
-    public StartupTeamMemberDto addMember(String founderId, String startupId, String userId, String roleId) {
+    public StartupTeamMemberDto addMember(String actingUserId, String startupId, String userId, String roleId, String teamRoleLabel) {
         Startup startup = getEntityOrThrow(startupId);
-        requireFounder(founderId, startupId);
+        requireManager(actingUserId, startupId);
         userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         if (roleId != null && !roleRepository.findById(roleId).map(r -> r.getStartupId().equals(startupId)).orElse(false)) {
             throw new BadRequestException("Invalid role for this startup");
+        }
+
+        // Only a founder can grant Admin at add-time — an Admin adding a teammate can only add them as a Member.
+        StartupTeamMember.TeamRole teamRole = StartupTeamMember.TeamRole.MEMBER;
+        if (teamRoleLabel != null && !teamRoleLabel.isBlank()) {
+            teamRole = parseAssignableTeamRole(teamRoleLabel);
+            if (teamRole == StartupTeamMember.TeamRole.ADMIN && !isFounderMember(actingUserId, startupId)) {
+                throw new ForbiddenException("Only a founder can grant the Admin role");
+            }
         }
 
         StartupTeamMember member = teamMemberRepository.findByStartupIdAndUserId(startupId, userId).orElse(null);
@@ -368,6 +504,7 @@ public class StartupService {
         if (member != null) {
             member.setStatus(StartupTeamMember.Status.ACTIVE);
             member.setRoleId(roleId);
+            member.setTeamRole(teamRole);
             member.setReviewedAt(Instant.now());
         } else {
             member = StartupTeamMember.builder()
@@ -375,22 +512,59 @@ public class StartupService {
                     .userId(userId)
                     .status(StartupTeamMember.Status.ACTIVE)
                     .roleId(roleId)
+                    .teamRole(teamRole)
                     .reviewedAt(Instant.now())
                     .build();
         }
         member = teamMemberRepository.saveAndFlush(member);
 
         notificationService.notify(userId, NotificationType.startup,
-                "You're on the team", "You were added to the team for " + startup.getName(), startupId, founderId);
+                "You're on the team", "You were added to the team for " + startup.getName(), startupId, actingUserId);
 
         return startupMapper.toDto(member);
     }
 
     @Transactional
-    public void removeMember(String founderId, String startupId, String userId) {
-        Startup startup = getEntityOrThrow(startupId);
+    public StartupTeamMemberDto updateMemberRole(String founderId, String startupId, String userId, String teamRoleLabel) {
+        getEntityOrThrow(startupId);
         requireFounder(founderId, startupId);
-        if (userId.equals(founderId)) {
+        StartupTeamMember.TeamRole newRole = parseAssignableTeamRole(teamRoleLabel);
+
+        StartupTeamMember member = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
+                .filter(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .orElseThrow(() -> new BadRequestException("This user is not a member of this startup"));
+        if (member.isFounder()) {
+            throw new BadRequestException("The founder's role can't be changed");
+        }
+
+        member.setTeamRole(newRole);
+        member = teamMemberRepository.saveAndFlush(member);
+
+        notificationService.notify(userId, NotificationType.startup,
+                "Your role was updated", "You're now " + (newRole == StartupTeamMember.TeamRole.ADMIN ? "an Admin" : "a Member")
+                        + " on the team", startupId, founderId);
+
+        return startupMapper.toDto(member);
+    }
+
+    /** Admin/Member are the only roles ever assignable through the API — Founder is set once at creation/conversion and never granted. */
+    private StartupTeamMember.TeamRole parseAssignableTeamRole(String label) {
+        try {
+            StartupTeamMember.TeamRole role = StartupTeamMember.TeamRole.valueOf(label.trim().toUpperCase());
+            if (role == StartupTeamMember.TeamRole.FOUNDER) {
+                throw new BadRequestException("The Founder role can't be assigned");
+            }
+            return role;
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Unknown team role: " + label);
+        }
+    }
+
+    @Transactional
+    public void removeMember(String actingUserId, String startupId, String userId) {
+        Startup startup = getEntityOrThrow(startupId);
+        requireManager(actingUserId, startupId);
+        if (userId.equals(actingUserId)) {
             throw new BadRequestException("Use leave team to remove yourself");
         }
         StartupTeamMember member = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
@@ -399,10 +573,13 @@ public class StartupService {
         if (member.isFounder()) {
             throw new BadRequestException("Founders can't be removed");
         }
+        if (member.isAdmin() && !isFounderMember(actingUserId, startupId)) {
+            throw new ForbiddenException("Only a founder can remove an admin");
+        }
         teamMemberRepository.delete(member);
 
         notificationService.notify(userId, NotificationType.startup,
-                "Removed from the team", "You were removed from the team for " + startup.getName(), startupId, founderId);
+                "Removed from the team", "You were removed from the team for " + startup.getName(), startupId, actingUserId);
     }
 
     public record FollowResult(boolean following) {}
@@ -444,7 +621,7 @@ public class StartupService {
     @Transactional
     public StartupRoleDto createRole(String userId, String startupId, CreateStartupRoleRequest request) {
         getEntityOrThrow(startupId);
-        requireFounder(userId, startupId);
+        requireManager(userId, startupId);
         StartupRole role = roleRepository.saveAndFlush(StartupRole.builder()
                 .startupId(startupId)
                 .title(request.title())
@@ -460,7 +637,7 @@ public class StartupService {
     @Transactional(readOnly = true)
     public List<StartupMaterialDto> getMaterials(String startupId, String viewerId) {
         getEntityOrThrow(startupId);
-        boolean canManage = isFounderMember(viewerId, startupId);
+        boolean canManage = canManageStartup(viewerId, startupId);
         return materialRepository.findByStartupIdOrderBySortOrderAscCreatedAtAsc(startupId).stream()
                 .map(m -> startupMapper.toDto(m, canManage))
                 .toList();
@@ -470,7 +647,7 @@ public class StartupService {
     public StartupMaterialDto addMaterial(String userId, String startupId, String materialTypeLabel,
                                            String title, String url, MultipartFile file) {
         getEntityOrThrow(startupId);
-        requireFounder(userId, startupId);
+        requireManager(userId, startupId);
         StartupMaterialType type = parseMaterialType(materialTypeLabel);
 
         StartupMaterial.StartupMaterialBuilder builder = StartupMaterial.builder()
@@ -509,7 +686,7 @@ public class StartupService {
     public StartupMaterialDto updateMaterial(String userId, String materialId, String title, String url, MultipartFile file) {
         StartupMaterial material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material not found: " + materialId));
-        requireFounder(userId, material.getStartupId());
+        requireManager(userId, material.getStartupId());
 
         if (title != null) material.setTitle(blankToNull(title));
 
@@ -533,7 +710,7 @@ public class StartupService {
     public void deleteMaterial(String userId, String materialId) {
         StartupMaterial material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material not found: " + materialId));
-        requireFounder(userId, material.getStartupId());
+        requireManager(userId, material.getStartupId());
         materialRepository.delete(material);
     }
 
@@ -577,6 +754,20 @@ public class StartupService {
         if (userId == null) return false;
         return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
                 .map(m -> m.isFounder() && m.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .orElse(false);
+    }
+
+    /** Founder or Admin — gates edit-startup/manage-team/post-jobs/edit-fundraising. Delete stays founder-only via requireFounder. */
+    private void requireManager(String userId, String startupId) {
+        if (!canManageStartup(userId, startupId)) {
+            throw new ForbiddenException("Only a founder or admin of this startup can perform this action");
+        }
+    }
+
+    private boolean canManageStartup(String userId, String startupId) {
+        if (userId == null) return false;
+        return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
+                .map(m -> m.canManage() && m.getStatus() == StartupTeamMember.Status.ACTIVE)
                 .orElse(false);
     }
 

@@ -26,12 +26,16 @@ public class JwtService {
         this.signingKey = Keys.hmacShaKeyFor(properties.secret().getBytes(StandardCharsets.UTF_8));
     }
 
-    public String issueAccessToken(String userId, String email, Set<String> roles) {
+    /** {@code tokenVersion} is a snapshot of the user's current server-side token version at
+     *  issuance — see {@link com.nukkad.security.JwtAuthenticationFilter} for how it's compared
+     *  against the live value on every request to detect a revoked token. */
+    public String issueAccessToken(String userId, String email, Set<String> roles, int tokenVersion) {
         Instant now = Instant.now();
         return Jwts.builder()
                 .subject(userId)
                 .claim("email", email)
                 .claim("roles", roles)
+                .claim("tv", tokenVersion)
                 .id(UUID.randomUUID().toString())
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusSeconds(properties.accessExpirationSeconds())))
@@ -57,7 +61,14 @@ public class JwtService {
         Set<String> roles = rolesClaim == null
                 ? Set.of()
                 : java.util.stream.StreamSupport.stream(rolesClaim.spliterator(), false).collect(Collectors.toSet());
-        return new AuthenticatedUser(claims.getSubject(), claims.get("email", String.class), roles);
+        // Number, not Integer: JJWT/Jackson may deserialize a numeric claim as Integer or Long
+        // depending on the parser path. A token issued before this claim existed has no "tv" at
+        // all — treat that as version 0, matching the column's default for every account that has
+        // never had an admin status change, so a same-format-otherwise old token isn't rejected
+        // for a reason unrelated to revocation.
+        Number tokenVersionClaim = claims.get("tv", Number.class);
+        int tokenVersion = tokenVersionClaim == null ? 0 : tokenVersionClaim.intValue();
+        return new AuthenticatedUser(claims.getSubject(), claims.get("email", String.class), roles, tokenVersion);
     }
 
     /** Opaque, high-entropy refresh token value returned to the client once. Never persisted raw. */

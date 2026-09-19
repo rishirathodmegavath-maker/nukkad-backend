@@ -68,6 +68,13 @@ public class Post {
     @Builder.Default
     private boolean commentsDisabled = false;
 
+    @Column(name = "removed_by_admin", nullable = false)
+    @Builder.Default
+    private boolean removedByAdmin = false;
+
+    @Column(name = "removal_reason", length = 500)
+    private String removalReason;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

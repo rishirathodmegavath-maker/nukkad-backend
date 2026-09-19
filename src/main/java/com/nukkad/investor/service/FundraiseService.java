@@ -4,6 +4,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.investor.dto.CreateFundraiseRequest;
 import com.nukkad.investor.dto.FundraiseDto;
 import com.nukkad.investor.dto.UpdateFundraiseRequest;
@@ -78,21 +79,30 @@ public class FundraiseService {
                 .orElse(null);
     }
 
+    /** A fundraise is never visible to a non-team viewer while its parent startup is still
+     *  PENDING/REJECTED — an unapproved startup soliciting real money would otherwise be
+     *  discoverable to the whole platform the instant it's created. Team members can still see
+     *  their own fundraise while the startup awaits review, same as every other own-content
+     *  bypass this session added for Ideas/Startups/Opportunities. */
     private boolean canView(Fundraise fundraise, String viewerId) {
         Startup startup = startupRepository.findById(fundraise.getStartupId()).orElse(null);
         if (startup == null) return false;
-        if (startup.isFundraisingVisible()) return true;
-        if (viewerId == null) return false;
-        return teamMemberRepository.findByStartupIdAndUserId(startup.getId(), viewerId)
+        boolean isTeamMember = viewerId != null && teamMemberRepository.findByStartupIdAndUserId(startup.getId(), viewerId)
                 .map(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
                 .orElse(false);
+        if (isTeamMember) return true;
+        if (startup.getModerationStatus() != ModerationStatus.APPROVED) return false;
+        return startup.isFundraisingVisible();
     }
 
     @Transactional
     public FundraiseDto create(String userId, CreateFundraiseRequest request) {
         Startup startup = startupRepository.findById(request.startupId())
                 .orElseThrow(() -> new ResourceNotFoundException("Startup not found: " + request.startupId()));
-        requireFounder(userId, startup.getId());
+        requireManager(userId, startup.getId());
+        if (startup.getModerationStatus() != ModerationStatus.APPROVED) {
+            throw new BadRequestException("This startup must be approved by an admin before it can raise funds");
+        }
         if (fundraiseRepository.existsByStartupId(startup.getId())) {
             throw new ConflictException("This startup already has an active fundraise");
         }
@@ -116,7 +126,7 @@ public class FundraiseService {
     @Transactional
     public FundraiseDto update(String userId, String id, UpdateFundraiseRequest request) {
         Fundraise fundraise = getEntityOrThrow(id);
-        requireFounder(userId, fundraise.getStartupId());
+        requireManager(userId, fundraise.getStartupId());
         if (fundraise.getStatus() == FundraiseStatus.CLOSED) {
             throw new BadRequestException("This fundraise is closed and can no longer be edited");
         }
@@ -134,7 +144,7 @@ public class FundraiseService {
     public FundraiseDto close(String userId, String id) {
         Fundraise fundraise = getEntityOrThrow(id);
         String startupId = fundraise.getStartupId();
-        requireFounder(userId, startupId);
+        requireManager(userId, startupId);
         if (fundraise.getStatus() == FundraiseStatus.CLOSED) {
             throw new BadRequestException("This fundraise is already closed");
         }
@@ -158,17 +168,17 @@ public class FundraiseService {
         }
     }
 
-    private void requireFounder(String userId, String startupId) {
-        boolean isFounder = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
-                .map(StartupTeamMember::isFounder)
+    private void requireManager(String userId, String startupId) {
+        boolean canManage = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
+                .map(StartupTeamMember::canManage)
                 .orElse(false);
-        if (!isFounder) throw new ForbiddenException("Only a founder of this startup can perform this action");
+        if (!canManage) throw new ForbiddenException("Only a founder or admin of this startup can perform this action");
     }
 
     private FundraiseDto toDto(Fundraise fundraise, String viewerId) {
         String startupName = startupRepository.findById(fundraise.getStartupId()).map(Startup::getName).orElse(null);
         boolean canManage = viewerId != null && teamMemberRepository.findByStartupIdAndUserId(fundraise.getStartupId(), viewerId)
-                .map(StartupTeamMember::isFounder)
+                .map(StartupTeamMember::canManage)
                 .orElse(false);
         return investorMapper.toDto(fundraise, startupName, canManage);
     }

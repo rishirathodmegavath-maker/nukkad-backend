@@ -5,6 +5,7 @@ import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.idea.dto.ConvertToStartupRequest;
 import com.nukkad.idea.dto.ExpressInterestRequest;
 import com.nukkad.idea.dto.IdeaDto;
@@ -93,7 +94,8 @@ class IdeaServiceTest {
         return Idea.builder().id("idea1").title("AI Tutor").problem("Students struggle to get 1:1 help")
                 .solution("An adaptive AI tutor").stage(IdeaStage.CONCEPT).creatorId(creatorId)
                 .tags(new HashSet<>()).helpNeeded(new HashSet<>())
-                .teamMemberIds(new HashSet<>(Set.of(creatorId))).build();
+                .teamMemberIds(new HashSet<>(Set.of(creatorId)))
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
     }
 
     private IdeaInterest interest(String ideaId, String userId, IdeaInterestStatus status) {
@@ -128,6 +130,119 @@ class IdeaServiceTest {
         assertThat(dto.creatorId()).isEqualTo("creator1");
         assertThat(dto.teamMemberIds()).containsExactly("creator1");
         verify(auditService).log(eq("creator1"), eq(AuditAction.CREATE_IDEA), eq("Idea"), any(), isNull());
+    }
+
+    // ---- Admin moderation ----
+
+    @Test
+    void publicGetterThrowsNotFoundForARemovedIdea() {
+        Idea idea = idea("creator1");
+        idea.setRemovedByAdmin(true);
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+
+        assertThatThrownBy(() -> service().getIdea("idea1", "someoneElse")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void adminGetterStillReturnsARemovedIdea() {
+        Idea idea = idea("creator1");
+        idea.setRemovedByAdmin(true);
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+        when(ideaInterestRepository.countByIdeaIdAndStatusNotIn(any(), any())).thenReturn(0L);
+
+        IdeaDto dto = service().getIdeaForAdmin("idea1");
+
+        assertThat(dto.removedByAdmin()).isTrue();
+    }
+
+    @Test
+    void adminCanRemoveAndRestoreAnIdeaWithAudit() {
+        Idea idea = idea("creator1");
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+        when(ideaRepository.saveAndFlush(any(Idea.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(ideaInterestRepository.countByIdeaIdAndStatusNotIn(any(), any())).thenReturn(0L);
+
+        IdeaDto removed = service().setRemovedByAdmin("admin1", "idea1", true, "Spam", "1.2.3.4");
+        assertThat(removed.removedByAdmin()).isTrue();
+        assertThat(removed.removalReason()).isEqualTo("Spam");
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_REMOVED), eq("Idea"), eq("idea1"),
+                eq("1.2.3.4"), any());
+
+        IdeaDto restored = service().setRemovedByAdmin("admin1", "idea1", false, null, "1.2.3.4");
+        assertThat(restored.removedByAdmin()).isFalse();
+        assertThat(restored.removalReason()).isNull();
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_RESTORED), eq("Idea"), eq("idea1"),
+                eq("1.2.3.4"), any());
+    }
+
+    // ---- Pre-publish moderation ----
+
+    private Idea pendingIdea(String creatorId) {
+        Idea idea = idea(creatorId);
+        idea.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.PENDING);
+        return idea;
+    }
+
+    @Test
+    void publicGetterHidesAPendingIdeaFromEveryoneButItsCreator() {
+        Idea idea = pendingIdea("creator1");
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+
+        assertThatThrownBy(() -> service().getIdea("idea1", "someoneElse")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void publicGetterStillShowsAPendingIdeaToItsOwnCreator() {
+        Idea idea = pendingIdea("creator1");
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+        when(ideaInterestRepository.countByIdeaIdAndStatusNotIn(any(), any())).thenReturn(0L);
+
+        IdeaDto dto = service().getIdea("idea1", "creator1");
+
+        assertThat(dto.moderationStatus()).isEqualTo("PENDING");
+    }
+
+    @Test
+    void approvingAPendingIdeaLogsAuditAndNotifiesTheCreator() {
+        Idea idea = pendingIdea("creator1");
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+        when(ideaRepository.saveAndFlush(any(Idea.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(ideaInterestRepository.countByIdeaIdAndStatusNotIn(any(), any())).thenReturn(0L);
+
+        IdeaDto dto = service().reviewModeration("admin1", "idea1", true, null, "1.2.3.4");
+
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        assertThat(dto.rejectionReason()).isNull();
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_APPROVED), eq("Idea"), eq("idea1"),
+                eq("1.2.3.4"), any());
+        verify(notificationService).notify(eq("creator1"), any(), anyString(), anyString(), eq("idea1"), eq("admin1"));
+    }
+
+    @Test
+    void rejectingAPendingIdeaRequiresAReasonAndRecordsIt() {
+        Idea idea = pendingIdea("creator1");
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+
+        assertThatThrownBy(() -> service().reviewModeration("admin1", "idea1", false, null, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        when(ideaRepository.saveAndFlush(any(Idea.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(ideaInterestRepository.countByIdeaIdAndStatusNotIn(any(), any())).thenReturn(0L);
+
+        IdeaDto dto = service().reviewModeration("admin1", "idea1", false, "Low quality", "1.2.3.4");
+        assertThat(dto.moderationStatus()).isEqualTo("REJECTED");
+        assertThat(dto.rejectionReason()).isEqualTo("Low quality");
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_CONTENT_REJECTED), eq("Idea"), eq("idea1"),
+                eq("1.2.3.4"), any());
+    }
+
+    @Test
+    void anAlreadyReviewedIdeaCannotBeReviewedAgain() {
+        Idea idea = idea("creator1"); // fixture defaults to APPROVED
+        when(ideaRepository.findById("idea1")).thenReturn(Optional.of(idea));
+
+        assertThatThrownBy(() -> service().reviewModeration("admin1", "idea1", true, null, "1.2.3.4"))
+                .isInstanceOf(ConflictException.class);
     }
 
     // ---- Update / delete authorization ----

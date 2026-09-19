@@ -6,6 +6,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.idea.dto.ConvertToStartupRequest;
 import com.nukkad.idea.dto.ExpressInterestRequest;
 import com.nukkad.idea.dto.IdeaDto;
@@ -51,9 +52,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -112,23 +115,116 @@ public class IdeaService {
     }
 
     @Transactional(readOnly = true)
-    public IdeaDto getIdea(String id) {
+    public IdeaDto getIdea(String id, String viewerId) {
+        Idea idea = getEntityOrThrow(id);
+        if (idea.isRemovedByAdmin()) {
+            throw new ResourceNotFoundException("Idea not found: " + id);
+        }
+        // Pre-publish gate: a PENDING/REJECTED idea is only visible to its own creator (so they
+        // can see their own submission's review status) or an admin (via getIdeaForAdmin below).
+        if (idea.getModerationStatus() != ModerationStatus.APPROVED && !idea.getCreatorId().equals(viewerId)) {
+            throw new ResourceNotFoundException("Idea not found: " + id);
+        }
+        return toIdeaDto(idea);
+    }
+
+    // Admin-only: bypasses the removed-by-admin check above so a removed idea can still be
+    // reviewed (and restored) from the admin panel instead of 404ing for the reviewer too.
+    @Transactional(readOnly = true)
+    public IdeaDto getIdeaForAdmin(String id) {
         return toIdeaDto(getEntityOrThrow(id));
     }
 
+    // PUBLIC listing — always excludes removed content; excludes non-approved content unless the
+    // caller is explicitly filtering to their own ideas (creatorId == viewerId). PersonProfilePage
+    // reuses this same endpoint (not a separate "my ideas" endpoint) to show a user's own
+    // pending/rejected submissions on their own profile, so that case must stay visible to them.
     @Transactional(readOnly = true)
     public Page<IdeaDto> listIdeas(String q, String stage, String category, String helpNeeded,
-                                    String chapterId, String creatorId, int page, int size) {
+                                    String chapterId, String creatorId, String viewerId, int page, int size) {
+        boolean ownContent = creatorId != null && creatorId.equals(viewerId);
         Specification<Idea> spec = IdeaSpecifications.combine(
                 IdeaSpecifications.search(q),
                 IdeaSpecifications.stage(stage),
                 IdeaSpecifications.category(category),
                 IdeaSpecifications.helpNeeded(helpNeeded),
                 IdeaSpecifications.chapterId(chapterId),
-                IdeaSpecifications.creatorId(creatorId)
+                IdeaSpecifications.creatorId(creatorId),
+                IdeaSpecifications.notRemoved(),
+                ownContent ? null : IdeaSpecifications.approved()
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return ideaRepository.findAll(spec, pageable).map(this::toIdeaDto);
+    }
+
+    // ADMIN-ONLY — never applies the approved() gate; an admin must see PENDING/REJECTED ideas to
+    // review them. includeRemoved and moderationStatus are independent, optional narrowing filters.
+    @Transactional(readOnly = true)
+    public Page<IdeaDto> listIdeasForAdmin(String q, String stage, String category, String helpNeeded, String chapterId,
+                                            String creatorId, boolean includeRemoved, ModerationStatus moderationStatus,
+                                            int page, int size) {
+        Specification<Idea> spec = IdeaSpecifications.combine(
+                IdeaSpecifications.search(q),
+                IdeaSpecifications.stage(stage),
+                IdeaSpecifications.category(category),
+                IdeaSpecifications.helpNeeded(helpNeeded),
+                IdeaSpecifications.chapterId(chapterId),
+                IdeaSpecifications.creatorId(creatorId),
+                includeRemoved ? null : IdeaSpecifications.notRemoved(),
+                IdeaSpecifications.moderationStatus(moderationStatus)
+        );
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        return ideaRepository.findAll(spec, pageable).map(this::toIdeaDto);
+    }
+
+    // Admin-only moderation toggle: hides an idea from public discovery (and 404s its public detail
+    // page) without deleting it, or reverses that. Reused across the three content types this same
+    // way rather than inventing a per-type moderation model — see Startup/OpportunityService.
+    @Transactional
+    public IdeaDto setRemovedByAdmin(String adminId, String ideaId, boolean removed, String reason, String ip) {
+        Idea idea = getEntityOrThrow(ideaId);
+        idea.setRemovedByAdmin(removed);
+        idea.setRemovalReason(removed ? reason : null);
+        idea = ideaRepository.saveAndFlush(idea);
+
+        Map<String, Object> details = new HashMap<>();
+        details.put("entityType", "Idea");
+        if (removed && reason != null && !reason.isBlank()) details.put("reason", reason);
+        auditService.log(adminId, removed ? AuditAction.ADMIN_CONTENT_REMOVED : AuditAction.ADMIN_CONTENT_RESTORED,
+                "Idea", ideaId, ip, details);
+
+        return toIdeaDto(idea);
+    }
+
+    // Pre-publish approval gate: an idea may be reviewed exactly once (PENDING -> APPROVED/REJECTED)
+    // — see ReportService.resolve for the identical "reviewed once" rationale. A rejection reason is
+    // required so the creator understands why; an approval note is optional (rarely used).
+    @Transactional
+    public IdeaDto reviewModeration(String adminId, String ideaId, boolean approved, String reason, String ip) {
+        Idea idea = getEntityOrThrow(ideaId);
+        if (idea.getModerationStatus() != ModerationStatus.PENDING) {
+            throw new ConflictException("This idea has already been reviewed");
+        }
+        if (!approved && (reason == null || reason.isBlank())) {
+            throw new BadRequestException("A reason is required when rejecting an idea");
+        }
+
+        idea.setModerationStatus(approved ? ModerationStatus.APPROVED : ModerationStatus.REJECTED);
+        idea.setRejectionReason(approved ? null : reason);
+        idea.setModerationReviewedBy(adminId);
+        idea.setModerationReviewedAt(Instant.now());
+        idea = ideaRepository.saveAndFlush(idea);
+
+        auditService.log(adminId, approved ? AuditAction.ADMIN_CONTENT_APPROVED : AuditAction.ADMIN_CONTENT_REJECTED,
+                "Idea", ideaId, ip, approved ? Map.of() : Map.of("reason", reason));
+
+        notificationService.notify(idea.getCreatorId(), NotificationType.idea_interest,
+                approved ? "Your idea was approved" : "Your idea was not approved",
+                approved ? "\"" + idea.getTitle() + "\" is now visible to the community."
+                        : "\"" + idea.getTitle() + "\" was not approved: " + reason,
+                ideaId, adminId);
+
+        return toIdeaDto(idea);
     }
 
     @Transactional
@@ -427,7 +523,8 @@ public class IdeaService {
             startupTeamMemberRepository.save(StartupTeamMember.builder()
                     .startupId(startup.getId())
                     .userId(memberId)
-                    .isFounder(memberId.equals(idea.getCreatorId()))
+                    .teamRole(memberId.equals(idea.getCreatorId())
+                            ? StartupTeamMember.TeamRole.FOUNDER : StartupTeamMember.TeamRole.MEMBER)
                     .status(StartupTeamMember.Status.ACTIVE)
                     .build());
         }

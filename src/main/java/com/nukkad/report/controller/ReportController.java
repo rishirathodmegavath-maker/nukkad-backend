@@ -25,7 +25,7 @@ public class ReportController {
 
     @PostMapping
     public ApiResponse<Void> submit(@AuthenticationPrincipal AuthenticatedUser principal, @Valid @RequestBody SubmitReportRequest request) {
-        reportService.submit(principal.id(), request.reportedUserId(), request.category(), request.conversationId());
+        reportService.submit(principal.id(), request.reportedUserId(), request.category(), request.conversationId(), request.postId());
         return ApiResponse.ok(null);
     }
 }

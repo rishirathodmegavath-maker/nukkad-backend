@@ -10,6 +10,7 @@ public interface EventAttendeeRepository extends JpaRepository<EventAttendee, St
     Optional<EventAttendee> findByEventIdAndUserId(String eventId, String userId);
     boolean existsByEventIdAndUserId(String eventId, String userId);
     long countByEventId(String eventId);
+    long countByUserId(String userId);
     List<EventAttendee> findByEventIdOrderByRegisteredAtAsc(String eventId);
     void deleteByEventId(String eventId);
 }

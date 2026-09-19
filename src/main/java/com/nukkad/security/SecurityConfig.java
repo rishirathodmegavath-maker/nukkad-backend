@@ -1,5 +1,6 @@
 package com.nukkad.security;
 
+import com.nukkad.user.repository.UserRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -42,17 +43,20 @@ public class SecurityConfig {
     };
 
     private final JwtService jwtService;
+    private final UserRepository userRepository;
     private final CorsProperties corsProperties;
     private final RestAuthenticationEntryPoint authenticationEntryPoint;
     private final RestAccessDeniedHandler accessDeniedHandler;
     private final RateLimiter rateLimiter;
 
     public SecurityConfig(JwtService jwtService,
+                           UserRepository userRepository,
                            CorsProperties corsProperties,
                            RestAuthenticationEntryPoint authenticationEntryPoint,
                            RestAccessDeniedHandler accessDeniedHandler,
                            RateLimiter rateLimiter) {
         this.jwtService = jwtService;
+        this.userRepository = userRepository;
         this.corsProperties = corsProperties;
         this.authenticationEntryPoint = authenticationEntryPoint;
         this.accessDeniedHandler = accessDeniedHandler;
@@ -87,8 +91,12 @@ public class SecurityConfig {
                         // StartupService still enforces per-startup visibility for the anonymous
                         // case; this only decides whether the request reaches the controller.
                         .requestMatchers(HttpMethod.GET, "/api/startups", "/api/startups/*").permitAll()
+                        // Sole enforcement point for every /api/admin/** endpoint, present or future —
+                        // deliberately not left to per-controller annotations, which could be forgotten
+                        // on a new endpoint. Frontend route guards are UX only; this is the real boundary.
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         .anyRequest().authenticated())
-                .addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(new JwtAuthenticationFilter(jwtService, userRepository), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(new AuthRateLimitFilter(rateLimiter), JwtAuthenticationFilter.class);
         return http.build();
     }

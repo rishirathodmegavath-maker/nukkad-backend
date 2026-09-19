@@ -14,6 +14,9 @@ import com.nukkad.investor.entity.IntroRequestStatus;
 import com.nukkad.investor.mapper.InvestorMapper;
 import com.nukkad.investor.repository.IntroRequestRepository;
 import com.nukkad.investor.repository.InvestorProfileRepository;
+import com.nukkad.messaging.dto.ConversationDto;
+import com.nukkad.messaging.repository.ConversationRepository;
+import com.nukkad.messaging.service.ConversationService;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.startup.repository.StartupRepository;
@@ -48,11 +51,14 @@ class IntroRequestServiceTest {
     @Mock private UserService userService;
     @Mock private NotificationService notificationService;
     @Mock private AuditService auditService;
+    @Mock private ConversationService conversationService;
+    @Mock private ConversationRepository conversationRepository;
     private final InvestorMapper investorMapper = new InvestorMapper();
 
     private IntroRequestService service() {
         return new IntroRequestService(introRequestRepository, investorProfileRepository, startupRepository,
-                ideaRepository, userRepository, userService, investorMapper, notificationService, auditService);
+                ideaRepository, userRepository, userService, investorMapper, notificationService, auditService,
+                conversationService, conversationRepository);
     }
 
     private IntroRequest request(String id, String requesterId, String recipientId, IntroRequestStatus status) {
@@ -146,11 +152,29 @@ class IntroRequestServiceTest {
         IntroRequest pending = request("r1", "u1", "u2", IntroRequestStatus.PENDING);
         when(introRequestRepository.findById("r1")).thenReturn(Optional.of(pending));
         when(introRequestRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(conversationService.getOrCreate("u2", "u1")).thenReturn(fakeConversation("conv1"));
 
         IntroRequestDto dto = service().accept("u2", "r1");
 
         assertThat(dto.status()).isEqualTo("Accepted");
         verify(notificationService).notify(eq("u1"), eq(NotificationType.investor), any(), any(), any(), eq("u2"));
+    }
+
+    @Test
+    void acceptingOpensTheConversationAtomicallyOnTheServerSide() {
+        IntroRequest pending = request("r1", "u1", "u2", IntroRequestStatus.PENDING);
+        when(introRequestRepository.findById("r1")).thenReturn(Optional.of(pending));
+        when(introRequestRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(conversationService.getOrCreate("u2", "u1")).thenReturn(fakeConversation("conv1"));
+
+        IntroRequestDto dto = service().accept("u2", "r1");
+
+        verify(conversationService).getOrCreate("u2", "u1");
+        assertThat(dto.conversationId()).isEqualTo("conv1");
+    }
+
+    private ConversationDto fakeConversation(String id) {
+        return new ConversationDto(id, "DIRECT", "other-user", null, null, 0L, java.time.Instant.now(), false, null, false);
     }
 
     @Test

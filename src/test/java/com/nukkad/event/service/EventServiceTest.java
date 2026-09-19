@@ -13,7 +13,10 @@ import com.nukkad.event.entity.EventAttendee;
 import com.nukkad.event.mapper.EventMapper;
 import com.nukkad.event.repository.EventAttendeeRepository;
 import com.nukkad.event.repository.EventRepository;
+import com.nukkad.event.repository.EventStartupRepository;
 import com.nukkad.notification.service.NotificationService;
+import com.nukkad.startup.repository.StartupRepository;
+import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.UserRepository;
@@ -42,7 +45,10 @@ class EventServiceTest {
 
     @Mock private EventRepository eventRepository;
     @Mock private EventAttendeeRepository attendeeRepository;
+    @Mock private EventStartupRepository eventStartupRepository;
     @Mock private ChapterRepository chapterRepository;
+    @Mock private StartupRepository startupRepository;
+    @Mock private StartupTeamMemberRepository startupTeamMemberRepository;
     @Mock private UserRepository userRepository;
     @Mock private UserService userService;
     @Mock private NotificationService notificationService;
@@ -50,8 +56,8 @@ class EventServiceTest {
     private final EventMapper eventMapper = new EventMapper();
 
     private EventService service() {
-        return new EventService(eventRepository, attendeeRepository, chapterRepository, userRepository,
-                userService, eventMapper, notificationService);
+        return new EventService(eventRepository, attendeeRepository, eventStartupRepository, chapterRepository,
+                startupRepository, startupTeamMemberRepository, userRepository, userService, eventMapper, notificationService);
     }
 
     private Chapter chapter(String id, String presidentUserId) {
@@ -72,7 +78,7 @@ class EventServiceTest {
     private CreateEventRequest validRequest(String chapterId) {
         Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
         return new CreateEventRequest("Demo night", "Come build", chapterId, start, start.plus(2, ChronoUnit.HOURS),
-                false, "HSR Layout", null, null, null);
+                false, "HSR Layout", null, null, null, null);
     }
 
     // ---- create: authorization ----
@@ -129,7 +135,7 @@ class EventServiceTest {
     void invalidDateRangeIsRejected() {
         Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
         CreateEventRequest backwards = new CreateEventRequest("Bad event", null, null, start, start.minus(1, ChronoUnit.HOURS),
-                false, "Somewhere", null, null, null);
+                false, "Somewhere", null, null, null, null);
 
         assertThatThrownBy(() -> service().createEvent("president1", backwards))
                 .isInstanceOf(BadRequestException.class);
@@ -139,7 +145,7 @@ class EventServiceTest {
     void onlineEventWithoutMeetingUrlIsRejected() {
         Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
         CreateEventRequest noLink = new CreateEventRequest("Webinar", null, null, start, start.plus(1, ChronoUnit.HOURS),
-                true, null, null, null, null);
+                true, null, null, null, null, null);
 
         assertThatThrownBy(() -> service().createEvent("president1", noLink))
                 .isInstanceOf(BadRequestException.class);
@@ -155,7 +161,7 @@ class EventServiceTest {
         when(userRepository.findById("presidentA")).thenReturn(Optional.of(user("presidentA", SecurityRole.CHAPTER_PRESIDENT)));
 
         assertThatThrownBy(() -> service().updateEvent("presidentA",
-                "e1", new UpdateEventRequest("New title", null, null, null, null, null, null, null, null)))
+                "e1", new UpdateEventRequest("New title", null, null, null, null, null, null, null, null, null)))
                 .isInstanceOf(ForbiddenException.class);
     }
 
@@ -167,7 +173,7 @@ class EventServiceTest {
         when(userRepository.findById("member1")).thenReturn(Optional.of(user("member1", SecurityRole.USER)));
 
         assertThatThrownBy(() -> service().updateEvent("member1",
-                "e1", new UpdateEventRequest("New title", null, null, null, null, null, null, null, null)))
+                "e1", new UpdateEventRequest("New title", null, null, null, null, null, null, null, null, null)))
                 .isInstanceOf(ForbiddenException.class);
         assertThatThrownBy(() -> service().deleteEvent("member1", "e1"))
                 .isInstanceOf(ForbiddenException.class);
@@ -183,7 +189,7 @@ class EventServiceTest {
         when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
 
         EventDto dto = service().updateEvent("president1", "e1",
-                new UpdateEventRequest("Updated title", null, null, null, null, null, null, null, null));
+                new UpdateEventRequest("Updated title", null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.title()).isEqualTo("Updated title");
     }
@@ -196,7 +202,7 @@ class EventServiceTest {
         when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
 
         EventDto dto = service().updateEvent("organizer1", "e1",
-                new UpdateEventRequest("Updated title", null, null, null, null, null, null, null, null));
+                new UpdateEventRequest("Updated title", null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.title()).isEqualTo("Updated title");
     }
@@ -207,7 +213,7 @@ class EventServiceTest {
         when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
 
         assertThatThrownBy(() -> service().updateEvent("someoneElse",
-                "e1", new UpdateEventRequest("Hijack", null, null, null, null, null, null, null, null)))
+                "e1", new UpdateEventRequest("Hijack", null, null, null, null, null, null, null, null, null)))
                 .isInstanceOf(ForbiddenException.class);
         assertThatThrownBy(() -> service().deleteEvent("someoneElse", "e1"))
                 .isInstanceOf(ForbiddenException.class);
@@ -303,5 +309,97 @@ class EventServiceTest {
 
         org.mockito.Mockito.verify(userService).getUser("attendee1", "viewer1");
         org.mockito.Mockito.verify(userService, org.mockito.Mockito.never()).getUser("attendee1", null);
+    }
+
+    // ---- Startup <-> Event association ----
+
+    @Test
+    void creatingAnEventTagsAStartupTheOrganizerManages() {
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId(any())).thenReturn(0L);
+        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                "s1", "founder1", java.util.List.of(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER,
+                        com.nukkad.startup.entity.StartupTeamMember.TeamRole.ADMIN),
+                com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE)).thenReturn(true);
+        when(eventStartupRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        com.nukkad.startup.entity.Startup startup = com.nukkad.startup.entity.Startup.builder().id("s1").name("Ledgerly").build();
+        when(startupRepository.findAllById(java.util.List.of("s1"))).thenReturn(java.util.List.of(startup));
+        when(eventStartupRepository.findByEventId(any())).thenReturn(java.util.List.of(
+                com.nukkad.event.entity.EventStartup.builder().eventId("e1").startupId("s1").build()));
+
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        CreateEventRequest request = new CreateEventRequest("Demo night", "Come build", null, start,
+                start.plus(2, ChronoUnit.HOURS), false, "HSR Layout", null, null, null, java.util.List.of("s1"));
+
+        EventDto dto = service().createEvent("founder1", request);
+
+        assertThat(dto.startups()).extracting("id").containsExactly("s1");
+        org.mockito.Mockito.verify(eventStartupRepository).save(any());
+    }
+
+    @Test
+    void cannotTagAStartupYouDoNotManage() {
+        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                "someoneElsesStartup", "user1", java.util.List.of(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER,
+                        com.nukkad.startup.entity.StartupTeamMember.TeamRole.ADMIN),
+                com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE)).thenReturn(false);
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        CreateEventRequest request = new CreateEventRequest("Demo night", null, null, start,
+                start.plus(2, ChronoUnit.HOURS), false, "HSR Layout", null, null, null, java.util.List.of("someoneElsesStartup"));
+
+        assertThatThrownBy(() -> service().createEvent("user1", request)).isInstanceOf(ForbiddenException.class);
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void updatingAnEventReplacesTheFullStartupSet() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
+        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                "s2", "organizer1", java.util.List.of(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER,
+                        com.nukkad.startup.entity.StartupTeamMember.TeamRole.ADMIN),
+                com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE)).thenReturn(true);
+        when(eventStartupRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of());
+
+        service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, null, java.util.List.of("s2")));
+
+        org.mockito.Mockito.verify(eventStartupRepository).deleteByEventId("e1");
+        org.mockito.Mockito.verify(eventStartupRepository).save(any());
+    }
+
+    @Test
+    void omittingStartupIdsOnUpdateLeavesExistingAssociationsUntouched() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of());
+
+        service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest("New title", null, null, null, null, null, null, null, null, null));
+
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).deleteByEventId(any());
+    }
+
+    @Test
+    void getEventsForStartupReturnsEventsSortedByStartTime() {
+        Instant laterStart = Instant.now().plus(5, ChronoUnit.DAYS);
+        Instant soonerStart = Instant.now().plus(1, ChronoUnit.DAYS);
+        Event later = Event.builder().id("e-later").title("Later").startAt(laterStart).endAt(laterStart.plus(1, ChronoUnit.HOURS)).build();
+        Event sooner = Event.builder().id("e-sooner").title("Sooner").startAt(soonerStart).endAt(soonerStart.plus(1, ChronoUnit.HOURS)).build();
+        when(eventStartupRepository.findByStartupId("s1")).thenReturn(java.util.List.of(
+                com.nukkad.event.entity.EventStartup.builder().eventId("e-later").startupId("s1").build(),
+                com.nukkad.event.entity.EventStartup.builder().eventId("e-sooner").startupId("s1").build()));
+        when(eventRepository.findAllById(java.util.List.of("e-later", "e-sooner"))).thenReturn(java.util.List.of(later, sooner));
+
+        var result = service().getEventsForStartup("s1");
+
+        assertThat(result).extracting("id").containsExactly("e-sooner", "e-later");
     }
 }

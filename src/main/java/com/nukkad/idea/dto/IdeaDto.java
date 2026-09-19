@@ -18,6 +18,10 @@ public record IdeaDto(
         Set<String> helpNeeded,
         Set<String> teamMemberIds,
         int interestCount,
+        boolean removedByAdmin,
+        String removalReason,
+        String moderationStatus,
+        String rejectionReason,
         Instant createdAt,
         Instant updatedAt
 ) {

@@ -1,5 +1,6 @@
 package com.nukkad.matching.service;
 
+import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.idea.dto.IdeaDto;
 import com.nukkad.idea.entity.ContributionArea;
 import com.nukkad.idea.entity.Idea;
@@ -89,6 +90,8 @@ public class ContentMatchingService {
                 .findAll(PageRequest.of(0, CANDIDATE_WINDOW_SIZE, Sort.by(Sort.Direction.DESC, "createdAt")))
                 .getContent().stream()
                 .filter(idea -> idea.getStartupId() == null)
+                .filter(idea -> !idea.isRemovedByAdmin())
+                .filter(idea -> idea.getModerationStatus() == ModerationStatus.APPROVED)
                 .filter(idea -> !idea.getCreatorId().equals(viewerId))
                 .filter(idea -> !idea.getTeamMemberIds().contains(viewerId))
                 .filter(idea -> !blocked.contains(idea.getCreatorId()))
@@ -156,6 +159,8 @@ public class ContentMatchingService {
                 .findAll(PageRequest.of(0, CANDIDATE_WINDOW_SIZE, Sort.by(Sort.Direction.DESC, "createdAt")))
                 .getContent().stream()
                 .filter(opp -> !opp.isClosed())
+                .filter(opp -> !opp.isRemovedByAdmin())
+                .filter(opp -> opp.getModerationStatus() == ModerationStatus.APPROVED)
                 .filter(opp -> !opp.getPostedByUserId().equals(viewerId))
                 .filter(opp -> !alreadyInteracted.contains(opp.getId()))
                 .filter(opp -> !blocked.contains(opp.getPostedByUserId()))

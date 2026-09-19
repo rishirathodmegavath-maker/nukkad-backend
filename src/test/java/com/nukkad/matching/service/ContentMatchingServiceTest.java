@@ -58,7 +58,8 @@ class ContentMatchingServiceTest {
         return Idea.builder().id(id).title("Idea " + id).problem("A real problem worth solving")
                 .solution("A solution").stage(IdeaStage.CONCEPT).creatorId(creatorId)
                 .tags(new HashSet<>()).helpNeeded(new HashSet<>())
-                .teamMemberIds(new HashSet<>(Set.of(creatorId))).build();
+                .teamMemberIds(new HashSet<>(Set.of(creatorId)))
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
     }
 
     private User user(String id) {
