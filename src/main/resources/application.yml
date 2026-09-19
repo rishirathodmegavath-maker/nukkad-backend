@@ -97,7 +97,7 @@ nukkad:
     client-id: ${GOOGLE_CLIENT_ID:}
     client-secret: ${GOOGLE_CLIENT_SECRET:}
   mail:
-    from: ${MAIL_FROM:no-reply@nukkad.app}
+    from: ${MAIL_FROM:no-reply@buildadda.com}
     frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:5174}
   messaging:
     encryption-key: ${MESSAGE_ENCRYPTION_KEY}

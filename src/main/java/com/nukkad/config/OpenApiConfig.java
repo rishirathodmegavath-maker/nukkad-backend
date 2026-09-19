@@ -16,7 +16,7 @@ public class OpenApiConfig {
     @Bean
     public OpenAPI nukkadOpenApi() {
         return new OpenAPI()
-                .info(new Info().title("Nukkad API").version("v1")
+                .info(new Info().title("Buildadda API").version("v1")
                         .description("Discover -> Connect -> Build -> Opportunity"))
                 .addSecurityItem(new SecurityRequirement().addList(BEARER_SCHEME))
                 .components(new Components().addSecuritySchemes(BEARER_SCHEME,

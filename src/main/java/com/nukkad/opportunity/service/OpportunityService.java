@@ -244,7 +244,7 @@ public class OpportunityService {
         User poster = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
         if (!startupTeamMemberRepository.existsByUserIdAndTeamRoleInAndStatus(userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)) {
-            throw new ForbiddenException("Only a founder or admin of a startup on Nukkad can post an opportunity");
+            throw new ForbiddenException("Only a founder or admin of a startup on Buildadda can post an opportunity");
         }
         if (request.startupId() != null
                 && !startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(

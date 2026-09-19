@@ -23,19 +23,19 @@ public class EmailService {
 
     public void sendVerificationEmail(String to, String name, String rawToken) {
         String link = properties.frontendBaseUrl() + "/verify-email?token=" + rawToken;
-        send(to, "Verify your Nukkad account", """
+        send(to, "Verify your Buildadda account", """
                 <p>Hi %s,</p>
-                <p>Thanks for signing up for Nukkad. Verify your email address to activate your account:</p>
+                <p>Thanks for signing up for Buildadda. Verify your email address to activate your account:</p>
                 <p><a href="%s">Verify my email</a></p>
-                <p>This link expires in 24 hours. If you didn't create a Nukkad account, you can ignore this email.</p>
+                <p>This link expires in 24 hours. If you didn't create a Buildadda account, you can ignore this email.</p>
                 """.formatted(escape(name), link));
     }
 
     public void sendPasswordResetEmail(String to, String name, String rawToken) {
         String link = properties.frontendBaseUrl() + "/reset-password?token=" + rawToken;
-        send(to, "Reset your Nukkad password", """
+        send(to, "Reset your Buildadda password", """
                 <p>Hi %s,</p>
-                <p>We received a request to reset your Nukkad password. This link expires in 1 hour:</p>
+                <p>We received a request to reset your Buildadda password. This link expires in 1 hour:</p>
                 <p><a href="%s">Reset my password</a></p>
                 <p>If you didn't request this, you can ignore this email — your password won't change.</p>
                 """.formatted(escape(name), link));
