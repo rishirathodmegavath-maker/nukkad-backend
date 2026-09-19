@@ -22,6 +22,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private static final String BEARER_PREFIX = "Bearer ";
+    public static final String SCOPE_ADMIN = "SCOPE_ADMIN";
+    public static final String SCOPE_APP = "SCOPE_APP";
 
     private final JwtService jwtService;
     private final UserRepository userRepository;
@@ -52,10 +54,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     log.debug("Rejected access token with stale or unknown token version for user {}", principal.id());
                     SecurityContextHolder.clearContext();
                 } else {
-                    List<GrantedAuthority> authorities = principal.roles().stream()
+                    // Exactly one scope authority per token: admin-portal tokens get SCOPE_ADMIN,
+                    // every member token (including ones issued before scopes existed) SCOPE_APP.
+                    // SecurityConfig uses it to keep the two audiences fully separate.
+                    List<GrantedAuthority> authorities = new java.util.ArrayList<>(principal.roles().stream()
                             .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
                             .map(GrantedAuthority.class::cast)
-                            .toList();
+                            .toList());
+                    authorities.add(new SimpleGrantedAuthority(jwtService.isAdminScope(claims) ? SCOPE_ADMIN : SCOPE_APP));
                     var authentication = new UsernamePasswordAuthenticationToken(principal, null, authorities);
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 }

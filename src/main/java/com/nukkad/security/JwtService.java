@@ -18,6 +18,9 @@ import java.util.stream.Collectors;
 @Service
 public class JwtService {
 
+    public static final String SCOPE_CLAIM = "scp";
+    public static final String ADMIN_SCOPE = "admin";
+
     private final JwtProperties properties;
     private final SecretKey signingKey;
 
@@ -30,17 +33,36 @@ public class JwtService {
      *  issuance — see {@link com.nukkad.security.JwtAuthenticationFilter} for how it's compared
      *  against the live value on every request to detect a revoked token. */
     public String issueAccessToken(String userId, String email, Set<String> roles, int tokenVersion) {
+        return buildAccessToken(userId, email, roles, tokenVersion, null);
+    }
+
+    /** Token for the separate admin portal. The "scp" claim is what keeps it out of the member
+     *  application (and keeps member tokens out of /api/admin/**): SecurityConfig requires it on
+     *  admin endpoints and forbids it everywhere else. */
+    public String issueAdminAccessToken(String userId, String email, Set<String> roles, int tokenVersion) {
+        return buildAccessToken(userId, email, roles, tokenVersion, ADMIN_SCOPE);
+    }
+
+    private String buildAccessToken(String userId, String email, Set<String> roles, int tokenVersion, String scope) {
         Instant now = Instant.now();
-        return Jwts.builder()
+        var builder = Jwts.builder()
                 .subject(userId)
                 .claim("email", email)
                 .claim("roles", roles)
-                .claim("tv", tokenVersion)
+                .claim("tv", tokenVersion);
+        if (scope != null) {
+            builder.claim(SCOPE_CLAIM, scope);
+        }
+        return builder
                 .id(UUID.randomUUID().toString())
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusSeconds(properties.accessExpirationSeconds())))
                 .signWith(signingKey)
                 .compact();
+    }
+
+    public boolean isAdminScope(Claims claims) {
+        return ADMIN_SCOPE.equals(claims.get(SCOPE_CLAIM, String.class));
     }
 
     public long getAccessExpirationSeconds() {

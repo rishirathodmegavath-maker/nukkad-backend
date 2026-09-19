@@ -67,6 +67,48 @@ class JwtAuthenticationFilterTest {
         verify(filterChain).doFilter(request, response);
     }
 
+    private java.util.Set<String> authorityNames() {
+        return SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream()
+                .map(org.springframework.security.core.GrantedAuthority::getAuthority)
+                .collect(java.util.stream.Collectors.toSet());
+    }
+
+    @Test
+    void anAdminPortalTokenGetsTheAdminScopeAndNeverTheMemberScope() throws Exception {
+        withBearerToken(jwtService.issueAdminAccessToken("admin-1", "a@example.com", Set.of("USER", "ADMIN"), 0));
+        when(userRepository.findTokenVersionById("admin-1")).thenReturn(Optional.of(0));
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(authorityNames()).contains("ROLE_ADMIN", JwtAuthenticationFilter.SCOPE_ADMIN)
+                .doesNotContain(JwtAuthenticationFilter.SCOPE_APP);
+    }
+
+    @Test
+    void aMemberTokenGetsTheMemberScopeEvenIfItsAccountIsAnAdmin() throws Exception {
+        // An admin account's ordinary (non-portal) token: it has the ROLE but not the admin scope,
+        // so SecurityConfig's admin rule (role AND scope) still rejects it.
+        withBearerToken(jwtService.issueAccessToken("admin-1", "a@example.com", Set.of("USER", "ADMIN"), 0));
+        when(userRepository.findTokenVersionById("admin-1")).thenReturn(Optional.of(0));
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(authorityNames()).contains("ROLE_ADMIN", JwtAuthenticationFilter.SCOPE_APP)
+                .doesNotContain(JwtAuthenticationFilter.SCOPE_ADMIN);
+    }
+
+    @Test
+    void aTokenIssuedBeforeScopesExistedIsTreatedAsAMemberToken() throws Exception {
+        // Same shape jwtService.issueAccessToken always produced: no "scp" claim at all.
+        withBearerToken(jwtService.issueAccessToken("user-1", "u@example.com", Set.of("USER"), 0));
+        when(userRepository.findTokenVersionById("user-1")).thenReturn(Optional.of(0));
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        assertThat(authorityNames()).contains(JwtAuthenticationFilter.SCOPE_APP)
+                .doesNotContain(JwtAuthenticationFilter.SCOPE_ADMIN);
+    }
+
     @Test
     void rejectsTokenIssuedBeforeAnAdminSuspendedTheAccount() throws Exception {
         // Token was minted while the user's version was 1 (i.e. before any admin action).

@@ -5,7 +5,6 @@ import com.nukkad.admin.dto.ResolveReportRequest;
 import com.nukkad.admin.service.AdminReportService;
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
-import com.nukkad.messaging.dto.AdminMessageDto;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
@@ -18,8 +17,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/admin/reports")
@@ -43,13 +40,6 @@ public class AdminReportController {
     @GetMapping("/{id}")
     public ApiResponse<AdminReportDto> get(@PathVariable String id) {
         return ApiResponse.ok(adminReportService.getReport(id));
-    }
-
-    @GetMapping("/{id}/messages")
-    public ApiResponse<List<AdminMessageDto>> messages(@AuthenticationPrincipal AuthenticatedUser principal,
-                                                          @PathVariable String id,
-                                                          HttpServletRequest httpRequest) {
-        return ApiResponse.ok(adminReportService.getConversationMessages(principal.id(), id, httpRequest.getRemoteAddr()));
     }
 
     @PatchMapping("/{id}")

@@ -6,8 +6,6 @@ import com.nukkad.admin.util.AdminPaging;
 import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
-import com.nukkad.messaging.dto.AdminMessageDto;
-import com.nukkad.messaging.service.ConversationService;
 import com.nukkad.report.entity.Report;
 import com.nukkad.report.entity.ReportStatus;
 import com.nukkad.report.service.ReportService;
@@ -18,7 +16,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -30,16 +27,15 @@ public class AdminReportService {
     private final UserRepository userRepository;
     private final AdminMapper adminMapper;
     private final AuditService auditService;
-    private final ConversationService conversationService;
 
+    // Deliberately has no access to message content: private conversations are never readable from
+    // the admin side (a report only records THAT a conversation was reported, via its id).
     public AdminReportService(ReportService reportService, UserRepository userRepository,
-                               AdminMapper adminMapper, AuditService auditService,
-                               ConversationService conversationService) {
+                               AdminMapper adminMapper, AuditService auditService) {
         this.reportService = reportService;
         this.userRepository = userRepository;
         this.adminMapper = adminMapper;
         this.auditService = auditService;
-        this.conversationService = conversationService;
     }
 
     @Transactional(readOnly = true)
@@ -73,21 +69,6 @@ public class AdminReportService {
                 Map.of("status", target.name()));
         Map<String, User> users = fetchReferencedUsers(java.util.List.of(resolved));
         return adminMapper.toDto(resolved, users);
-    }
-
-    // Evidence view for the resolve/dismiss decision: the report only carries a conversationId
-    // (see Report.java), never the message content itself, so this is the one place an admin can
-    // actually see what was said rather than resolving on trust. Reading it is itself logged, since
-    // it's an admin looking at another user's private messages.
-    @Transactional
-    public List<AdminMessageDto> getConversationMessages(String adminId, String reportId, String ip) {
-        Report report = reportService.getEntityOrThrow(reportId);
-        if (report.getConversationId() == null) {
-            return List.of();
-        }
-        auditService.log(adminId, AuditAction.ADMIN_ACTION, "Report", reportId, ip,
-                Map.of("action", "viewed_conversation_evidence", "conversationId", report.getConversationId()));
-        return conversationService.getMessagesForAdminReview(report.getConversationId());
     }
 
     private ReportStatus parseOptionalStatus(String status) {

@@ -76,13 +76,14 @@ public class CandidatePoolService {
         }
 
         Specification<User> spec = UserSpecifications.combine(
+                UserSpecifications.notAdmin(),
                 UserSpecifications.excludeIds(exclude),
                 viewer.getChapterId() != null ? UserSpecifications.chapterId(viewer.getChapterId()) : null
         );
         List<User> candidates = new ArrayList<>(userRepository.findAll(spec, PageRequest.of(0, need, Sort.by(Sort.Direction.DESC, "connectionsCount"))).getContent());
 
         if (candidates.size() < need && viewer.getChapterId() != null) {
-            Specification<User> widened = UserSpecifications.excludeIds(exclude);
+            Specification<User> widened = UserSpecifications.combine(UserSpecifications.notAdmin(), UserSpecifications.excludeIds(exclude));
             List<User> more = userRepository.findAll(widened, PageRequest.of(0, need)).getContent();
             for (User u : more) {
                 if (candidates.size() >= need) break;

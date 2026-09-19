@@ -50,7 +50,11 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
                 throw new AccessDeniedException("Missing bearer token on STOMP CONNECT");
             }
             try {
-                AuthenticatedUser user = jwtService.toAuthenticatedUser(jwtService.parseAndValidate(authHeader.substring(7)));
+                var claims = jwtService.parseAndValidate(authHeader.substring(7));
+                if (jwtService.isAdminScope(claims)) {
+                    throw new AccessDeniedException("Admin sessions cannot use messaging");
+                }
+                AuthenticatedUser user = jwtService.toAuthenticatedUser(claims);
                 accessor.setUser(new StompPrincipal(user.id()));
             } catch (JwtException e) {
                 throw new AccessDeniedException("Invalid or expired token");

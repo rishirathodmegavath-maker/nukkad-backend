@@ -310,6 +310,9 @@ class UserServiceTest {
         org.mockito.Mockito.lenient().when(cb.equal(any(), any())).thenReturn(mock(jakarta.persistence.criteria.Predicate.class));
         org.mockito.Mockito.lenient().when(cb.and(any(), any())).thenReturn(mock(jakarta.persistence.criteria.Predicate.class));
         org.mockito.Mockito.lenient().when(cb.conjunction()).thenReturn(mock(jakarta.persistence.criteria.Predicate.class));
+        // The directory also excludes administrator accounts via a subquery (UserSpecifications.notAdmin).
+        org.mockito.Mockito.lenient().when(query.subquery(String.class)).thenReturn(
+                mock(jakarta.persistence.criteria.Subquery.class, org.mockito.Answers.RETURNS_DEEP_STUBS));
 
         specCaptor.getValue().toPredicate(root, query, cb);
 

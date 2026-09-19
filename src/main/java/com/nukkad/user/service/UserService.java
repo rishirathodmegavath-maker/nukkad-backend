@@ -317,6 +317,7 @@ public class UserService {
         // president of a freshly-created chapter), instead of an incorrect "no members" empty state.
         boolean chapterMembersView = chapterId != null && !chapterId.isBlank();
         Specification<User> spec = UserSpecifications.combine(
+                UserSpecifications.notAdmin(),
                 chapterMembersView ? null : UserSpecifications.excludeId(viewerId),
                 UserSpecifications.excludeIds(userBlockRepository.findBlockedEitherWayIds(viewerId)),
                 UserSpecifications.search(q),
@@ -374,6 +375,7 @@ public class UserService {
             alreadyRelatedIds.add(c.getUserAId().equals(viewerId) ? c.getUserBId() : c.getUserAId());
         }
         Specification<User> spec = UserSpecifications.combine(
+                UserSpecifications.notAdmin(),
                 UserSpecifications.excludeId(viewerId),
                 UserSpecifications.excludeIds(blockedIds),
                 UserSpecifications.excludeIds(alreadyRelatedIds),
@@ -383,7 +385,8 @@ public class UserService {
         List<User> candidates = new java.util.ArrayList<>(userRepository.findAll(spec, pageable).getContent());
 
         if (candidates.size() < limit && viewer.getChapterId() != null) {
-            Specification<User> fallback = UserSpecifications.combine(UserSpecifications.excludeId(viewerId),
+            Specification<User> fallback = UserSpecifications.combine(UserSpecifications.notAdmin(),
+                    UserSpecifications.excludeId(viewerId),
                     UserSpecifications.excludeIds(blockedIds), UserSpecifications.excludeIds(alreadyRelatedIds));
             List<User> more = userRepository.findAll(fallback, PageRequest.of(0, limit)).getContent();
             for (User u : more) {

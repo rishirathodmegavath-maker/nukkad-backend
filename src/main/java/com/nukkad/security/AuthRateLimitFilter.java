@@ -38,7 +38,11 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
             // were still completely unthrottled before this, unlike every other sensitive endpoint.
             Map.entry("/api/auth/change-password", new Limit(10, Duration.ofMinutes(15))),
             Map.entry("/api/auth/verify-email", new Limit(10, Duration.ofHours(1))),
-            Map.entry("/api/auth/password-reset/confirm", new Limit(10, Duration.ofHours(1)))
+            Map.entry("/api/auth/password-reset/confirm", new Limit(10, Duration.ofHours(1))),
+            // The admin portal sign-in controls the whole platform, so it gets a tighter bound than
+            // the member login: 5 attempts per 15 minutes per IP.
+            Map.entry("/api/admin/auth/login", new Limit(5, Duration.ofMinutes(15))),
+            Map.entry("/api/admin/auth/refresh", new Limit(30, Duration.ofMinutes(15)))
     );
 
     private final RateLimiter rateLimiter;

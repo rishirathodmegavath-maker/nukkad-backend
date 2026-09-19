@@ -35,6 +35,12 @@ public class SecurityConfig {
             "/api/auth/resend-verification",
             "/api/auth/refresh",
             "/api/auth/password-reset/**",
+            // The admin portal's own sign-in. Identity is proven by credentials / the opaque refresh
+            // token in the body, so these can't require a bearer token; everything else under
+            // /api/admin/** (including /api/admin/auth/me) does.
+            "/api/admin/auth/login",
+            "/api/admin/auth/refresh",
+            "/api/admin/auth/logout",
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/v3/api-docs/**",
@@ -94,8 +100,14 @@ public class SecurityConfig {
                         // Sole enforcement point for every /api/admin/** endpoint, present or future —
                         // deliberately not left to per-controller annotations, which could be forgotten
                         // on a new endpoint. Frontend route guards are UX only; this is the real boundary.
-                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                        .anyRequest().authenticated())
+                        // Requires BOTH the role and an admin-portal token: a member token (even one
+                        // belonging to an admin account) can never reach these.
+                        .requestMatchers("/api/admin/**")
+                                .hasAllAuthorities("ROLE_ADMIN", JwtAuthenticationFilter.SCOPE_ADMIN)
+                        // The mirror image: the member application only accepts member tokens, so an
+                        // admin-portal session cannot read or act on any member-facing endpoint
+                        // (feed, profiles, messages, wallet, ...).
+                        .anyRequest().hasAuthority(JwtAuthenticationFilter.SCOPE_APP))
                 .addFilterBefore(new JwtAuthenticationFilter(jwtService, userRepository), UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(new AuthRateLimitFilter(rateLimiter), JwtAuthenticationFilter.class);
         return http.build();

@@ -15,6 +15,8 @@ import com.nukkad.common.exception.AccountSuspendedException;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.EmailNotVerifiedException;
+import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.exception.UnauthorizedException;
 import com.nukkad.common.exception.GoogleAccountNotFoundException;
 import com.nukkad.common.exception.GoogleAccountNotLinkedException;
 import com.nukkad.common.exception.GoogleEmailMismatchException;
@@ -412,5 +414,113 @@ class AuthServiceTest {
         assertThatThrownBy(() -> service().linkGoogleAccount("u1", "id-token"))
                 .isInstanceOf(ConflictException.class);
         verify(userRepository, never()).save(u);
+    }
+
+    // ---- admin portal separation ----
+
+    private User adminUser() {
+        User u = user("a1", "admin@buildadda.test", true, null);
+        u.setSecurityRoles(new HashSet<>(Set.of(SecurityRole.USER, SecurityRole.ADMIN)));
+        return u;
+    }
+
+    @Test
+    void memberLoginRefusesAnAdministratorAccount() {
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(adminUser()));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().login(
+                new LoginRequest("admin@buildadda.test", "Str0ng!Passw0rd"), "127.0.0.1", "agent"))
+                .isInstanceOf(ForbiddenException.class)
+                .hasMessageContaining("admin portal");
+        verify(refreshTokenRepository, never()).save(any());
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void adminLoginIssuesAnAdminScopedTokenAndNeverAMemberOne() {
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(adminUser()));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+        when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh");
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(jwtService.issueAdminAccessToken(any(), any(), any(), anyInt())).thenReturn("admin-access-token");
+        stubRefreshTokenSaveEcho();
+
+        var response = service().adminLogin("admin@buildadda.test", "Str0ng!Passw0rd", "127.0.0.1", "agent");
+
+        assertThat(response.accessToken()).isEqualTo("admin-access-token");
+        assertThat(response.refreshToken()).isEqualTo("raw-refresh");
+        assertThat(response.admin().email()).isEqualTo("admin@buildadda.test");
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void adminLoginGivesAMemberTheSameErrorAsAWrongPassword() {
+        when(userRepository.findByEmail("member@buildadda.test")).thenReturn(
+                Optional.of(user("u1", "member@buildadda.test", true, null)));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().adminLogin("member@buildadda.test", "Str0ng!Passw0rd", "127.0.0.1", "agent"))
+                .isInstanceOf(BadCredentialsException.class)
+                .hasMessage("Invalid email or password");
+        verify(jwtService, never()).issueAdminAccessToken(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void adminLoginRejectsAWrongPassword() {
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(adminUser()));
+        when(passwordEncoder.matches("wrong", "hashed")).thenReturn(false);
+
+        assertThatThrownBy(() -> service().adminLogin("admin@buildadda.test", "wrong", "127.0.0.1", "agent"))
+                .isInstanceOf(BadCredentialsException.class);
+    }
+
+    @Test
+    void adminLoginRejectsASuspendedAdministrator() {
+        User admin = adminUser();
+        admin.setStatus(AccountStatus.SUSPENDED);
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(admin));
+        when(passwordEncoder.matches("Str0ng!Passw0rd", "hashed")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().adminLogin("admin@buildadda.test", "Str0ng!Passw0rd", "127.0.0.1", "agent"))
+                .isInstanceOf(AccountSuspendedException.class);
+    }
+
+    @Test
+    void aMemberRefreshTokenCannotBeUsedOnTheAdminPortal() {
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(userRepository.findById("u1")).thenReturn(Optional.of(user("u1", "member@buildadda.test", true, null)));
+
+        assertThatThrownBy(() -> service().adminRefresh("raw-refresh", "127.0.0.1", "agent"))
+                .isInstanceOf(UnauthorizedException.class);
+        verify(jwtService, never()).issueAdminAccessToken(any(), any(), any(), anyInt());
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void anAdminRefreshTokenCannotBeExchangedForAMemberSession() {
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("a1")));
+        when(userRepository.findById("a1")).thenReturn(Optional.of(adminUser()));
+
+        assertThatThrownBy(() -> service().refresh("raw-refresh", "127.0.0.1", "agent"))
+                .isInstanceOf(UnauthorizedException.class);
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
+    }
+
+    @Test
+    void adminRefreshKeepsTheSessionAdminScoped() {
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("a1")));
+        when(userRepository.findById("a1")).thenReturn(Optional.of(adminUser()));
+        when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh-2");
+        when(jwtService.issueAdminAccessToken(any(), any(), any(), anyInt())).thenReturn("new-admin-token");
+        stubRefreshTokenSaveEcho();
+
+        var response = service().adminRefresh("raw-refresh", "127.0.0.1", "agent");
+
+        assertThat(response.accessToken()).isEqualTo("new-admin-token");
+        verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
     }
 }

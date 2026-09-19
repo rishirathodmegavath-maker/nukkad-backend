@@ -6,7 +6,6 @@ import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.feed.dto.PostDto;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.investor.repository.IntroRequestRepository;
-import com.nukkad.messaging.dto.AdminMessageDto;
 import com.nukkad.messaging.dto.ConversationDto;
 import com.nukkad.messaging.dto.GroupInfoDto;
 import com.nukkad.messaging.dto.GroupParticipantDto;
@@ -136,26 +135,6 @@ public class ConversationService {
                 || opportunityApplicantRepository.existsAcceptedApplicationBetween(senderId, recipientId)
                 || startupTeamMemberRepository.existsActiveTeamMembershipBetween(senderId, recipientId)
                 || introRequestRepository.existsAcceptedIntroBetween(senderId, recipientId);
-    }
-
-    // Admin-only evidence view for a reported conversation. Deliberately bypasses the participant
-    // check every other message-reading path enforces — the admin is not a participant and never
-    // becomes one — and returns the narrower AdminMessageDto instead of MessageDto so no read-
-    // receipt/reply/shared-post resolution logic (all of which assumes a real participant viewer)
-    // has to be reasoned about here. Encryption here is at-rest only (see MessageEncryptionService),
-    // so the backend already holds the key and decrypting for this review is not a new capability.
-    @Transactional(readOnly = true)
-    public List<AdminMessageDto> getMessagesForAdminReview(String conversationId) {
-        return messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId, Pageable.unpaged())
-                .getContent().stream()
-                .map(m -> new AdminMessageDto(
-                        m.getId(),
-                        m.getSenderId(),
-                        m.getMessageType().name(),
-                        m.getUnsentAt() != null ? null : encryptionService.decrypt(m.getContentCiphertext()),
-                        m.getUnsentAt() != null,
-                        m.getCreatedAt()))
-                .toList();
     }
 
     @Transactional(readOnly = true)

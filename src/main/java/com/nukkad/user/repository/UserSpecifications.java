@@ -23,6 +23,18 @@ public final class UserSpecifications {
         return (root, query, cb) -> id == null ? null : cb.notEqual(root.get("id"), id);
     }
 
+    /** Administrator accounts are operators of the platform, not members of it, so they must never
+     *  appear in the member directory, search, or suggestions. */
+    public static Specification<User> notAdmin() {
+        return (root, query, cb) -> {
+            var admins = query.subquery(String.class);
+            var adminRoot = admins.from(User.class);
+            var roles = adminRoot.join("securityRoles");
+            admins.select(adminRoot.get("id")).where(cb.equal(roles, SecurityRole.ADMIN));
+            return cb.not(root.get("id").in(admins));
+        };
+    }
+
     public static Specification<User> excludeIds(java.util.Set<String> ids) {
         return (root, query, cb) -> ids == null || ids.isEmpty() ? null : cb.not(root.get("id").in(ids));
     }

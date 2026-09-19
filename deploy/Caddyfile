@@ -5,6 +5,15 @@ app.buildadda.com {
 	file_server
 }
 
+# The admin control panel: the SAME static build as app., but the app detects the admin. hostname and
+# mounts only the control panel (separate sign-in, separate session, admin-scoped API token).
+admin.buildadda.com {
+	root * /srv/frontend-dist
+	encode gzip
+	try_files {path} /index.html
+	file_server
+}
+
 api.buildadda.com {
 	reverse_proxy backend:8082
 }

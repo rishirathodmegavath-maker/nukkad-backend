@@ -1,5 +1,7 @@
 package com.nukkad.auth.service;
 
+import com.nukkad.auth.dto.AdminAuthResponse;
+import com.nukkad.auth.dto.AdminIdentity;
 import com.nukkad.auth.dto.AuthResponse;
 import com.nukkad.auth.dto.LoginRequest;
 import com.nukkad.auth.dto.RegisterRequest;
@@ -125,9 +127,50 @@ public class AuthService {
             throw new EmailNotVerifiedException("Please verify your email before signing in.");
         }
         requireActiveAccount(user);
+        requireMemberAccount(user);
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
         return issueAuthResponse(user, ip, userAgent);
+    }
+
+    /** Admin sign-in for the separate admin portal. Uses the same email + password as the account,
+     *  but issues an admin-scoped session that the member application rejects. A non-admin account
+     *  gets the same generic error as a wrong password, so this can't be used to discover admins. */
+    @Transactional
+    public AdminAuthResponse adminLogin(String email, String password, String ip, String userAgent) {
+        User user = userRepository.findByEmail(email.toLowerCase().trim())
+                .orElseThrow(() -> new BadCredentialsException("Invalid email or password"));
+        if (user.getPasswordHash() == null
+                || !passwordEncoder.matches(password, user.getPasswordHash())
+                || !user.getSecurityRoles().contains(SecurityRole.ADMIN)) {
+            throw new BadCredentialsException("Invalid email or password");
+        }
+        requireActiveAccount(user);
+        userRepository.touchLastActiveAt(user.getId(), Instant.now());
+        auditService.log(user.getId(), AuditAction.LOGIN, "AdminPortal", user.getId(), ip);
+        RefreshToken refreshToken = issueRefreshToken(user.getId(), ip, userAgent);
+        String accessToken = jwtService.issueAdminAccessToken(user.getId(), user.getEmail(), roleNames(user), user.getTokenVersion());
+        return new AdminAuthResponse(toAdminIdentity(user), accessToken, refreshToken.rawTokenTransient, jwtService.getAccessExpirationSeconds());
+    }
+
+    @Transactional(readOnly = true)
+    public AdminIdentity adminIdentity(String userId) {
+        return toAdminIdentity(userRepository.findById(userId)
+                .orElseThrow(() -> new UnauthorizedException("User no longer exists")));
+    }
+
+    private AdminIdentity toAdminIdentity(User user) {
+        return new AdminIdentity(user.getId(), user.getEmail(), user.getName());
+    }
+
+    /** Administrators only use the admin portal — they are deliberately not members of the
+     *  application, so the member sign-in refuses them (after the password has been verified, so
+     *  this doesn't reveal which emails are admins to someone without the password). */
+    private void requireMemberAccount(User user) {
+        if (user.getSecurityRoles().contains(SecurityRole.ADMIN)) {
+            throw new com.nukkad.common.exception.ForbiddenException(
+                    "Administrator accounts sign in at the admin portal, not here.");
+        }
     }
 
     /** Blocks sign-in and token refresh for an Admin-suspended/disabled account. A currently-valid
@@ -220,6 +263,7 @@ public class AuthService {
                 });
 
         requireActiveAccount(user);
+        requireMemberAccount(user);
         userRepository.touchLastActiveAt(user.getId(), Instant.now());
         auditService.log(user.getId(), AuditAction.LOGIN, "User", user.getId(), ip);
         return issueAuthResponse(user, ip, userAgent);
@@ -247,6 +291,20 @@ public class AuthService {
 
     @Transactional
     public com.nukkad.auth.dto.RefreshTokenResponse refresh(String presentedRawToken, String ip, String userAgent) {
+        return rotateRefreshToken(presentedRawToken, ip, userAgent, false);
+    }
+
+    @Transactional
+    public com.nukkad.auth.dto.RefreshTokenResponse adminRefresh(String presentedRawToken, String ip, String userAgent) {
+        return rotateRefreshToken(presentedRawToken, ip, userAgent, true);
+    }
+
+    /** {@code adminPortal} pins a refresh token to the audience it was issued for: an admin's token
+     *  can only be renewed through the admin portal (yielding an admin-scoped access token) and a
+     *  member's only through the member endpoint — otherwise the refresh endpoint would let an admin
+     *  session quietly turn into a member session, or the reverse. */
+    private com.nukkad.auth.dto.RefreshTokenResponse rotateRefreshToken(String presentedRawToken, String ip,
+                                                                       String userAgent, boolean adminPortal) {
         String hash = jwtService.hashOpaqueToken(presentedRawToken);
         RefreshToken existing = refreshTokenRepository.findByTokenHash(hash)
                 .orElseThrow(() -> new UnauthorizedException("Invalid refresh token"));
@@ -264,13 +322,18 @@ public class AuthService {
         User user = userRepository.findById(existing.getUserId())
                 .orElseThrow(() -> new UnauthorizedException("User no longer exists"));
         requireActiveAccount(user);
+        if (user.getSecurityRoles().contains(SecurityRole.ADMIN) != adminPortal) {
+            throw new UnauthorizedException("This session is not valid here. Please sign in again.");
+        }
 
         RefreshToken rotated = issueRefreshToken(user.getId(), ip, userAgent);
         existing.setRevokedAt(Instant.now());
         existing.setReplacedByTokenId(rotated.getId());
         refreshTokenRepository.save(existing);
 
-        String accessToken = jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user), user.getTokenVersion());
+        String accessToken = adminPortal
+                ? jwtService.issueAdminAccessToken(user.getId(), user.getEmail(), roleNames(user), user.getTokenVersion())
+                : jwtService.issueAccessToken(user.getId(), user.getEmail(), roleNames(user), user.getTokenVersion());
         return new com.nukkad.auth.dto.RefreshTokenResponse(accessToken, rotated.rawTokenTransient, jwtService.getAccessExpirationSeconds());
     }
 
