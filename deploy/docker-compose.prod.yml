@@ -44,11 +44,17 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    # 'mc anonymous set download' looks like the right preset for a public-read media bucket, but
+    # MinIO's built-in 'download' policy grants s3:ListBucket as well as s3:GetObject -- letting
+    # anyone enumerate every stored object key (avatars, startup materials, resources...), not just
+    # fetch a key they already know. None of the 4 built-in presets (none/download/upload/public)
+    # is "read objects but don't list them", so this writes a custom policy with GetObject only.
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
       (mc mb -p local/${S3_BUCKET} || true) &&
-      mc anonymous set download local/${S3_BUCKET}
+      printf '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::%s/*\"]}]}' ${S3_BUCKET} > /tmp/anon-policy.json &&
+      mc anonymous set-json /tmp/anon-policy.json local/${S3_BUCKET}
       "
     networks:
       - nukkad_net

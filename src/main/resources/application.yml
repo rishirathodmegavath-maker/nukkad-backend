@@ -40,6 +40,20 @@ spring:
       max-file-size: 50MB
       max-request-size: 50MB
 
+  jackson:
+    deserialization:
+      # Without this, a decimal JSON literal (e.g. 100.5) bound to a long-typed field (money
+      # amounts, minor units) is silently truncated (100) instead of rejected -- found on
+      # POST /api/wallet/withdrawals's amountMinorUnits. Disabling it makes any such value a clean
+      # 400 (via HttpMessageNotReadableException, already handled) across every long/int field in
+      # the app, not just that one endpoint.
+      # NOTE: this app is on Spring Boot 4 / Jackson 3 (the `tools.jackson` fork), where this
+      # DeserializationFeature was renamed from ACCEPT_FLOATING_POINT_NUMBERS_AS_INT (Jackson 2) to
+      # ACCEPT_FLOAT_AS_INT -- the old key name silently fails property binding and crashes the
+      # whole app at startup (caught in this same review pass). Verify against whichever Jackson
+      # major version is actually on the classpath before ever touching this key again.
+      accept-float-as-int: false
+
   mvc:
     # Without this, a request to a completely unmapped path silently falls through to Spring's
     # default (a plain Whitelabel/servlet-container 404) instead of GlobalExceptionHandler's
@@ -66,7 +80,7 @@ spring:
 
 server:
   port: ${SERVER_PORT:8082}
-  # Railway terminates TLS at its edge and forwards plain HTTP internally, setting X-Forwarded-*
+  # Caddy terminates TLS at the edge and forwards plain HTTP internally, setting X-Forwarded-*
   # headers. Without this, request.isSecure() always reports false behind that proxy, which
   # silently suppresses Spring Security's HSTS header (its writer only fires on secure requests).
   forward-headers-strategy: framework
@@ -76,10 +90,15 @@ server:
     include-stacktrace: never
 
 springdoc:
+  # Public by default for local/dev convenience. Production sets SPRINGDOC_ENABLED=false so the
+  # full endpoint/schema inventory (including every /api/admin/** path and payload shape) isn't
+  # browsable by anyone on the internet.
   swagger-ui:
+    enabled: ${SPRINGDOC_ENABLED:true}
     path: /swagger-ui.html
     persist-authorization: true
   api-docs:
+    enabled: ${SPRINGDOC_ENABLED:true}
     path: /v3/api-docs
 
 nukkad:

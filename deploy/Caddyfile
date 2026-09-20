@@ -1,14 +1,42 @@
+# api./media. get these for free from Spring Security / MinIO; the two static-SPA hosts below are
+# plain Caddy file_server responses, which don't pick those up automatically, so they need their
+# own header block. Notably gives the admin control panel X-Frame-Options -- without it, a
+# malicious page could iframe an already-authenticated admin session (clickjacking).
+(security_headers) {
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer-when-downgrade
+	}
+}
+
 app.buildadda.com {
-	root * /srv/frontend-dist
+	import security_headers
+	# /srv/frontend-dist/current is a symlink deploy.sh repoints atomically to the newest release --
+	# never point root directly at frontend-dist itself (see deploy.sh's frontend case for why).
+	root * /srv/frontend-dist/current
 	encode gzip
 	try_files {path} /index.html
 	file_server
 }
 
+# There's no separate marketing/landing site -- app.buildadda.com IS the canonical destination, so
+# the bare domain and www both just redirect there. NOT deployed yet: Caddy requests a Let's
+# Encrypt cert for every hostname it's configured to serve on first request, and these two
+# hostnames don't resolve to this server yet (see the DNS records still needed, documented in the
+# ops credentials doc) -- adding this block to the live Caddyfile before that DNS exists would make
+# Caddy repeatedly attempt and fail certificate issuance for both. Deploy this only after the A
+# records below are confirmed resolving.
+buildadda.com, www.buildadda.com {
+	redir https://app.buildadda.com{uri} permanent
+}
+
 # The admin control panel: the SAME static build as app., but the app detects the admin. hostname and
 # mounts only the control panel (separate sign-in, separate session, admin-scoped API token).
 admin.buildadda.com {
-	root * /srv/frontend-dist
+	import security_headers
+	root * /srv/frontend-dist/current
 	encode gzip
 	try_files {path} /index.html
 	file_server

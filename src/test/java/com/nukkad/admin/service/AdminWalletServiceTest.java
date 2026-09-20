@@ -251,4 +251,20 @@ class AdminWalletServiceTest {
         assertThatThrownBy(() -> service().setStatus("admin1", "u1", new SetWalletStatusRequest("CLOSED", null), "127.0.0.1"))
                 .isInstanceOf(BadRequestException.class);
     }
+
+    // ---- idempotencyKey is mandatory ----
+
+    @Test
+    void adjustmentRequestWithNoIdempotencyKeyFailsDtoValidation() {
+        // Without a client-supplied key, two concurrent identical requests (a double-click, or a
+        // retried network call) both succeed and the balance moves twice -- see
+        // AdjustWalletBalanceRequest's own comment. @Valid on the controller is what actually
+        // enforces this; this test guards the DTO-level contract that makes it enforceable at all.
+        var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
+        var noKey = new AdjustWalletBalanceRequest("CREDIT", 500, "INR", "reason", "");
+
+        var violations = validator.validate(noKey);
+
+        assertThat(violations).extracting(v -> v.getPropertyPath().toString()).contains("idempotencyKey");
+    }
 }

@@ -1,10 +1,12 @@
 package com.nukkad.report.service;
 
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.report.entity.Report;
+import com.nukkad.report.entity.ReportStatus;
 import com.nukkad.report.repository.ReportRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -85,5 +87,51 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service().submit("user1", "user1", "Spam", null, null))
                 .isInstanceOf(BadRequestException.class);
         verify(reportRepository, never()).save(any());
+    }
+
+    // ---- resolve ----
+
+    private Report openReport() {
+        return Report.builder().id("r1").reporterId("reporter1").reportedUserId("reported1")
+                .category("Spam").status(ReportStatus.OPEN).build();
+    }
+
+    @Test
+    void resolvingAnOpenReportTransitionsItAndRecordsTheReviewer() {
+        Report report = openReport();
+        when(reportRepository.findByIdForUpdate("r1")).thenReturn(Optional.of(report));
+        when(reportRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        Report result = service().resolve("admin1", "r1", ReportStatus.RESOLVED, "handled");
+
+        assertThat(result.getStatus()).isEqualTo(ReportStatus.RESOLVED);
+        assertThat(result.getResolvedByUserId()).isEqualTo("admin1");
+        assertThat(result.getResolutionNote()).isEqualTo("handled");
+        assertThat(result.getResolvedAt()).isNotNull();
+    }
+
+    @Test
+    void resolvingAnAlreadyReviewedReportIsRejected() {
+        Report report = openReport();
+        report.setStatus(ReportStatus.DISMISSED);
+        when(reportRepository.findByIdForUpdate("r1")).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service().resolve("admin1", "r1", ReportStatus.RESOLVED, "too late"))
+                .isInstanceOf(ConflictException.class);
+        verify(reportRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void resolveUsesTheLockedReadNotAPlainFindById() {
+        // Regression guard: a plain findById lets two concurrent resolve calls both observe
+        // status == OPEN before either commits, so both succeed instead of one correctly hitting
+        // the "already reviewed" conflict above. Must go through the row-locked read.
+        Report report = openReport();
+        when(reportRepository.findByIdForUpdate("r1")).thenReturn(Optional.of(report));
+        when(reportRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().resolve("admin1", "r1", ReportStatus.RESOLVED, "handled");
+
+        verify(reportRepository, never()).findById(any());
     }
 }

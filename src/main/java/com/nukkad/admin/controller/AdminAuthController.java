@@ -47,7 +47,7 @@ public class AdminAuthController {
 
     @PostMapping("/logout")
     public ApiResponse<Void> logout(@Valid @RequestBody RefreshRequest request) {
-        authService.logout(request.refreshToken());
+        authService.adminLogout(request.refreshToken());
         return ApiResponse.ok(null);
     }
 

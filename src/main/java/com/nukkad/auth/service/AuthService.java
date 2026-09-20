@@ -306,7 +306,9 @@ public class AuthService {
     private com.nukkad.auth.dto.RefreshTokenResponse rotateRefreshToken(String presentedRawToken, String ip,
                                                                        String userAgent, boolean adminPortal) {
         String hash = jwtService.hashOpaqueToken(presentedRawToken);
-        RefreshToken existing = refreshTokenRepository.findByTokenHash(hash)
+        // Locked read: serializes concurrent refresh attempts on the same token row so at most one
+        // can win the rotation below -- see the repository method's own doc comment.
+        RefreshToken existing = refreshTokenRepository.findByTokenHashForUpdate(hash)
                 .orElseThrow(() -> new UnauthorizedException("Invalid refresh token"));
 
         if (existing.getRevokedAt() != null) {
@@ -343,6 +345,26 @@ public class AuthService {
         refreshTokenRepository.findByTokenHash(hash).ifPresent(token -> {
             token.setRevokedAt(Instant.now());
             refreshTokenRepository.save(token);
+        });
+    }
+
+    /** Admin sign-out additionally bumps tokenVersion, unlike member {@link #logout}: revoking only
+     *  the refresh token leaves the still-live access token fully usable against /api/admin/** for
+     *  up to its remaining TTL (a captured/replayed admin session would otherwise survive its own
+     *  "sign out"). Member logout deliberately does NOT do this -- a member may be logged in on
+     *  several devices at once, and this would sign all of them out, not just this one; the admin
+     *  portal is a single-operator control panel where that tradeoff is the safer default, matching
+     *  the same tokenVersion-bump mechanism already used for suspend/role-change. */
+    @Transactional
+    public void adminLogout(String presentedRawToken) {
+        String hash = jwtService.hashOpaqueToken(presentedRawToken);
+        refreshTokenRepository.findByTokenHash(hash).ifPresent(token -> {
+            token.setRevokedAt(Instant.now());
+            refreshTokenRepository.save(token);
+            userRepository.findById(token.getUserId()).ifPresent(user -> {
+                user.setTokenVersion(user.getTokenVersion() + 1);
+                userRepository.save(user);
+            });
         });
     }
 
