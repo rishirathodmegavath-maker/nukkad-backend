@@ -216,6 +216,135 @@ class UserServiceTest {
         service().declineConnection("bob", "alice");
 
         verify(connectionRepository).delete(existing);
+        // The declined request's notification (with its Accept / Decline buttons) goes with it.
+        verify(notificationService).withdrawConnectionRequest("bob", "alice");
+    }
+
+    // ---- Stale screens: the toggle must not act on a state the user never saw ----
+
+    private Connection accepted() {
+        return Connection.builder().id("c1").userAId("alice").userBId("bob")
+                .requestedBy("alice").status(Connection.Status.ACCEPTED).build();
+    }
+
+    private Connection pendingFromAlice() {
+        return Connection.builder().id("c1").userAId("alice").userBId("bob")
+                .requestedBy("alice").status(Connection.Status.PENDING).build();
+    }
+
+    private void aliceAndBobExist() {
+        when(userRepository.findById("alice")).thenReturn(Optional.of(user("alice", "Alice")));
+        when(userRepository.findById("bob")).thenReturn(Optional.of(user("bob", "Bob")));
+    }
+
+    @Test
+    void aStaleRequestedButtonCannotSilentlyDisconnectTwoPeopleWhoAlreadyConnected() {
+        // Alice's screen still says "Requested", but Bob has since accepted. Before the guard, her
+        // tap on "Requested" was treated as a toggle and deleted the connection.
+        aliceAndBobExist();
+        Connection existing = accepted();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service().toggleConnect("alice", "bob", "PENDING_OUTGOING"))
+                .isInstanceOfSatisfying(com.nukkad.common.exception.ApiException.class, e -> {
+                    assertThat(e.getStatus()).isEqualTo(org.springframework.http.HttpStatus.CONFLICT);
+                    assertThat(e.getErrorCode()).isEqualTo("CONNECTION_STATE_CHANGED");
+                });
+
+        verify(connectionRepository, never()).delete(any());
+        verify(connectionRepository, never()).save(any());
+        assertThat(existing.getStatus()).isEqualTo(Connection.Status.ACCEPTED);
+        verify(notificationService, never()).notify(anyString(), any(), anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void aStaleAcceptButtonForACancelledRequestDoesNotSendAFreshRequestInstead() {
+        // Bob's screen still offers "Accept", but Alice has cancelled. Without the guard, Bob's tap
+        // would create a brand-new request from Bob to Alice.
+        aliceAndBobExist();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().toggleConnect("bob", "alice", "PENDING_INCOMING"))
+                .isInstanceOfSatisfying(com.nukkad.common.exception.ApiException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo("CONNECTION_STATE_CHANGED"));
+
+        verify(connectionRepository, never()).save(any());
+    }
+
+    @Test
+    void aStaleConnectedButtonDoesNotDisconnectAConnectionThatWasReplacedByAPendingRequest() {
+        aliceAndBobExist();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.of(pendingFromAlice()));
+
+        assertThatThrownBy(() -> service().toggleConnect("alice", "bob", "CONNECTED"))
+                .isInstanceOfSatisfying(com.nukkad.common.exception.ApiException.class,
+                        e -> assertThat(e.getErrorCode()).isEqualTo("CONNECTION_STATE_CHANGED"));
+
+        verify(connectionRepository, never()).delete(any());
+    }
+
+    @Test
+    void whenTheScreenWasRightTheToggleStillWorksAndCancellingRemovesTheOtherPersonsNotification() {
+        aliceAndBobExist();
+        Connection existing = pendingFromAlice();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.of(existing));
+
+        var result = service().toggleConnect("alice", "bob", "PENDING_OUTGOING");
+
+        assertThat(result.status()).isEqualTo("NONE");
+        verify(connectionRepository).delete(existing);
+        verify(notificationService).withdrawConnectionRequest("bob", "alice");
+    }
+
+    @Test
+    void acceptingWithACorrectScreenConnectsAndMarksTheRequestNotificationRead() {
+        aliceAndBobExist();
+        Connection existing = pendingFromAlice();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.of(existing));
+
+        var result = service().toggleConnect("bob", "alice", "PENDING_INCOMING");
+
+        assertThat(result.status()).isEqualTo("CONNECTED");
+        assertThat(existing.getStatus()).isEqualTo(Connection.Status.ACCEPTED);
+        verify(notificationService).resolveConnectionRequest("bob", "alice");
+    }
+
+    @Test
+    void anUnknownExpectedStatusIsABadRequestNotASilentPass() {
+        aliceAndBobExist();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().toggleConnect("alice", "bob", "FRIENDS"))
+                .isInstanceOf(BadRequestException.class);
+        verify(connectionRepository, never()).save(any());
+    }
+
+    @Test
+    void leavingOutTheExpectedStatusKeepsTheOldBehaviourForOlderClients() {
+        aliceAndBobExist();
+        Connection existing = accepted();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.of(existing));
+
+        var result = service().toggleConnect("alice", "bob");
+
+        assertThat(result.status()).isEqualTo("NONE");
+        verify(connectionRepository).delete(existing);
+    }
+
+    @Test
+    void reSendingARequestReplacesTheOlderNotificationInsteadOfAddingASecond() {
+        aliceAndBobExist();
+        when(connectionRepository.findByUserAIdAndUserBId("alice", "bob")).thenReturn(Optional.empty());
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.findAcceptedConnections(anyString())).thenReturn(List.of());
+        when(userPrivacySettingsService.canConnect(eq("bob"), any(Boolean.class))).thenReturn(true);
+
+        service().toggleConnect("alice", "bob", "NONE");
+
+        var order = org.mockito.Mockito.inOrder(notificationService);
+        order.verify(notificationService).withdrawConnectionRequest("bob", "alice");
+        order.verify(notificationService).notify(eq("bob"), any(), eq(NotificationService.CONNECTION_REQUEST_TITLE),
+                anyString(), eq("alice"), eq("alice"));
     }
 
     // ---- listUserConnections: restricted profiles cannot be enumerated by strangers ----

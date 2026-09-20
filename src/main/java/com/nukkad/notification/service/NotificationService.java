@@ -49,6 +49,28 @@ public class NotificationService {
         notificationRepository.save(notification);
     }
 
+    /** Title of the notification a connection request creates — also how it is found again to be cleaned up. */
+    public static final String CONNECTION_REQUEST_TITLE = "New connection request";
+
+    /**
+     * A connection request notification only means something while the request is still pending. When
+     * the request is cancelled or declined it is removed, and a re-sent request removes the older one
+     * first, so the recipient never sees a stale or duplicate "wants to connect" entry (with Accept /
+     * Decline buttons for a request that no longer exists).
+     */
+    @Transactional
+    public void withdrawConnectionRequest(String recipientUserId, String requesterUserId) {
+        notificationRepository.deleteByRecipientAndActorAndTitle(
+                recipientUserId, requesterUserId, NotificationType.connection, CONNECTION_REQUEST_TITLE);
+    }
+
+    /** The request was accepted: it is answered, so it should stop showing as unread. */
+    @Transactional
+    public void resolveConnectionRequest(String recipientUserId, String requesterUserId) {
+        notificationRepository.markReadByRecipientAndActorAndTitle(
+                recipientUserId, requesterUserId, NotificationType.connection, CONNECTION_REQUEST_TITLE);
+    }
+
     @Transactional(readOnly = true)
     public Page<NotificationDto> list(String userId, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
