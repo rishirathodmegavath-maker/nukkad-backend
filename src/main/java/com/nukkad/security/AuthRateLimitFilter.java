@@ -48,7 +48,15 @@ public class AuthRateLimitFilter extends OncePerRequestFilter {
             // current password with a stolen access token — same 5/15min as the admin sign-in.
             Map.entry("/api/admin/auth/password-reset/request", new Limit(5, Duration.ofHours(1))),
             Map.entry("/api/admin/auth/password-reset/confirm", new Limit(10, Duration.ofHours(1))),
-            Map.entry("/api/admin/auth/change-password", new Limit(5, Duration.ofMinutes(15)))
+            Map.entry("/api/admin/auth/change-password", new Limit(5, Duration.ofMinutes(15))),
+            // Wallet PIN. The real brake on guessing a PIN is the per-account lockout in
+            // WalletPinService (5 wrong PINs -> locked, escalating), which also holds against many
+            // IPs; these per-IP limits add a second layer and cap password guessing on the two
+            // endpoints that accept the account password (create / reset), like change-password above.
+            Map.entry("/api/wallet/pin/verify", new Limit(30, Duration.ofMinutes(15))),
+            Map.entry("/api/wallet/pin/change", new Limit(10, Duration.ofMinutes(15))),
+            Map.entry("/api/wallet/pin/reset", new Limit(5, Duration.ofMinutes(15))),
+            Map.entry("/api/wallet/pin", new Limit(5, Duration.ofMinutes(15)))
     );
 
     private final RateLimiter rateLimiter;

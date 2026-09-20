@@ -124,7 +124,8 @@ public class SecurityConfig {
                 .toList();
         configuration.setAllowedOrigins(origins);
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Refresh-Token"));
+        // X-Wallet-Token: the short-lived proof that the wallet PIN was just entered (see WalletPinCrypto).
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Refresh-Token", "X-Wallet-Token"));
         configuration.setAllowCredentials(false);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);

@@ -9,6 +9,7 @@ import com.nukkad.wallet.dto.WalletTransactionDto;
 import com.nukkad.wallet.dto.WithdrawalRequestDto;
 import com.nukkad.wallet.entity.Wallet;
 import com.nukkad.wallet.mapper.WalletMapper;
+import com.nukkad.wallet.security.RequiresWalletUnlock;
 import com.nukkad.wallet.service.WalletService;
 import com.nukkad.wallet.service.WithdrawalService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -28,10 +29,15 @@ import org.springframework.web.bind.annotation.RestController;
  * Deliberately exposes only "my own wallet" shapes — {@code /me}, never {@code /{walletId}} — so
  * there is no walletId/userId path parameter for a client to forge in the first place. The wallet
  * always comes from {@code principal.id()}, the authenticated identity, never a client-supplied id.
+ *
+ * <p>{@code @RequiresWalletUnlock}: every endpoint here also needs the member's wallet PIN to have
+ * been entered recently (X-Wallet-Token header, see WalletPinController). Because the annotation is
+ * on the class, an endpoint added here later is protected without anyone having to remember it.
  */
 @RestController
 @RequestMapping("/api/wallet")
 @SecurityRequirement(name = "bearerAuth")
+@RequiresWalletUnlock
 public class WalletController {
 
     private final WalletService walletService;
