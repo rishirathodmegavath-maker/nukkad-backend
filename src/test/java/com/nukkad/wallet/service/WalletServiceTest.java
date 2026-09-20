@@ -15,12 +15,15 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -28,19 +31,28 @@ import static org.mockito.Mockito.when;
 
 /**
  * Covers the core balance-integrity and idempotency guarantees WalletService is responsible for.
- * Concurrency itself (two real simultaneous debits) is a database-level guarantee provided by the
- * {@code PESSIMISTIC_WRITE} lock in {@code WalletRepository#findByIdForUpdate} — not something a
- * Mockito unit test can exercise, but these tests confirm the service always goes through that
- * locked read (never a plain {@code findById}) before mutating a balance.
+ * Concurrency itself (two real simultaneous debits, or two real simultaneous first-wallet-visits)
+ * is a database-level guarantee — provided by the {@code PESSIMISTIC_WRITE} lock in
+ * {@code WalletRepository#findByIdForUpdate} for credit/debit, and by the unique constraint on
+ * {@code wallets.user_id} plus the REQUIRES_NEW transaction boundary in
+ * {@code WalletService#getOrCreateWallet} for wallet creation — not something a Mockito unit test
+ * can exercise end-to-end, but these tests confirm the service always goes through the locked read
+ * (never a plain {@code findById}) before mutating a balance, and always isolates a creation
+ * attempt in its own transaction before falling back to a re-read.
  */
 @ExtendWith(MockitoExtension.class)
 class WalletServiceTest {
 
     @Mock private WalletRepository walletRepository;
     @Mock private WalletTransactionRepository walletTransactionRepository;
+    @Mock private PlatformTransactionManager transactionManager;
 
     private WalletService service() {
-        return new WalletService(walletRepository, walletTransactionRepository);
+        // Lenient: TransactionTemplate.execute() only calls getTransaction() on the branch that
+        // actually attempts a wallet creation, so most tests here never touch this stub at all —
+        // strict stubbing would otherwise flag it as unnecessary in every one of those.
+        org.mockito.Mockito.lenient().when(transactionManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
+        return new WalletService(walletRepository, walletTransactionRepository, transactionManager);
     }
 
     private Wallet wallet(String id, long balance, WalletStatus status) {
@@ -57,19 +69,24 @@ class WalletServiceTest {
         Wallet result = service().getOrCreateWallet("user-1");
 
         assertThat(result).isSameAs(existing);
-        verify(walletRepository, never()).save(any());
+        verify(walletRepository, never()).saveAndFlush(any());
     }
 
     @Test
     void createsANewZeroBalanceWalletOnFirstAccess() {
         when(walletRepository.findByUserId("user-1")).thenReturn(Optional.empty());
-        when(walletRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(walletRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         Wallet result = service().getOrCreateWallet("user-1");
 
         assertThat(result.getBalanceMinorUnits()).isZero();
         assertThat(result.getStatus()).isEqualTo(WalletStatus.ACTIVE);
         assertThat(result.getCurrency()).isEqualTo("INR");
+        // Regression guard: a plain save() defers the INSERT past this method's own try/catch for
+        // the concurrent-first-access race below, so the race's DataIntegrityViolationException
+        // reaches the client as an unhandled 500 instead of being absorbed. Must be saveAndFlush.
+        verify(walletRepository, never()).save(any());
+        verify(walletRepository).saveAndFlush(any());
     }
 
     @Test
@@ -78,7 +95,10 @@ class WalletServiceTest {
         when(walletRepository.findByUserId("user-1"))
                 .thenReturn(Optional.empty())   // this caller's own check
                 .thenReturn(Optional.of(winner)); // re-fetch after losing the insert race
-        when(walletRepository.save(any())).thenThrow(new DataIntegrityViolationException("duplicate key"));
+        // saveAndFlush, not save: a plain save() defers the actual INSERT (and thus this
+        // constraint violation) until commit, past the point this test — and the real
+        // getOrCreateWallet try/catch — can still handle it. See WalletService's own comment.
+        when(walletRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException("duplicate key"));
 
         Wallet result = service().getOrCreateWallet("user-1");
 
@@ -103,8 +123,8 @@ class WalletServiceTest {
         when(walletRepository.findIdByUserId("user-1")).thenReturn(Optional.empty());
         when(walletRepository.findByUserId("user-1")).thenReturn(Optional.empty());
         // Simulates what @UuidGenerator does for real on persist -- assigns the id as a side
-        // effect of save(), which Mockito's plain echo-back stub wouldn't otherwise reproduce.
-        when(walletRepository.save(any())).thenAnswer(inv -> {
+        // effect of saveAndFlush(), which Mockito's plain echo-back stub wouldn't otherwise reproduce.
+        when(walletRepository.saveAndFlush(any())).thenAnswer(inv -> {
             Wallet w = inv.getArgument(0);
             w.setId("generated-id");
             return w;
@@ -113,7 +133,7 @@ class WalletServiceTest {
         String id = service().resolveOrCreateWalletId("user-1");
 
         assertThat(id).isEqualTo("generated-id");
-        verify(walletRepository).save(any());
+        verify(walletRepository).saveAndFlush(any());
     }
 
     // ---- credit / debit basics ----

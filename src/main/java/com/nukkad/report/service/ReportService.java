@@ -74,7 +74,11 @@ public class ReportService {
      *  so a double-click can't produce contradictory resolver/timestamp state. */
     @Transactional
     public Report resolve(String adminId, String reportId, ReportStatus newStatus, String resolutionNote) {
-        Report report = getEntityOrThrow(reportId);
+        // Locked read: without this, two concurrent resolve calls on the same OPEN report can both
+        // pass the OPEN check before either commits, so both succeed instead of one winning and the
+        // other correctly hitting the "already reviewed" conflict below.
+        Report report = reportRepository.findByIdForUpdate(reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("Report not found: " + reportId));
         if (report.getStatus() != ReportStatus.OPEN) {
             throw new ConflictException("This report has already been reviewed");
         }

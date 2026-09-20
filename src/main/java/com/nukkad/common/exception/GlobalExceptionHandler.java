@@ -5,11 +5,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -17,6 +20,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
 import java.util.stream.Collectors;
@@ -78,6 +83,30 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.Error.of("Invalid value for parameter '" + ex.getName() + "'", "BAD_REQUEST", request.getRequestURI()));
     }
 
+    // Wrong/missing Content-Type on a multipart upload endpoint (e.g. a JSON body posted to
+    // /api/users/me/avatar) previously fell through to the generic 500 handler below.
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiResponse.Error> handleUnsupportedMediaType(HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .body(ApiResponse.Error.of("Unsupported content type. Expected " + ex.getSupportedMediaTypes(),
+                        "UNSUPPORTED_MEDIA_TYPE", request.getRequestURI()));
+    }
+
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    public ResponseEntity<ApiResponse.Error> handleMissingPart(MissingServletRequestPartException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.Error.of("Missing required part '" + ex.getRequestPartName() + "'", "BAD_REQUEST", request.getRequestURI()));
+    }
+
+    // Catches the broader multipart-parsing failures (e.g. a non-multipart body posted to a
+    // multipart endpoint) that MaxUploadSizeExceededException's own, more specific handler above
+    // doesn't cover.
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<ApiResponse.Error> handleMultipart(MultipartException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.Error.of("Request must be a valid multipart/form-data upload", "BAD_REQUEST", request.getRequestURI()));
+    }
+
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<ApiResponse.Error> handleMissingParam(MissingServletRequestParameterException ex, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
@@ -105,6 +134,28 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse.Error> handleNoHandlerFound(NoHandlerFoundException ex, HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(ApiResponse.Error.of("No such endpoint", "NOT_FOUND", request.getRequestURI()));
+    }
+
+    // A value that passes DTO-level @Valid but violates a DB-level constraint (oversized text
+    // column, a foreign key pointing at a row that doesn't exist, a unique-index clash) previously
+    // surfaced as an opaque 500 instead of a client-correctable 400.
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse.Error> handleDataIntegrityViolation(DataIntegrityViolationException ex, HttpServletRequest request) {
+        log.warn("Data integrity violation on {} {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.Error.of("The request could not be processed because it conflicts with existing data",
+                        "BAD_REQUEST", request.getRequestURI()));
+    }
+
+    // Two concurrent writes to the same row (e.g. two near-simultaneous withdrawal requests on one
+    // wallet) can make MySQL pick one transaction as a deadlock victim. That's an expected,
+    // retryable outcome of the row lock working as intended, not a server fault — surface it as a
+    // clean, retryable 409 instead of an opaque 500.
+    @ExceptionHandler(CannotAcquireLockException.class)
+    public ResponseEntity<ApiResponse.Error> handleLockContention(CannotAcquireLockException ex, HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.Error.of("This request conflicted with another update in progress. Please try again.",
+                        "CONFLICT_RETRY", request.getRequestURI()));
     }
 
     @ExceptionHandler(Exception.class)

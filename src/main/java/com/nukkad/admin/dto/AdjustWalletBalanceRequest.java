@@ -15,6 +15,10 @@ public record AdjustWalletBalanceRequest(
         @Positive long amountMinorUnits,
         String currency,
         @NotBlank @Size(max = 500) String reason,
-        String idempotencyKey
+        // Mandatory, not optional: without a client-supplied key, a double-click or a retried
+        // network request applies the same adjustment twice (verified: two concurrent identical
+        // requests without a key both succeed and the balance moves twice). The admin SPA generates
+        // one UUID per adjustment attempt and reuses it across retries of that same attempt.
+        @NotBlank String idempotencyKey
 ) {
 }

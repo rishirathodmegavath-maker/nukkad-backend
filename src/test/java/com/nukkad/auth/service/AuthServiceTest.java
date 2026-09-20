@@ -221,7 +221,7 @@ class AuthServiceTest {
         User u = user("u1", "verified@nukkad.test", true, null);
         u.setTokenVersion(5);
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(refreshTokenRepository.findByTokenHashForUpdate("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
         when(userRepository.findById("u1")).thenReturn(Optional.of(u));
         when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh-2");
         when(jwtService.issueAccessToken(any(), any(), any(), anyInt())).thenReturn("new-access-token");
@@ -238,7 +238,7 @@ class AuthServiceTest {
         User u = user("u1", "suspended@nukkad.test", true, null);
         u.setStatus(AccountStatus.SUSPENDED);
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(refreshTokenRepository.findByTokenHashForUpdate("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
         when(userRepository.findById("u1")).thenReturn(Optional.of(u));
 
         assertThatThrownBy(() -> service().refresh("raw-refresh", "127.0.0.1", "agent"))
@@ -251,12 +251,49 @@ class AuthServiceTest {
         User u = user("u1", "disabled@nukkad.test", true, null);
         u.setStatus(AccountStatus.DISABLED);
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(refreshTokenRepository.findByTokenHashForUpdate("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
         when(userRepository.findById("u1")).thenReturn(Optional.of(u));
 
         assertThatThrownBy(() -> service().refresh("raw-refresh", "127.0.0.1", "agent"))
                 .isInstanceOf(AccountDisabledException.class);
         verify(jwtService, never()).issueAccessToken(any(), any(), any(), anyInt());
+    }
+
+    // ---- logout ----
+
+    @Test
+    void memberLogoutRevokesTheRefreshTokenButNotTheTokenVersion() {
+        RefreshToken token = activeRefreshToken("u1");
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(token));
+        stubRefreshTokenSaveEcho();
+
+        service().logout("raw-refresh");
+
+        assertThat(token.getRevokedAt()).isNotNull();
+        // A member may be signed in on several devices at once -- logging out on one must not
+        // silently kill every other device's still-live access token.
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminLogoutRevokesTheRefreshTokenAndBumpsTokenVersion() {
+        RefreshToken token = activeRefreshToken("a1");
+        User admin = adminUser();
+        admin.setTokenVersion(3);
+        when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
+        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(token));
+        when(userRepository.findById("a1")).thenReturn(Optional.of(admin));
+        stubRefreshTokenSaveEcho();
+
+        service().adminLogout("raw-refresh");
+
+        assertThat(token.getRevokedAt()).isNotNull();
+        // Unlike member logout: the admin portal is a single-operator control panel, so signing
+        // out also invalidates the still-live access token immediately (not just at its natural
+        // TTL) -- otherwise a captured/replayed admin session survives its own "sign out".
+        assertThat(admin.getTokenVersion()).isEqualTo(4);
+        verify(userRepository).save(admin);
     }
 
     // ---- verifyEmail ----
@@ -489,7 +526,7 @@ class AuthServiceTest {
     @Test
     void aMemberRefreshTokenCannotBeUsedOnTheAdminPortal() {
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
+        when(refreshTokenRepository.findByTokenHashForUpdate("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("u1")));
         when(userRepository.findById("u1")).thenReturn(Optional.of(user("u1", "member@buildadda.test", true, null)));
 
         assertThatThrownBy(() -> service().adminRefresh("raw-refresh", "127.0.0.1", "agent"))
@@ -501,7 +538,7 @@ class AuthServiceTest {
     @Test
     void anAdminRefreshTokenCannotBeExchangedForAMemberSession() {
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("a1")));
+        when(refreshTokenRepository.findByTokenHashForUpdate("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("a1")));
         when(userRepository.findById("a1")).thenReturn(Optional.of(adminUser()));
 
         assertThatThrownBy(() -> service().refresh("raw-refresh", "127.0.0.1", "agent"))
@@ -512,7 +549,7 @@ class AuthServiceTest {
     @Test
     void adminRefreshKeepsTheSessionAdminScoped() {
         when(jwtService.hashOpaqueToken("raw-refresh")).thenReturn("hashed-refresh");
-        when(refreshTokenRepository.findByTokenHash("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("a1")));
+        when(refreshTokenRepository.findByTokenHashForUpdate("hashed-refresh")).thenReturn(Optional.of(activeRefreshToken("a1")));
         when(userRepository.findById("a1")).thenReturn(Optional.of(adminUser()));
         when(jwtService.generateOpaqueToken()).thenReturn("raw-refresh-2");
         when(jwtService.issueAdminAccessToken(any(), any(), any(), anyInt())).thenReturn("new-admin-token");
