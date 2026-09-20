@@ -181,8 +181,9 @@ public class UserController {
     }
 
     @PostMapping("/{id}/connect")
-    public ApiResponse<Map<String, Object>> connect(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
-        var result = userService.toggleConnect(principal.id(), id);
+    public ApiResponse<Map<String, Object>> connect(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id,
+                                                    @RequestParam(required = false) String expected) {
+        var result = userService.toggleConnect(principal.id(), id, expected);
         return ApiResponse.ok(Map.of("status", result.status(), "connectionsCount", result.connectionsCount()));
     }
 

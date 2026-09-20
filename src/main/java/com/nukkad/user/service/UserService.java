@@ -404,6 +404,23 @@ public class UserService {
 
     @Transactional
     public ConnectResult toggleConnect(String viewerId, String targetId) {
+        return toggleConnect(viewerId, targetId, null);
+    }
+
+    private static final java.util.Set<String> CONNECTION_STATUSES =
+            java.util.Set.of("NONE", "PENDING_OUTGOING", "PENDING_INCOMING", "CONNECTED");
+
+    /**
+     * The connect button is a toggle: what it does depends on the state the server holds, not on the
+     * state the user was looking at. A stale screen therefore turned "Requested" into a silent
+     * disconnect of two people who had already connected, and a stale "Connect" into an unintended
+     * accept. {@code expectedStatus} is the status the caller's screen showed (as returned for the
+     * viewer: NONE / PENDING_OUTGOING / PENDING_INCOMING / CONNECTED); if the real state has moved on,
+     * nothing is changed and the caller gets a 409 so it can refresh. Omitting it keeps the old
+     * behaviour, so older clients continue to work.
+     */
+    @Transactional
+    public ConnectResult toggleConnect(String viewerId, String targetId, String expectedStatus) {
         if (viewerId.equals(targetId)) throw new BadRequestException("Cannot connect to yourself");
         User viewer = getEntityOrThrow(viewerId);
         User target = getEntityOrThrow(targetId);
@@ -412,6 +429,7 @@ public class UserService {
         String b = viewerId.compareTo(targetId) < 0 ? targetId : viewerId;
 
         var existing = connectionRepository.findByUserAIdAndUserBId(a, b);
+        requireExpectedStatus(expectedStatus, resolveConnectionStatus(existing, viewerId));
 
         if (existing.isEmpty()) {
             if (userBlockRepository.existsBetween(viewerId, targetId)) {
@@ -429,16 +447,21 @@ public class UserService {
                     .status(Connection.Status.PENDING)
                     .build();
             connectionRepository.save(connection);
+            // A re-sent request replaces any older notification for the same requester, so the
+            // recipient never ends up with two "wants to connect" entries for one pending request.
+            notificationService.withdrawConnectionRequest(targetId, viewerId);
             notificationService.notify(targetId, NotificationType.connection,
-                    "New connection request", viewer.getName() + " wants to connect with you", viewerId, viewerId);
+                    NotificationService.CONNECTION_REQUEST_TITLE, viewer.getName() + " wants to connect with you", viewerId, viewerId);
             return new ConnectResult("PENDING_OUTGOING", viewer.getConnectionsCount());
         }
 
         Connection connection = existing.get();
 
         if (connection.getStatus() == Connection.Status.PENDING && connection.getRequestedBy().equals(viewerId)) {
-            // Viewer is cancelling their own outgoing request.
+            // Viewer is cancelling their own outgoing request: it no longer exists, so neither should
+            // the notification (with its Accept / Decline buttons) that the other person received.
             connectionRepository.delete(connection);
+            notificationService.withdrawConnectionRequest(targetId, viewerId);
             return new ConnectResult("NONE", viewer.getConnectionsCount());
         }
 
@@ -450,6 +473,8 @@ public class UserService {
             target.setConnectionsCount(target.getConnectionsCount() + 1);
             userRepository.save(viewer);
             userRepository.save(target);
+            // The acceptor's own "wants to connect with you" notification is now answered.
+            notificationService.resolveConnectionRequest(viewerId, targetId);
             notificationService.notify(targetId, NotificationType.connection,
                     "Connection accepted", viewer.getName() + " accepted your connection request", viewerId, viewerId);
             return new ConnectResult("CONNECTED", viewer.getConnectionsCount());
@@ -480,6 +505,19 @@ public class UserService {
         }
 
         connectionRepository.delete(connection);
+        notificationService.withdrawConnectionRequest(viewerId, requesterId);
+    }
+
+    private static void requireExpectedStatus(String expected, String actual) {
+        if (expected == null || expected.isBlank()) return;
+        if (!CONNECTION_STATUSES.contains(expected)) {
+            throw new BadRequestException("Invalid expected connection status: " + expected);
+        }
+        if (!expected.equals(actual)) {
+            throw new com.nukkad.common.exception.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                    "CONNECTION_STATE_CHANGED",
+                    "This connection changed since you last loaded the page. It has been refreshed.");
+        }
     }
 
     @Transactional
