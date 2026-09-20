@@ -156,7 +156,7 @@ public class FileStorageService {
     /** Streams back a file previously stored by this service, identified by the public URL it returned. */
     public StoredObject open(String url) {
         if (!isHostedUrl(url)) {
-            throw new BadRequestException("This resource is a link, not a file hosted on Buildadda");
+            throw new BadRequestException("This resource is a link, not a file hosted on BuildAdda");
         }
         String key = url.substring(properties.publicBaseUrl().length() + 1);
         try {

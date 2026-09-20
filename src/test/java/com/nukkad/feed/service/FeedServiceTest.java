@@ -2,6 +2,8 @@ package com.nukkad.feed.service;
 
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.feed.dto.CreatePostRequest;
+import com.nukkad.feed.dto.PostDto;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
@@ -370,10 +372,52 @@ class FeedServiceTest {
         when(postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", null, 0, 20);
+        service().list("user-1", null, null, 0, 20);
 
         verify(postRepository).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
         verify(postRepository, never()).findAllByOrderByCreatedAtDesc(any());
+    }
+
+    @Test
+    void listingByTypeUsesTheTypeQueryAndStillHidesRemovedPosts() {
+        when(postRepository.findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq(Post.Type.discussion), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", null, "discussion", 0, 20);
+
+        verify(postRepository).findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq(Post.Type.discussion), any());
+        verify(postRepository, never()).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
+    }
+
+    @Test
+    void listingByAuthorAndTypeCombinesBothFilters() {
+        when(postRepository.findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq("a1"), eq(Post.Type.question), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", "a1", "question", 0, 20);
+
+        verify(postRepository).findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq("a1"), eq(Post.Type.question), any());
+    }
+
+    @Test
+    void listingWithAnUnknownTypeIsRejected() {
+        assertThatThrownBy(() -> service().list("user-1", null, "gossip", 0, 20)).isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void aMemberCanWriteEachOfTheNewPostKinds() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        for (String kind : new String[]{"discussion", "build_update", "question", "milestone"}) {
+            PostDto dto = service().create("author-1", new CreatePostRequest("Shipped the beta", kind, null, null));
+            assertThat(dto.type()).isEqualTo(kind);
+        }
+    }
+
+    @Test
+    void creatingAPostWithAnUnknownKindIsRejected() {
+        assertThatThrownBy(() -> service().create("author-1", new CreatePostRequest("hi", "gossip", null, null)))
+                .isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
     }
 
     @Test

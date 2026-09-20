@@ -60,11 +60,20 @@ public class FeedService {
     }
 
     @Transactional(readOnly = true)
-    public Page<PostDto> list(String viewerId, String authorId, int page, int size) {
+    public Page<PostDto> list(String viewerId, String authorId, String type, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
-        Page<Post> posts = (authorId == null || authorId.isBlank())
-                ? postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(pageable)
-                : postRepository.findByAuthorIdAndRemovedByAdminFalseOrderByCreatedAtDesc(authorId, pageable);
+        boolean byAuthor = authorId != null && !authorId.isBlank();
+        Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
+        Page<Post> posts;
+        if (typeFilter == null) {
+            posts = byAuthor
+                    ? postRepository.findByAuthorIdAndRemovedByAdminFalseOrderByCreatedAtDesc(authorId, pageable)
+                    : postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(pageable);
+        } else {
+            posts = byAuthor
+                    ? postRepository.findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(authorId, typeFilter, pageable)
+                    : postRepository.findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(typeFilter, pageable);
+        }
 
         List<String> postIds = posts.getContent().stream().map(Post::getId).toList();
         Set<String> likedIds = postIds.isEmpty() ? Set.of() : postLikeRepository.findLikedPostIds(viewerId, postIds);

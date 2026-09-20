@@ -233,7 +233,7 @@ public class AuthService {
 
     /** Redirect-flow counterpart: exchanges the OAuth authorization code Google handed back after
      * the full-page redirect, then resolves the identity through the exact same "must already be
-     * linked" policy as {@link #loginWithGoogle} — Google never creates a Buildadda account either way. */
+     * linked" policy as {@link #loginWithGoogle} — Google never creates a BuildAdda account either way. */
     @Transactional
     public AuthResponse loginWithGoogleAuthCode(String code, String redirectUri, String ip, String userAgent) {
         return authenticateGoogleIdentity(googleTokenVerifier.exchangeAuthorizationCode(code, redirectUri), ip, userAgent);
@@ -247,13 +247,13 @@ public class AuthService {
                     User existingByEmail = userRepository.findByEmail(email).orElse(null);
                     if (existingByEmail == null) {
                         throw new GoogleAccountNotFoundException(
-                                "Your Google account isn't connected to a Buildadda account yet. Please create a Buildadda account first.");
+                                "Your Google account isn't connected to a BuildAdda account yet. Please create a BuildAdda account first.");
                     }
                     if (existingByEmail.getGoogleSubject() != null) {
                         // Already linked — just not to *this* Google identity. A real mismatch, not a
                         // migration gap: don't silently relink.
                         throw new GoogleAccountNotLinkedException(
-                                "This Buildadda account is not connected to Google yet. Sign in with your email and "
+                                "This BuildAdda account is not connected to Google yet. Sign in with your email and "
                                         + "password, then connect Google from Security settings.");
                     }
                     // One-time migration backfill: this account was created back when Google Sign-In
@@ -281,11 +281,11 @@ public class AuthService {
 
         if (!identity.email().equalsIgnoreCase(user.getEmail())) {
             throw new GoogleEmailMismatchException(
-                    "Connect the Google account that uses the same email address as your Buildadda account.");
+                    "Connect the Google account that uses the same email address as your BuildAdda account.");
         }
         userRepository.findByGoogleSubject(identity.subject()).ifPresent(existing -> {
             if (!existing.getId().equals(user.getId())) {
-                throw new ConflictException("This Google account is already linked to a different Buildadda account.");
+                throw new ConflictException("This Google account is already linked to a different BuildAdda account.");
             }
         });
 
