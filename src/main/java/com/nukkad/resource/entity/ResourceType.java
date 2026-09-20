@@ -7,7 +7,12 @@ public enum ResourceType implements LabeledEnum {
     LINK("Link"),
     VIDEO("Video"),
     NOTE("Note"),
-    TEMPLATE("Template");
+    TEMPLATE("Template"),
+    ARTICLE("Article"),
+    GUIDE("Guide"),
+    COURSE("Course"),
+    TOOL("Tool"),
+    DECK("Deck");
 
     private final String label;
 

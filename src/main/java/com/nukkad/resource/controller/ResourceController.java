@@ -3,31 +3,31 @@ package com.nukkad.resource.controller;
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.resource.dto.ResourceDto;
-import com.nukkad.resource.dto.UpdateResourceRequest;
 import com.nukkad.resource.service.ResourceService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
-import jakarta.validation.Valid;
-import org.springframework.http.HttpStatus;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.util.Arrays;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
 
+/**
+ * Member-facing resource library — deliberately READ-ONLY. Resources are curated by admins (see
+ * AdminResourceController under /api/admin/resources), so the only things a member can do here are
+ * browse, open, download and save one for themselves. There must be no create/update/delete mapping on
+ * this controller; ResourceControllerReadOnlyTest fails the build if one is ever added.
+ */
 @RestController
 @RequestMapping("/api/resources")
 @SecurityRequirement(name = "bearerAuth")
@@ -43,10 +43,12 @@ public class ResourceController {
     public ApiResponse<PageResponse<ResourceDto>> list(@AuthenticationPrincipal AuthenticatedUser principal,
                                                           @RequestParam(required = false) String q,
                                                           @RequestParam(required = false) String type,
+                                                          @RequestParam(required = false) String category,
+                                                          @RequestParam(required = false) Boolean featured,
                                                           @RequestParam(required = false) String chapterId,
                                                           @RequestParam(defaultValue = "0") int page,
                                                           @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(PageResponse.from(resourceService.listResources(q, type, chapterId, principal.id(), page, size)));
+        return ApiResponse.ok(PageResponse.from(resourceService.listResources(q, type, category, featured, chapterId, principal.id(), page, size)));
     }
 
     @GetMapping("/{id}")
@@ -54,30 +56,21 @@ public class ResourceController {
         return ApiResponse.ok(resourceService.getResource(id, principal.id()));
     }
 
-    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @ResponseStatus(HttpStatus.CREATED)
-    public ApiResponse<ResourceDto> create(@AuthenticationPrincipal AuthenticatedUser principal,
-                                             @RequestParam String title,
-                                             @RequestParam(required = false) String description,
-                                             @RequestParam String type,
-                                             @RequestParam(required = false) String url,
-                                             @RequestParam(required = false) MultipartFile file,
-                                             @RequestParam(required = false) String chapterId,
-                                             @RequestParam(required = false) String tags) {
-        return ApiResponse.ok(resourceService.createResource(principal.id(), title, description, type, url, file, chapterId, parseTags(tags)));
-    }
-
-    @PutMapping("/{id}")
-    public ApiResponse<ResourceDto> update(@AuthenticationPrincipal AuthenticatedUser principal,
-                                             @PathVariable String id,
-                                             @Valid @RequestBody UpdateResourceRequest request) {
-        return ApiResponse.ok(resourceService.updateResource(principal.id(), id, request));
-    }
-
-    @DeleteMapping("/{id}")
-    public ApiResponse<Void> delete(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
-        resourceService.deleteResource(principal.id(), id);
-        return ApiResponse.ok(null);
+    /**
+     * Forces a real download (Content-Disposition: attachment). Opening a file in the browser needs no
+     * endpoint at all — the file's own URL is loaded directly and shown inline — but a browser ignores
+     * the HTML "download" attribute for a cross-origin URL, so a true download has to come from here.
+     */
+    @GetMapping("/{id}/download")
+    public ResponseEntity<InputStreamResource> download(@PathVariable String id) {
+        ResourceService.Download download = resourceService.openDownload(id);
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment().filename(download.fileName(), StandardCharsets.UTF_8).build().toString())
+                .header("X-Content-Type-Options", "nosniff")
+                .contentType(parseMediaType(download.contentType()));
+        if (download.contentLength() >= 0) response.contentLength(download.contentLength());
+        return response.body(new InputStreamResource(download.stream()));
     }
 
     @PostMapping("/{id}/save")
@@ -86,11 +79,11 @@ public class ResourceController {
         return ApiResponse.ok(Map.of("saved", saved));
     }
 
-    private Set<String> parseTags(String tags) {
-        if (tags == null || tags.isBlank()) return Set.of();
-        return Arrays.stream(tags.split(","))
-                .map(String::trim)
-                .filter(t -> !t.isBlank())
-                .collect(Collectors.toSet());
+    private static MediaType parseMediaType(String contentType) {
+        try {
+            return contentType == null ? MediaType.APPLICATION_OCTET_STREAM : MediaType.parseMediaType(contentType);
+        } catch (IllegalArgumentException e) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
     }
 }

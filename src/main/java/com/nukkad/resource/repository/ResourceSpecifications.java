@@ -1,6 +1,8 @@
 package com.nukkad.resource.repository;
 
+import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.resource.entity.Resource;
+import com.nukkad.resource.entity.ResourceCategory;
 import com.nukkad.resource.entity.ResourceType;
 import org.springframework.data.jpa.domain.Specification;
 
@@ -24,7 +26,8 @@ public final class ResourceSpecifications {
         String like = "%" + q.trim().toLowerCase() + "%";
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("title")), like),
-                cb.like(cb.lower(cb.coalesce(root.get("description"), "")), like)
+                cb.like(cb.lower(cb.coalesce(root.get("description"), "")), like),
+                cb.like(cb.lower(cb.coalesce(root.get("provider"), "")), like)
         );
     }
 
@@ -37,5 +40,22 @@ public final class ResourceSpecifications {
     public static Specification<Resource> chapterId(String chapterId) {
         if (chapterId == null || chapterId.isBlank()) return null;
         return (root, query, cb) -> cb.equal(root.get("chapterId"), chapterId);
+    }
+
+    public static Specification<Resource> category(String slug) {
+        if (slug == null || slug.isBlank()) return null;
+        ResourceCategory category;
+        try {
+            category = ResourceCategory.fromSlug(slug.trim());
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Unknown resource category: " + slug);
+        }
+        return (root, query, cb) -> cb.equal(root.get("category"), category);
+    }
+
+    /** Only the front-page shelf when true; null (or false) means no restriction. */
+    public static Specification<Resource> featured(Boolean featured) {
+        if (featured == null || !featured) return null;
+        return (root, query, cb) -> cb.isTrue(root.get("featured"));
     }
 }

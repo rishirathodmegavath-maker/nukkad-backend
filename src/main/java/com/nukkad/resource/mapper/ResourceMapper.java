@@ -9,19 +9,25 @@ import java.util.HashSet;
 @Component
 public class ResourceMapper {
 
-    public ResourceDto toDto(Resource resource, String chapterName, boolean isSaved, boolean canManage) {
+    public ResourceDto toDto(Resource resource, String chapterName, boolean isSaved, String fileName, boolean previewable) {
         return new ResourceDto(
                 resource.getId(),
                 resource.getTitle(),
                 resource.getDescription(),
                 resource.getType().getLabel(),
+                resource.getCategory() == null ? null : resource.getCategory().getSlug(),
+                resource.getProvider(),
+                resource.getThumbnailUrl(),
+                resource.getDurationMinutes(),
+                resource.isFeatured(),
                 resource.getUrl(),
                 resource.getUploaderUserId(),
                 resource.getChapterId(),
                 chapterName,
                 new HashSet<>(resource.getTags()),
                 isSaved,
-                canManage,
+                fileName,
+                previewable,
                 resource.getCreatedAt(),
                 resource.getUpdatedAt()
         );
