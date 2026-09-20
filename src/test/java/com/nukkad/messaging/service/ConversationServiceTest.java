@@ -14,14 +14,10 @@ import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.messaging.repository.MessageDeletionRepository;
 import com.nukkad.messaging.repository.MessageRepository;
-import com.nukkad.notification.entity.NotificationType;
-import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
 import com.nukkad.startup.repository.StartupTeamMemberRepository;
-import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
 import com.nukkad.user.repository.UserBlockRepository;
-import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.service.UserPrivacySettingsService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -70,14 +66,12 @@ class ConversationServiceTest {
     @Mock private IntroRequestRepository introRequestRepository;
     @Mock private UserPrivacySettingsService privacySettingsService;
     @Mock private FeedService feedService;
-    @Mock private UserRepository userRepository;
-    @Mock private NotificationService notificationService;
 
     private ConversationService service() {
         return new ConversationService(conversationRepository, participantRepository, messageRepository, messageDeletionRepository,
                 encryptionService, messagingTemplate, userBlockRepository, connectionRepository,
                 opportunityApplicantRepository, startupTeamMemberRepository, introRequestRepository,
-                privacySettingsService, feedService, userRepository, notificationService);
+                privacySettingsService, feedService);
     }
 
     private Conversation conversation(String senderId, String recipientId) {
@@ -116,27 +110,32 @@ class ConversationServiceTest {
         });
     }
 
-    // ---- New message notifies the recipient(s) via the existing notification infrastructure ----
+    // ---- A new message reaches online recipients through the per-user topic (source of the in-app toast) ----
+    // It deliberately does NOT create a persistent notification: chat would bury the notification center.
 
     @Test
-    void sendingAMessageNotifiesTheRecipient() {
+    void sendingAMessagePushesTheConversationUpdateToTheRecipientsPerUserTopic() {
         Conversation conv = conversation("sender1", "recipient1");
         when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
         when(userBlockRepository.existsBetween("sender1", "recipient1")).thenReturn(false);
         when(connectionRepository.existsAcceptedBetween("sender1", "recipient1")).thenReturn(true);
         when(privacySettingsService.canMessage("recipient1", true)).thenReturn(true);
-        when(userRepository.findById("sender1")).thenReturn(Optional.of(User.builder().id("sender1").name("Ada").build()));
         stubMessagePersistenceAndEncryption();
         stubConversationDtoLookups("recipient1", "sender1");
 
         service().sendMessage("conv1", "sender1", "Hello!", null, null);
 
-        verify(notificationService).notify(eq("recipient1"), eq(NotificationType.reply), eq("Ada sent you a message"),
-                eq("Hello!"), eq("conv1"), eq("sender1"));
+        ArgumentCaptor<Object> payload = ArgumentCaptor.forClass(Object.class);
+        verify(messagingTemplate).convertAndSend(eq("/topic/users/recipient1/conversations"), payload.capture());
+        // The toast needs the conversation id to navigate to; it must come from this event itself.
+        assertThat(payload.getValue()).isInstanceOfSatisfying(com.nukkad.messaging.dto.ConversationDto.class,
+                dto -> assertThat(dto.id()).isEqualTo("conv1"));
+        // The sender is never pushed their own message as an incoming one.
+        verify(messagingTemplate, never()).convertAndSend(eq("/topic/users/sender1/conversations"), any(Object.class));
     }
 
     @Test
-    void sendingAGroupMessageNotifiesEveryOtherParticipantButNotTheSender() {
+    void sendingAGroupMessagePushesToEveryOtherParticipantButNotTheSender() {
         Conversation conv = groupConversation();
         when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
         when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "sender1")).thenReturn(true);
@@ -146,16 +145,15 @@ class ConversationServiceTest {
                 participant("member3", ConversationParticipant.Role.MEMBER)));
         when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull(eq("conv1"), anyString()))
                 .thenAnswer(inv -> Optional.of(participant(inv.getArgument(1), ConversationParticipant.Role.MEMBER)));
-        when(userRepository.findById("sender1")).thenReturn(Optional.of(User.builder().id("sender1").name("Ada").build()));
         stubMessagePersistenceAndEncryption();
         when(messageRepository.findLatestVisibleForViewer(eq("conv1"), anyString(), any())).thenReturn(List.of());
         when(messageRepository.countUnreadSinceForViewer(eq("conv1"), anyString(), any())).thenReturn(0L);
 
         service().sendMessage("conv1", "sender1", "Hey team", null, null);
 
-        verify(notificationService).notify(eq("member2"), eq(NotificationType.reply), any(), any(), eq("conv1"), eq("sender1"));
-        verify(notificationService).notify(eq("member3"), eq(NotificationType.reply), any(), any(), eq("conv1"), eq("sender1"));
-        verify(notificationService, never()).notify(eq("sender1"), any(), any(), any(), any(), any());
+        verify(messagingTemplate).convertAndSend(eq("/topic/users/member2/conversations"), any(Object.class));
+        verify(messagingTemplate).convertAndSend(eq("/topic/users/member3/conversations"), any(Object.class));
+        verify(messagingTemplate, never()).convertAndSend(eq("/topic/users/sender1/conversations"), any(Object.class));
     }
 
     // ---- 14 & 15. Accepted application unlocks messaging without creating a real Connection ----

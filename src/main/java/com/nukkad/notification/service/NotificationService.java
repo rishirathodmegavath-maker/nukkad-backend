@@ -71,15 +71,23 @@ public class NotificationService {
                 recipientUserId, requesterUserId, NotificationType.connection, CONNECTION_REQUEST_TITLE);
     }
 
+    /**
+     * Chat messages no longer create notifications (they arrive as a short-lived in-app toast and as
+     * unread conversations), but every message sent before that change left a {@code reply} row behind.
+     * Those old rows are hidden from the notification list and its unread count rather than deleted.
+     */
+    private static final NotificationType LEGACY_CHAT_MESSAGE_TYPE = NotificationType.reply;
+
     @Transactional(readOnly = true)
     public Page<NotificationDto> list(String userId, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
-        return notificationRepository.findByUserIdOrderByCreatedAtDesc(userId, pageable).map(notificationMapper::toDto);
+        return notificationRepository.findByUserIdAndTypeNotOrderByCreatedAtDesc(userId, LEGACY_CHAT_MESSAGE_TYPE, pageable)
+                .map(notificationMapper::toDto);
     }
 
     @Transactional(readOnly = true)
     public long unreadCount(String userId) {
-        return notificationRepository.countByUserIdAndIsReadFalse(userId);
+        return notificationRepository.countByUserIdAndIsReadFalseAndTypeNot(userId, LEGACY_CHAT_MESSAGE_TYPE);
     }
 
     @Transactional
