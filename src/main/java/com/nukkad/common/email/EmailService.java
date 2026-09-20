@@ -41,6 +41,19 @@ public class EmailService {
                 """.formatted(escape(name), link));
     }
 
+    /** The token travels in the URL fragment, not the query string: a fragment is never sent to any
+     *  server or in a Referer header, so the token can't leak to the fonts/analytics hosts a page
+     *  load may contact, nor land in reverse-proxy access logs. */
+    public void sendAdminPasswordResetEmail(String to, String name, String rawToken) {
+        String link = properties.adminBaseUrl() + "/reset-password#token=" + rawToken;
+        send(to, "Reset your Buildadda admin password", """
+                <p>Hi %s,</p>
+                <p>A password reset was requested for your Buildadda <strong>admin</strong> account. This link expires in 30 minutes and can be used once:</p>
+                <p><a href="%s">Reset my admin password</a></p>
+                <p>If you didn't request this, ignore this email — your password won't change. Consider changing it if you think someone else knows it.</p>
+                """.formatted(escape(name), link));
+    }
+
     private void send(String to, String subject, String html) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
