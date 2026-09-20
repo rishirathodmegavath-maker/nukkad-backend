@@ -864,4 +864,153 @@ class OpportunityServiceTest {
         assertThatThrownBy(() -> service().reviewModeration("admin1", "opp1", true, null, "1.2.3.4"))
                 .isInstanceOf(ConflictException.class);
     }
+
+    // ---- Hidden opportunities refuse apply / express interest exactly like the public detail endpoint ----
+    // (the detail endpoint 404s a PENDING / REJECTED / admin-removed posting; the mutations must too, and
+    // must use the same not-found as a missing id so a hidden posting's existence isn't revealed)
+
+    private static final ApplyToOpportunityRequest ANY_APPLICATION =
+            new ApplyToOpportunityRequest("why", "fit", null, null, null, null, null, null);
+
+    private Opportunity hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus status, boolean removedByAdmin) {
+        Opportunity opp = opportunity("owner1");
+        opp.setModerationStatus(status);
+        opp.setRemovedByAdmin(removedByAdmin);
+        return opp;
+    }
+
+    private void assertApplyIsHiddenAndHasNoSideEffects(Opportunity opp) {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        assertThatThrownBy(() -> service().apply("applicant1", "opp1", ANY_APPLICATION))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("Opportunity not found: opp1");
+
+        verify(applicantRepository, never()).saveAndFlush(any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    private void assertInterestIsHiddenAndHasNoSideEffects(Opportunity opp) {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+
+        assertThatThrownBy(() -> service().expressInterest("applicant1", "opp1"))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("Opportunity not found: opp1");
+
+        verify(interestRepository, never()).save(any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void applyingToAnApprovedOpportunityStillSucceeds() {
+        Opportunity opp = opportunity("owner1"); // APPROVED
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opp));
+        when(userRepository.findById("applicant1")).thenReturn(Optional.of(user("applicant1", "Meera Joshi")));
+        when(applicantRepository.findByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(Optional.empty());
+        when(applicantRepository.saveAndFlush(any(OpportunityApplicant.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(userService.getUser("applicant1", "applicant1")).thenReturn(stubUserDto("applicant1"));
+
+        ApplicationDto dto = service().apply("applicant1", "opp1", ANY_APPLICATION);
+
+        assertThat(dto.status()).isEqualTo("Pending");
+        verify(notificationService).notify(eq("owner1"), eq(NotificationType.opportunity), eq("New application"),
+                anyString(), eq("opp1"), eq("applicant1"));
+    }
+
+    @Test
+    void applyingToAPendingOpportunityIsNotFound() {
+        assertApplyIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.PENDING, false));
+    }
+
+    @Test
+    void applyingToARejectedOpportunityIsNotFound() {
+        assertApplyIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.REJECTED, false));
+    }
+
+    @Test
+    void applyingToAnAdminRemovedOpportunityIsNotFound() {
+        assertApplyIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.APPROVED, true));
+    }
+
+    @Test
+    void applyingToAnAdminRemovedAndUnapprovedOpportunityIsNotFound() {
+        assertApplyIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.PENDING, true));
+    }
+
+    @Test
+    void expressingInterestInAnApprovedOpportunitySucceedsAndNotifiesThePoster() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunity("owner1"))); // APPROVED
+        when(interestRepository.existsByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(false);
+
+        service().expressInterest("applicant1", "opp1");
+
+        verify(interestRepository).save(any());
+        verify(notificationService).notify(eq("owner1"), eq(NotificationType.opportunity),
+                eq("New interest in your opportunity"), anyString(), eq("opp1"), eq("applicant1"));
+    }
+
+    @Test
+    void expressingInterestInAPendingOpportunityIsNotFound() {
+        assertInterestIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.PENDING, false));
+    }
+
+    @Test
+    void expressingInterestInARejectedOpportunityIsNotFound() {
+        assertInterestIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.REJECTED, false));
+    }
+
+    @Test
+    void expressingInterestInAnAdminRemovedOpportunityIsNotFound() {
+        assertInterestIsHiddenAndHasNoSideEffects(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.APPROVED, true));
+    }
+
+    @Test
+    void applyingOrExpressingInterestInANonexistentOpportunityIsNotFound() {
+        when(opportunityRepository.findById("ghost")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().apply("applicant1", "ghost", ANY_APPLICATION))
+                .isInstanceOf(ResourceNotFoundException.class).hasMessage("Opportunity not found: ghost");
+        assertThatThrownBy(() -> service().expressInterest("applicant1", "ghost"))
+                .isInstanceOf(ResourceNotFoundException.class).hasMessage("Opportunity not found: ghost");
+
+        verify(applicantRepository, never()).saveAndFlush(any());
+        verify(interestRepository, never()).save(any());
+    }
+
+    @Test
+    void hiddenAndMissingOpportunitiesAreIndistinguishableToTheCaller() {
+        // Same exception type AND same message shape for "hidden" and "doesn't exist": nothing to probe.
+        when(opportunityRepository.findById("opp1"))
+                .thenReturn(Optional.of(hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.PENDING, false)));
+        when(opportunityRepository.findById("opp2")).thenReturn(Optional.empty());
+
+        Throwable hidden = org.assertj.core.api.Assertions.catchThrowable(() -> service().expressInterest("applicant1", "opp1"));
+        Throwable missing = org.assertj.core.api.Assertions.catchThrowable(() -> service().expressInterest("applicant1", "opp2"));
+
+        assertThat(hidden).isInstanceOf(ResourceNotFoundException.class);
+        assertThat(missing).isInstanceOf(ResourceNotFoundException.class);
+        assertThat(hidden.getMessage().replace("opp1", "X")).isEqualTo(missing.getMessage().replace("opp2", "X"));
+    }
+
+    @Test
+    void listMyApplicationsDoesNotExposeOpportunitiesThatAreNowHidden() {
+        // The applicant's history is built from raw applicant/interest rows and then loads each
+        // opportunity — without a visibility check that would hand back the full details of a posting
+        // an admin has since removed (or that was never approved), which the detail endpoint 404s.
+        Opportunity removed = hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.APPROVED, true);
+        Opportunity pending = hiddenOpportunity(com.nukkad.common.moderation.ModerationStatus.PENDING, false);
+        pending.setId("opp2");
+        OpportunityApplicant a1 = OpportunityApplicant.builder().id("a1").opportunityId("opp1").userId("applicant1").status(ApplicationStatus.PENDING).build();
+        OpportunityApplicant a2 = OpportunityApplicant.builder().id("a2").opportunityId("opp2").userId("applicant1").status(ApplicationStatus.PENDING).build();
+
+        when(applicantRepository.findByUserId("applicant1")).thenReturn(List.of(a1, a2));
+        when(interestRepository.findByUserId("applicant1")).thenReturn(List.of());
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(removed));
+        when(opportunityRepository.findById("opp2")).thenReturn(Optional.of(pending));
+
+        Page<OpportunityDto> page = service().listMyApplications("applicant1", 0, 20);
+
+        assertThat(page.getContent()).isEmpty();
+        verify(opportunityMapper, never()).toDto(any(), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any());
+    }
 }

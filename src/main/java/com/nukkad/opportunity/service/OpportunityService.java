@@ -106,6 +106,29 @@ public class OpportunityService {
                 .orElseThrow(() -> new ResourceNotFoundException("Opportunity not found: " + id));
     }
 
+    /**
+     * The same visibility the public detail endpoint enforces: an admin-removed posting, or one that is
+     * not (yet, or ever) APPROVED, does not exist as far as the public is concerned.
+     */
+    private static boolean isPubliclyVisible(Opportunity opportunity) {
+        return !opportunity.isRemovedByAdmin() && opportunity.getModerationStatus() == ModerationStatus.APPROVED;
+    }
+
+    /**
+     * For the mutations a member performs on an opportunity id they got from the public (apply, express
+     * interest): a hidden posting must refuse them exactly as {@link #getOpportunity} refuses to show it.
+     * It throws the same not-found as a genuinely missing id, so it does not reveal that a hidden
+     * posting exists. Withdrawing and the poster/admin operations deliberately keep using
+     * {@link #getEntityOrThrow}: they act on records the caller already has a legitimate relationship to.
+     */
+    private Opportunity getPubliclyVisibleOrThrow(String id) {
+        Opportunity opportunity = getEntityOrThrow(id);
+        if (!isPubliclyVisible(opportunity)) {
+            throw new ResourceNotFoundException("Opportunity not found: " + id);
+        }
+        return opportunity;
+    }
+
     private OpportunityDto toOpportunityDto(Opportunity opportunity, String viewerId) {
         var existingApplication = applicantRepository.findByOpportunityIdAndUserId(opportunity.getId(), viewerId);
         boolean hasApplied = existingApplication.isPresent();
@@ -341,7 +364,7 @@ public class OpportunityService {
 
     @Transactional
     public void expressInterest(String userId, String id) {
-        Opportunity opportunity = getEntityOrThrow(id);
+        Opportunity opportunity = getPubliclyVisibleOrThrow(id);
         if (opportunity.getPostedByUserId().equals(userId)) {
             throw new BadRequestException("You can't express interest in your own opportunity");
         }
@@ -359,7 +382,7 @@ public class OpportunityService {
 
     @Transactional
     public ApplicationDto apply(String userId, String id, ApplyToOpportunityRequest request) {
-        Opportunity opportunity = getEntityOrThrow(id);
+        Opportunity opportunity = getPubliclyVisibleOrThrow(id);
         if (opportunity.getPostedByUserId().equals(userId)) {
             throw new BadRequestException("You can't apply to your own opportunity");
         }
@@ -564,6 +587,10 @@ public class OpportunityService {
                 .map(opportunityRepository::findById)
                 .filter(java.util.Optional::isPresent)
                 .map(java.util.Optional::get)
+                // A taken-down or never-approved posting must not be readable through the back door of
+                // someone's application history either: same rule as the public detail endpoint. Closed
+                // postings stay (still APPROVED), so genuine history is kept.
+                .filter(OpportunityService::isPubliclyVisible)
                 .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
                 .map(o -> toOpportunityDto(o, userId))
                 .toList();
