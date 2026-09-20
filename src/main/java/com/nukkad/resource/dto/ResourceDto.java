@@ -21,7 +21,7 @@ public record ResourceDto(
         String chapterName,
         Set<String> tags,
         boolean isSaved,
-        /** Non-null only for a file hosted on Buildadda: the name a download is saved as. Null for a link. */
+        /** Non-null only for a file hosted on BuildAdda: the name a download is saved as. Null for a link. */
         String fileName,
         /** True when the hosted file can be shown in the browser (PDF, image, video, plain text) rather than
          *  only downloaded. Always false for links and for Office/ZIP/CSV files. */

@@ -9,6 +9,7 @@ public enum ResourceCategory {
     FREE_LEARNING("free-learning"),
     TEMPLATES("templates"),
     PLAYBOOKS("playbooks"),
+    PROGRAMS("programs"),
     TOOLS("tools"),
     GOVERNMENT("government");
 

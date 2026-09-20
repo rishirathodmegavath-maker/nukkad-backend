@@ -16,6 +16,8 @@ public interface PostRepository extends JpaRepository<Post, String> {
     // PUBLIC — excludes anything an admin has taken down.
     Page<Post> findByRemovedByAdminFalseOrderByCreatedAtDesc(Pageable pageable);
     Page<Post> findByAuthorIdAndRemovedByAdminFalseOrderByCreatedAtDesc(String authorId, Pageable pageable);
+    Page<Post> findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(Post.Type type, Pageable pageable);
+    Page<Post> findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(String authorId, Post.Type type, Pageable pageable);
 
     /**
      * Atomic single-statement counter updates. A read-modify-write via the loaded entity

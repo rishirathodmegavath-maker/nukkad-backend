@@ -43,9 +43,10 @@ public class FeedController {
     @GetMapping
     public ApiResponse<PageResponse<PostDto>> list(@AuthenticationPrincipal AuthenticatedUser principal,
                                                      @RequestParam(required = false) String authorId,
+                                                     @RequestParam(required = false) String type,
                                                      @RequestParam(defaultValue = "0") int page,
                                                      @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, page, size)));
+        return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, type, page, size)));
     }
 
     /** Dedicated saved-posts query — see {@link FeedService#listSaved}. Registered before the more

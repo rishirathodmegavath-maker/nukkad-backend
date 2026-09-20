@@ -31,7 +31,10 @@ import java.util.List;
 @Builder
 public class Post {
 
-    public enum Type { text, startup_update, idea, opportunity, event }
+    /** text / startup_update / idea / opportunity / event exist from the start (the last four are posts the
+     *  system writes about an entity). discussion / build_update / question / milestone are the kinds a member
+     *  picks when writing a post. */
+    public enum Type { text, startup_update, idea, opportunity, event, discussion, build_update, question, milestone }
 
     @Id
     @UuidGenerator

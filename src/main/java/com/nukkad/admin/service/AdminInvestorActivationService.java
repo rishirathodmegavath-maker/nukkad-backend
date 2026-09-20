@@ -95,7 +95,7 @@ public class AdminInvestorActivationService {
         auditService.log(adminId, AuditAction.INVESTOR_ACTIVATION_APPROVED, "InvestorActivationRequest", id, ip, Map.of());
         notificationService.notify(request.getRequesterUserId(), NotificationType.investor_activation,
                 "Your investor application was approved",
-                "You're now a verified investor on Buildadda and can browse startups and request introductions.",
+                "You're now a verified investor on BuildAdda and can browse startups and request introductions.",
                 profile.id(), adminId);
 
         return toDtoWithUsers(request);
