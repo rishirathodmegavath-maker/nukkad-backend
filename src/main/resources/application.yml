@@ -121,6 +121,10 @@ nukkad:
     # The admin portal origin, used for admin password-reset email links. MUST be set in production
     # (https://admin.buildadda.com) before any SMTP provider is enabled, or the link points at localhost.
     admin-base-url: ${ADMIN_BASE_URL:http://localhost:5174}
+    # Emailed admin "forgot password". OFF by default: with no working SMTP a request would be
+    # acknowledged as "sent" while no email leaves the server. Set to true only after SMTP_* works and
+    # ADMIN_BASE_URL is correct. Changing the password from inside the admin portal is unaffected.
+    admin-password-reset-enabled: ${ADMIN_PASSWORD_RESET_ENABLED:false}
   messaging:
     encryption-key: ${MESSAGE_ENCRYPTION_KEY}
   admin:
