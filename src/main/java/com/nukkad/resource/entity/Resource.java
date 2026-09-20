@@ -46,6 +46,27 @@ public class Resource {
     @Column(nullable = false, length = 20)
     private ResourceType type;
 
+    /** The shelf this sits on in the library; null for older resources that were never filed. */
+    @Convert(converter = ResourceCategoryConverter.class)
+    @Column(length = 30)
+    private ResourceCategory category;
+
+    /** Where the content comes from, as shown to members ("Y Combinator"). */
+    @Column(length = 120)
+    private String provider;
+
+    /** A hosted image (uploaded by an admin) shown on cards; null means the client derives or draws one. */
+    @Column(name = "thumbnail_url", length = 500)
+    private String thumbnailUrl;
+
+    @Column(name = "duration_minutes")
+    private Integer durationMinutes;
+
+    /** Shown on the library's front page shelf. */
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean featured = false;
+
     /** Either an external link the uploader supplied, or our own /uploads/... URL for an uploaded file. */
     @Column(nullable = false, length = 500)
     private String url;
