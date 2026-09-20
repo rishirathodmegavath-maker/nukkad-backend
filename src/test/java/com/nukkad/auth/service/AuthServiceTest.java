@@ -4,10 +4,13 @@ import com.nukkad.auth.dto.LoginRequest;
 import com.nukkad.auth.dto.RegisterRequest;
 import com.nukkad.auth.dto.RegisterResponse;
 import com.nukkad.auth.entity.EmailVerificationToken;
+import com.nukkad.auth.entity.PasswordResetToken;
 import com.nukkad.auth.entity.RefreshToken;
+import com.nukkad.auth.entity.ResetAudience;
 import com.nukkad.auth.repository.EmailVerificationTokenRepository;
 import com.nukkad.auth.repository.PasswordResetTokenRepository;
 import com.nukkad.auth.repository.RefreshTokenRepository;
+import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.email.EmailService;
 import com.nukkad.common.exception.AccountDisabledException;
@@ -294,6 +297,203 @@ class AuthServiceTest {
         // TTL) -- otherwise a captured/replayed admin session survives its own "sign out".
         assertThat(admin.getTokenVersion()).isEqualTo(4);
         verify(userRepository).save(admin);
+    }
+
+    // ---- admin password recovery ----
+
+    private PasswordResetToken adminResetToken(String userId) {
+        return PasswordResetToken.builder().userId(userId).audience(ResetAudience.ADMIN)
+                .tokenHash("hashed-reset").expiresAt(Instant.now().plusSeconds(600)).build();
+    }
+
+    private void stubResetTokenGeneration() {
+        when(jwtService.generateOpaqueToken()).thenReturn("raw-reset");
+        when(jwtService.hashOpaqueToken("raw-reset")).thenReturn("hashed-reset");
+    }
+
+    @Test
+    void adminResetRequestForAnActiveAdminStoresAnAdminTokenEmailsTheAdminLinkAndAudits() {
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(adminUser()));
+        stubResetTokenGeneration();
+
+        service().requestAdminPasswordReset(" Admin@BuildAdda.test ", "9.9.9.9");
+
+        ArgumentCaptor<PasswordResetToken> saved = ArgumentCaptor.forClass(PasswordResetToken.class);
+        verify(passwordResetTokenRepository).save(saved.capture());
+        assertThat(saved.getValue().getAudience()).isEqualTo(ResetAudience.ADMIN);
+        assertThat(saved.getValue().getUserId()).isEqualTo("a1");
+        assertThat(saved.getValue().getTokenHash()).isEqualTo("hashed-reset");
+        // 30 minutes, not the member flow's hour.
+        assertThat(saved.getValue().getExpiresAt())
+                .isBetween(Instant.now().plusSeconds(29 * 60), Instant.now().plusSeconds(31 * 60));
+        verify(emailService).sendAdminPasswordResetEmail("admin@buildadda.test", "Test User", "raw-reset");
+        verify(emailService, never()).sendPasswordResetEmail(any(), any(), any());
+        verify(auditService).log("a1", AuditAction.ADMIN_PASSWORD_RESET_REQUESTED, "AdminPortal", "a1", "9.9.9.9");
+    }
+
+    @Test
+    void adminResetRequestVoidsEarlierUnusedLinksSoOnlyTheNewestWorks() {
+        PasswordResetToken older = adminResetToken("a1");
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(adminUser()));
+        when(passwordResetTokenRepository.findByUserIdAndAudienceAndUsedAtIsNull("a1", ResetAudience.ADMIN))
+                .thenReturn(java.util.List.of(older));
+        stubResetTokenGeneration();
+
+        service().requestAdminPasswordReset("admin@buildadda.test", "9.9.9.9");
+
+        assertThat(older.getUsedAt()).isNotNull();
+    }
+
+    @Test
+    void adminResetRequestDoesNothingForAMemberAnUnknownEmailOrASuspendedAdmin() {
+        when(userRepository.findByEmail("member@buildadda.test"))
+                .thenReturn(Optional.of(user("u1", "member@buildadda.test", true, null)));
+        User suspended = adminUser();
+        suspended.setStatus(AccountStatus.SUSPENDED);
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(suspended));
+        when(userRepository.findByEmail("nobody@buildadda.test")).thenReturn(Optional.empty());
+
+        service().requestAdminPasswordReset("member@buildadda.test", "9.9.9.9");
+        service().requestAdminPasswordReset("admin@buildadda.test", "9.9.9.9");
+        service().requestAdminPasswordReset("nobody@buildadda.test", "9.9.9.9");
+
+        // Identical, silent outcome in all three cases: this is what stops it revealing who the admin is.
+        verify(passwordResetTokenRepository, never()).save(any());
+        verify(emailService, never()).sendAdminPasswordResetEmail(any(), any(), any());
+        verify(auditService, never()).log(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void theMemberResetRequestIgnoresAdministratorAccounts() {
+        when(userRepository.findByEmail("admin@buildadda.test")).thenReturn(Optional.of(adminUser()));
+
+        service().requestPasswordReset("admin@buildadda.test");
+
+        verify(passwordResetTokenRepository, never()).save(any());
+        verify(emailService, never()).sendPasswordResetEmail(any(), any(), any());
+    }
+
+    @Test
+    void adminResetConfirmSetsThePasswordBumpsTokenVersionUsesTheLinkAndEndsEverySession() {
+        PasswordResetToken token = adminResetToken("a1");
+        User admin = adminUser();
+        admin.setTokenVersion(3);
+        when(jwtService.hashOpaqueToken("raw-reset")).thenReturn("hashed-reset");
+        when(passwordResetTokenRepository.findByTokenHashForUpdate("hashed-reset")).thenReturn(Optional.of(token));
+        when(userRepository.findById("a1")).thenReturn(Optional.of(admin));
+        when(passwordEncoder.encode("New-Str0ng!Pass")).thenReturn("new-hash");
+
+        service().confirmAdminPasswordReset("raw-reset", "New-Str0ng!Pass", "9.9.9.9");
+
+        assertThat(admin.getPasswordHash()).isEqualTo("new-hash");
+        // The point of a reset is usually that someone else may hold the old session: the access token
+        // must die now, not at its natural expiry.
+        assertThat(admin.getTokenVersion()).isEqualTo(4);
+        assertThat(token.getUsedAt()).isNotNull();
+        verify(refreshTokenRepository).findByUserIdAndRevokedAtIsNull("a1");
+        verify(auditService).log("a1", AuditAction.ADMIN_PASSWORD_RESET_COMPLETED, "AdminPortal", "a1", "9.9.9.9");
+    }
+
+    @Test
+    void adminResetConfirmRefusesAMemberAudienceToken() {
+        PasswordResetToken memberToken = PasswordResetToken.builder().userId("a1").audience(ResetAudience.MEMBER)
+                .tokenHash("hashed-reset").expiresAt(Instant.now().plusSeconds(600)).build();
+        when(jwtService.hashOpaqueToken("raw-reset")).thenReturn("hashed-reset");
+        when(passwordResetTokenRepository.findByTokenHashForUpdate("hashed-reset")).thenReturn(Optional.of(memberToken));
+
+        assertThatThrownBy(() -> service().confirmAdminPasswordReset("raw-reset", "New-Str0ng!Pass", "9.9.9.9"))
+                .isInstanceOf(BadRequestException.class);
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminResetConfirmRefusesAnUsedExpiredOrUnknownLink() {
+        PasswordResetToken used = adminResetToken("a1");
+        used.setUsedAt(Instant.now().minusSeconds(5));
+        PasswordResetToken expired = adminResetToken("a1");
+        expired.setExpiresAt(Instant.now().minusSeconds(5));
+        when(jwtService.hashOpaqueToken("used")).thenReturn("h-used");
+        when(jwtService.hashOpaqueToken("expired")).thenReturn("h-expired");
+        when(jwtService.hashOpaqueToken("unknown")).thenReturn("h-unknown");
+        when(passwordResetTokenRepository.findByTokenHashForUpdate("h-used")).thenReturn(Optional.of(used));
+        when(passwordResetTokenRepository.findByTokenHashForUpdate("h-expired")).thenReturn(Optional.of(expired));
+        when(passwordResetTokenRepository.findByTokenHashForUpdate("h-unknown")).thenReturn(Optional.empty());
+
+        for (String raw : new String[] {"used", "expired", "unknown"}) {
+            assertThatThrownBy(() -> service().confirmAdminPasswordReset(raw, "New-Str0ng!Pass", "9.9.9.9"))
+                    .isInstanceOf(BadRequestException.class);
+        }
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminResetConfirmRefusesATokenWhoseAccountIsNoLongerAnActiveAdmin() {
+        PasswordResetToken token = adminResetToken("u1");
+        when(jwtService.hashOpaqueToken("raw-reset")).thenReturn("hashed-reset");
+        when(passwordResetTokenRepository.findByTokenHashForUpdate("hashed-reset")).thenReturn(Optional.of(token));
+        when(userRepository.findById("u1")).thenReturn(Optional.of(user("u1", "member@buildadda.test", true, null)));
+
+        assertThatThrownBy(() -> service().confirmAdminPasswordReset("raw-reset", "New-Str0ng!Pass", "9.9.9.9"))
+                .isInstanceOf(BadRequestException.class);
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void theMemberResetConfirmRefusesAnAdminAudienceToken() {
+        when(jwtService.hashOpaqueToken("raw-reset")).thenReturn("hashed-reset");
+        when(passwordResetTokenRepository.findByTokenHash("hashed-reset")).thenReturn(Optional.of(adminResetToken("a1")));
+
+        // Redeeming an admin link through the member endpoint would skip the tokenVersion bump.
+        assertThatThrownBy(() -> service().confirmPasswordReset("raw-reset", "New-Str0ng!Pass"))
+                .isInstanceOf(BadRequestException.class);
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminChangePasswordRejectsAWrongCurrentPassword() {
+        when(userRepository.findById("a1")).thenReturn(Optional.of(adminUser()));
+        when(passwordEncoder.matches("wrong", "hashed")).thenReturn(false);
+
+        assertThatThrownBy(() -> service().adminChangePassword("a1", "wrong", "New-Str0ng!Pass", "9.9.9.9"))
+                .isInstanceOf(BadRequestException.class).hasMessageContaining("Current password is incorrect");
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminChangePasswordRejectsReusingTheCurrentPassword() {
+        when(userRepository.findById("a1")).thenReturn(Optional.of(adminUser()));
+        when(passwordEncoder.matches("Same-Str0ng!Pass", "hashed")).thenReturn(true);
+
+        // "Rotating" a leaked password to itself must not count as a change.
+        assertThatThrownBy(() -> service().adminChangePassword("a1", "Same-Str0ng!Pass", "Same-Str0ng!Pass", "9.9.9.9"))
+                .isInstanceOf(BadRequestException.class).hasMessageContaining("different");
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminChangePasswordSetsTheHashBumpsTokenVersionEndsSessionsAndAudits() {
+        User admin = adminUser();
+        admin.setTokenVersion(7);
+        when(userRepository.findById("a1")).thenReturn(Optional.of(admin));
+        when(passwordEncoder.matches("Old-Str0ng!Pass", "hashed")).thenReturn(true);
+        when(passwordEncoder.matches("New-Str0ng!Pass", "hashed")).thenReturn(false);
+        when(passwordEncoder.encode("New-Str0ng!Pass")).thenReturn("new-hash");
+
+        service().adminChangePassword("a1", "Old-Str0ng!Pass", "New-Str0ng!Pass", "9.9.9.9");
+
+        assertThat(admin.getPasswordHash()).isEqualTo("new-hash");
+        assertThat(admin.getTokenVersion()).isEqualTo(8);
+        verify(refreshTokenRepository).findByUserIdAndRevokedAtIsNull("a1");
+        verify(auditService).log("a1", AuditAction.ADMIN_PASSWORD_CHANGED, "AdminPortal", "a1", "9.9.9.9");
+    }
+
+    @Test
+    void adminChangePasswordRefusesANonAdminAccount() {
+        when(userRepository.findById("u1")).thenReturn(Optional.of(user("u1", "member@buildadda.test", true, null)));
+
+        assertThatThrownBy(() -> service().adminChangePassword("u1", "x", "New-Str0ng!Pass", "9.9.9.9"))
+                .isInstanceOf(UnauthorizedException.class);
+        verify(userRepository, never()).save(any());
     }
 
     // ---- verifyEmail ----

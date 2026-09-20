@@ -9,6 +9,7 @@ import com.nukkad.auth.dto.RegisterResponse;
 import com.nukkad.auth.entity.EmailVerificationToken;
 import com.nukkad.auth.entity.PasswordResetToken;
 import com.nukkad.auth.entity.RefreshToken;
+import com.nukkad.auth.entity.ResetAudience;
 import com.nukkad.auth.repository.EmailVerificationTokenRepository;
 import com.nukkad.auth.repository.PasswordResetTokenRepository;
 import com.nukkad.auth.repository.RefreshTokenRepository;
@@ -25,6 +26,7 @@ import com.nukkad.common.exception.GoogleAccountNotLinkedException;
 import com.nukkad.common.exception.GoogleEmailMismatchException;
 import com.nukkad.common.exception.UnauthorizedException;
 import com.nukkad.security.JwtService;
+import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.mapper.UserMapper;
@@ -50,6 +52,8 @@ public class AuthService {
 
     private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final long EMAIL_VERIFICATION_EXPIRY_SECONDS = 24L * 3600;
+    // Shorter than the member link (1h): this one unlocks the account that can see and act on everything.
+    private static final long ADMIN_PASSWORD_RESET_EXPIRY_SECONDS = 30L * 60;
 
     private final UserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
@@ -370,7 +374,11 @@ public class AuthService {
 
     @Transactional
     public void requestPasswordReset(String email) {
-        userRepository.findByEmail(email.toLowerCase().trim()).ifPresent(user -> {
+        userRepository.findByEmail(email.toLowerCase().trim())
+                // Administrators recover through the admin portal's own flow (admin-audience token,
+                // admin-host link); the member site refuses admin accounts, so a link to it is useless.
+                .filter(user -> !user.getSecurityRoles().contains(SecurityRole.ADMIN))
+                .ifPresent(user -> {
             String rawToken = jwtService.generateOpaqueToken();
             String hash = jwtService.hashOpaqueToken(rawToken);
             PasswordResetToken resetToken = PasswordResetToken.builder()
@@ -401,6 +409,9 @@ public class AuthService {
         String hash = jwtService.hashOpaqueToken(rawToken);
         PasswordResetToken resetToken = passwordResetTokenRepository.findByTokenHash(hash)
                 .filter(PasswordResetToken::isUsable)
+                // An admin-audience token must never be redeemable here: this path does not bump
+                // tokenVersion, so it would leave the admin's still-live access token valid.
+                .filter(token -> token.getAudience() == ResetAudience.MEMBER)
                 .orElseThrow(() -> new BadRequestException("Invalid or expired reset token"));
 
         User user = userRepository.findById(resetToken.getUserId())
@@ -413,6 +424,97 @@ public class AuthService {
         passwordResetTokenRepository.save(resetToken);
 
         revokeAllForUser(user.getId());
+    }
+
+    // ---- admin password recovery (separate from the member flow above) ----
+
+    private boolean isActiveAdmin(User user) {
+        return user.getStatus() == AccountStatus.ACTIVE && user.getSecurityRoles().contains(SecurityRole.ADMIN);
+    }
+
+    /**
+     * Emails an admin a one-time reset link on the admin host. Behaves identically (and returns
+     * nothing) whether or not the address belongs to an active administrator, so it can't be used to
+     * discover which email is the admin's. Any earlier unused admin link is voided first, so only the
+     * newest emailed link ever works.
+     */
+    @Transactional
+    public void requestAdminPasswordReset(String email, String ip) {
+        userRepository.findByEmail(email.toLowerCase().trim())
+                .filter(this::isActiveAdmin)
+                .ifPresent(user -> {
+                    voidOutstandingAdminResetTokens(user.getId());
+                    String rawToken = jwtService.generateOpaqueToken();
+                    passwordResetTokenRepository.save(PasswordResetToken.builder()
+                            .userId(user.getId())
+                            .audience(ResetAudience.ADMIN)
+                            .tokenHash(jwtService.hashOpaqueToken(rawToken))
+                            .expiresAt(Instant.now().plusSeconds(ADMIN_PASSWORD_RESET_EXPIRY_SECONDS))
+                            .build());
+                    auditService.log(user.getId(), AuditAction.ADMIN_PASSWORD_RESET_REQUESTED, "AdminPortal", user.getId(), ip);
+                    emailService.sendAdminPasswordResetEmail(user.getEmail(), user.getName(), rawToken);
+                });
+    }
+
+    /**
+     * Sets a new admin password from an emailed link. Beyond what the member flow does it also bumps
+     * tokenVersion, so every access token issued before the reset dies immediately (not up to 15
+     * minutes later) — the point of resetting is usually that someone else may hold the old session.
+     */
+    @Transactional
+    public void confirmAdminPasswordReset(String rawToken, String newPassword, String ip) {
+        // Row-locked: two simultaneous redemptions of one link must not both succeed.
+        PasswordResetToken resetToken = passwordResetTokenRepository
+                .findByTokenHashForUpdate(jwtService.hashOpaqueToken(rawToken))
+                .filter(PasswordResetToken::isUsable)
+                .filter(token -> token.getAudience() == ResetAudience.ADMIN)
+                .orElseThrow(() -> new BadRequestException("Invalid or expired reset link"));
+
+        User user = userRepository.findById(resetToken.getUserId())
+                .filter(this::isActiveAdmin)
+                .orElseThrow(() -> new BadRequestException("Invalid or expired reset link"));
+
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        user.setTokenVersion(user.getTokenVersion() + 1);
+        userRepository.save(user);
+
+        resetToken.setUsedAt(Instant.now());
+        passwordResetTokenRepository.save(resetToken);
+        voidOutstandingAdminResetTokens(user.getId());
+
+        auditService.log(user.getId(), AuditAction.ADMIN_PASSWORD_RESET_COMPLETED, "AdminPortal", user.getId(), ip);
+        revokeAllForUser(user.getId());
+    }
+
+    /** Signed-in admin changes their own password. The new password must differ from the current one
+     *  (otherwise "changing" a leaked password to itself would look like a rotation), and every session
+     *  — including this one — is ended, so the admin signs in again with the new password. */
+    @Transactional
+    public void adminChangePassword(String userId, String currentPassword, String newPassword, String ip) {
+        User user = userRepository.findById(userId)
+                .filter(this::isActiveAdmin)
+                .orElseThrow(() -> new UnauthorizedException("User no longer exists"));
+        if (user.getPasswordHash() == null || !passwordEncoder.matches(currentPassword, user.getPasswordHash())) {
+            throw new BadRequestException("Current password is incorrect");
+        }
+        if (passwordEncoder.matches(newPassword, user.getPasswordHash())) {
+            throw new BadRequestException("Choose a password different from the current one");
+        }
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        user.setTokenVersion(user.getTokenVersion() + 1);
+        userRepository.save(user);
+        voidOutstandingAdminResetTokens(userId);
+        auditService.log(userId, AuditAction.ADMIN_PASSWORD_CHANGED, "AdminPortal", userId, ip);
+        revokeAllForUser(userId);
+    }
+
+    private void voidOutstandingAdminResetTokens(String userId) {
+        Instant now = Instant.now();
+        passwordResetTokenRepository.findByUserIdAndAudienceAndUsedAtIsNull(userId, ResetAudience.ADMIN)
+                .forEach(token -> {
+                    token.setUsedAt(now);
+                    passwordResetTokenRepository.save(token);
+                });
     }
 
     /**

@@ -2,7 +2,11 @@ package com.nukkad.admin.controller;
 
 import com.nukkad.auth.dto.AdminAuthResponse;
 import com.nukkad.auth.dto.AdminIdentity;
+import com.nukkad.auth.dto.ChangePasswordRequest;
 import com.nukkad.auth.dto.LoginRequest;
+import com.nukkad.auth.dto.MessageResponse;
+import com.nukkad.auth.dto.PasswordResetConfirmDto;
+import com.nukkad.auth.dto.PasswordResetRequestDto;
 import com.nukkad.auth.dto.RefreshRequest;
 import com.nukkad.auth.dto.RefreshTokenResponse;
 import com.nukkad.auth.service.AuthService;
@@ -49,6 +53,34 @@ public class AdminAuthController {
     public ApiResponse<Void> logout(@Valid @RequestBody RefreshRequest request) {
         authService.adminLogout(request.refreshToken());
         return ApiResponse.ok(null);
+    }
+
+    /** Public (identity is proven by the emailed token later). Always the same response, so it can't
+     *  be used to find out which email belongs to an administrator. */
+    @PostMapping("/password-reset/request")
+    public ApiResponse<MessageResponse> requestPasswordReset(@Valid @RequestBody PasswordResetRequestDto request,
+                                                              HttpServletRequest httpRequest) {
+        authService.requestAdminPasswordReset(request.email(), httpRequest.getRemoteAddr());
+        return ApiResponse.ok(new MessageResponse(
+                "If that email belongs to an administrator, a reset link has been sent. It expires in 30 minutes."));
+    }
+
+    @PostMapping("/password-reset/confirm")
+    public ApiResponse<MessageResponse> confirmPasswordReset(@Valid @RequestBody PasswordResetConfirmDto request,
+                                                              HttpServletRequest httpRequest) {
+        authService.confirmAdminPasswordReset(request.token(), request.newPassword(), httpRequest.getRemoteAddr());
+        return ApiResponse.ok(new MessageResponse("Password updated. Sign in with your new password."));
+    }
+
+    /** Requires an admin-scoped token (everything under /api/admin/** except the public paths does). */
+    @PostMapping("/change-password")
+    @SecurityRequirement(name = "bearerAuth")
+    public ApiResponse<MessageResponse> changePassword(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                        @Valid @RequestBody ChangePasswordRequest request,
+                                                        HttpServletRequest httpRequest) {
+        authService.adminChangePassword(principal.id(), request.currentPassword(), request.newPassword(),
+                httpRequest.getRemoteAddr());
+        return ApiResponse.ok(new MessageResponse("Password changed. Please sign in again."));
     }
 
     @GetMapping("/me")

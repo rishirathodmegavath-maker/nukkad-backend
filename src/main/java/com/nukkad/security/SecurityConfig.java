@@ -41,6 +41,9 @@ public class SecurityConfig {
             "/api/admin/auth/login",
             "/api/admin/auth/refresh",
             "/api/admin/auth/logout",
+            // Forgot-password: the caller is by definition locked out, so no bearer token. The
+            // change-password endpoint is deliberately NOT here — it needs an admin-scoped token.
+            "/api/admin/auth/password-reset/**",
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/v3/api-docs/**",

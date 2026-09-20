@@ -2,6 +2,8 @@ package com.nukkad.auth.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
@@ -30,6 +32,11 @@ public class PasswordResetToken {
 
     @Column(name = "user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String userId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10)
+    @Builder.Default
+    private ResetAudience audience = ResetAudience.MEMBER;
 
     @Column(name = "token_hash", nullable = false, unique = true, length = 255)
     private String tokenHash;
