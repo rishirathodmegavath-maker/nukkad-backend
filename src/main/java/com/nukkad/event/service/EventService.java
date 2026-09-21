@@ -6,8 +6,10 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.event.dto.CreateEventRequest;
+import com.nukkad.event.dto.EventCoverImageDto;
 import com.nukkad.event.dto.EventDto;
 import com.nukkad.event.dto.EventStartupSummaryDto;
 import com.nukkad.event.dto.StartupEventSummaryDto;
@@ -38,6 +40,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -62,6 +65,7 @@ public class EventService {
     private final UserService userService;
     private final EventMapper eventMapper;
     private final NotificationService notificationService;
+    private final FileStorageService fileStorageService;
 
     public EventService(EventRepository eventRepository,
                          EventAttendeeRepository attendeeRepository,
@@ -72,7 +76,8 @@ public class EventService {
                          UserRepository userRepository,
                          UserService userService,
                          EventMapper eventMapper,
-                         NotificationService notificationService) {
+                         NotificationService notificationService,
+                         FileStorageService fileStorageService) {
         this.eventRepository = eventRepository;
         this.attendeeRepository = attendeeRepository;
         this.eventStartupRepository = eventStartupRepository;
@@ -83,6 +88,7 @@ public class EventService {
         this.userService = userService;
         this.eventMapper = eventMapper;
         this.notificationService = notificationService;
+        this.fileStorageService = fileStorageService;
     }
 
     public Event getEntityOrThrow(String id) {
@@ -112,6 +118,21 @@ public class EventService {
         return attendeeRepository.findByEventIdOrderByRegisteredAtAsc(eventId).stream()
                 .map(a -> userService.getUser(a.getUserId(), viewerId))
                 .toList();
+    }
+
+    /** Largest cover image accepted. Phone photos are usually 2-6 MB; anything bigger only slows the event page down. */
+    static final long MAX_COVER_IMAGE_BYTES = 8L * 1024 * 1024;
+
+    /**
+     * Stores an image chosen as an event's cover and returns its public URL. The caller then sends that URL as
+     * the event's {@code coverImageUrl} when creating or saving the event, so this works before the event exists.
+     * Image type and emptiness are checked by {@link FileStorageService#storeImage}.
+     */
+    public EventCoverImageDto uploadCoverImage(MultipartFile file) {
+        if (file != null && file.getSize() > MAX_COVER_IMAGE_BYTES) {
+            throw new BadRequestException("Cover image is too large. The maximum size is 8 MB.");
+        }
+        return new EventCoverImageDto(fileStorageService.storeImage(file, "event-covers"));
     }
 
     @Transactional
