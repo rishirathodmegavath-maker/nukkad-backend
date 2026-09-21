@@ -7,10 +7,14 @@ package com.nukkad.resource.entity;
  */
 public enum ResourceCategory {
     FREE_LEARNING("free-learning"),
+    /** Uploaded video files and YouTube links. */
+    VIDEOS("videos"),
+    /** Shown to members as "Pitch Deck". The slug stays "templates" so rows already filed here keep working. */
     TEMPLATES("templates"),
     /** Shown to members as "Startup Essays". The slug stays "playbooks" so rows already filed here keep working. */
     PLAYBOOKS("playbooks"),
-    STARTUP_BLOCKS("startup-blocks"),
+    /** Shown to members as "Startup Vlogs". The slug stays "startup-blocks" (its first name) so rows already filed here keep working. */
+    STARTUP_VLOGS("startup-blocks"),
     PROGRAMS("programs"),
     TOOLS("tools"),
     GOVERNMENT("government");

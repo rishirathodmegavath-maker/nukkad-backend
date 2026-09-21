@@ -16,19 +16,22 @@ class ResourceCategoryTest {
 
     @Test
     void slugLookupIgnoresCase() {
-        assertThat(ResourceCategory.fromSlug("Startup-Blocks")).isSameAs(ResourceCategory.STARTUP_BLOCKS);
+        assertThat(ResourceCategory.fromSlug("Startup-Blocks")).isSameAs(ResourceCategory.STARTUP_VLOGS);
     }
 
     @Test
-    void startupEssaysKeepTheOriginalPlaybooksSlugSoExistingRowsStillLoad() {
-        // "Startup Essays" is only the display label in the front end; changing the stored slug would make
-        // every row already filed on this shelf fail to load.
+    void renamedShelvesKeepTheirOriginalSlugsSoExistingRowsStillLoad() {
+        // "Startup Essays", "Pitch Deck" and "Startup Vlogs" are only display labels in the front end;
+        // changing a stored slug would make every row already filed on that shelf fail to load.
         assertThat(ResourceCategory.fromSlug("playbooks")).isSameAs(ResourceCategory.PLAYBOOKS);
+        assertThat(ResourceCategory.fromSlug("templates")).isSameAs(ResourceCategory.TEMPLATES);
+        assertThat(ResourceCategory.fromSlug("startup-blocks")).isSameAs(ResourceCategory.STARTUP_VLOGS);
     }
 
     @Test
     void newShelfUsesAStableSlugThatFitsTheColumn() {
-        assertThat(ResourceCategory.STARTUP_BLOCKS.getSlug()).isEqualTo("startup-blocks");
+        assertThat(ResourceCategory.VIDEOS.getSlug()).isEqualTo("videos");
+        assertThat(ResourceCategory.fromSlug("videos")).isSameAs(ResourceCategory.VIDEOS);
         // resources.category is VARCHAR(30) (V82).
         for (ResourceCategory category : ResourceCategory.values()) {
             assertThat(category.getSlug().length()).isLessThanOrEqualTo(30);
