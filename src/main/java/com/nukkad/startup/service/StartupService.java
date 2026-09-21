@@ -40,6 +40,8 @@ import com.nukkad.startup.repository.StartupSpecifications;
 import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import com.nukkad.startup.repository.StartupUpdateRepository;
 import com.nukkad.user.dto.UserDto;
+import com.nukkad.user.entity.AccountStatus;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.service.UserService;
 import org.springframework.data.domain.Page;
@@ -250,6 +252,37 @@ public class StartupService {
                 .build());
 
         return startupMapper.toDto(startup, false, true, true);
+    }
+
+    /**
+     * An admin adding a startup. With {@code founderEmail}, that member becomes the founder (and is told, since they can
+     * now manage it); without it the admin's own account owns the startup. Like every startup it is live straight away.
+     */
+    @Transactional
+    public StartupDto createStartupAsAdmin(String adminId, CreateStartupRequest request, String founderEmail, String ip) {
+        String founderId = adminId;
+        if (founderEmail != null && !founderEmail.isBlank()) {
+            User founder = userRepository.findByEmail(founderEmail.toLowerCase().trim())
+                    .orElseThrow(() -> new BadRequestException("No member has that email address"));
+            if (founder.getStatus() != AccountStatus.ACTIVE) {
+                throw new BadRequestException("That member's account is not active");
+            }
+            founderId = founder.getId();
+        }
+
+        StartupDto created = createStartup(founderId, request);
+
+        java.util.Map<String, Object> details = new java.util.HashMap<>();
+        details.put("entityType", "Startup");
+        details.put("name", created.name());
+        details.put("founderId", founderId);
+        auditService.log(adminId, AuditAction.ADMIN_STARTUP_CREATED, "Startup", created.id(), ip, details);
+
+        if (!founderId.equals(adminId)) {
+            notificationService.notify(founderId, NotificationType.startup, "A startup was added for you",
+                    created.name() + " was added to BuildAdda for you. Open it to add more details.", created.id(), adminId);
+        }
+        return created;
     }
 
     @Transactional
