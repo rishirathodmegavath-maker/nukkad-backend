@@ -1,30 +1,35 @@
 package com.nukkad.admin.controller;
 
+import com.nukkad.admin.dto.AdminCreateStartupRequest;
 import com.nukkad.admin.dto.SetContentRemovedRequest;
 import com.nukkad.admin.util.AdminPaging;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.security.AuthenticatedUser;
+import com.nukkad.startup.dto.CreateStartupRequest;
 import com.nukkad.startup.dto.StartupDto;
 import com.nukkad.startup.service.StartupService;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Reuses StartupService exactly as the public /api/startups endpoints do. The admin is passed as
  *  an authenticated viewer, so the existing visibility rule already grants them the same PUBLIC +
- *  NUKKAD_MEMBERS visibility every signed-in user already has. Adds one moderation action: an
- *  admin can hide a startup from public discovery (and its public detail page) without deleting
- *  it, or reverse that. */
+ *  NUKKAD_MEMBERS visibility every signed-in user already has. Adds two actions: an admin can add a
+ *  startup, and can hide a startup from public discovery (and its public detail page) without
+ *  deleting it, or reverse that. */
 @RestController
 @RequestMapping("/api/admin/startups")
 @SecurityRequirement(name = "bearerAuth")
@@ -56,6 +61,17 @@ public class AdminStartupController {
         return ApiResponse.ok(startupService.getStartupForAdmin(id));
     }
 
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<StartupDto> create(@AuthenticationPrincipal AuthenticatedUser principal,
+                                           @Valid @RequestBody AdminCreateStartupRequest request,
+                                           HttpServletRequest httpRequest) {
+        CreateStartupRequest startup = new CreateStartupRequest(request.name(), null, request.tagline(), request.sector(),
+                request.problem(), request.solution(), request.stage(), request.needs(), blankToNull(request.chapterId()));
+        return ApiResponse.ok(startupService.createStartupAsAdmin(
+                principal.id(), startup, request.founderEmail(), httpRequest.getRemoteAddr()));
+    }
+
     @PatchMapping("/{id}/removed")
     public ApiResponse<StartupDto> setRemoved(@AuthenticationPrincipal AuthenticatedUser principal,
                                                @PathVariable String id,
@@ -63,6 +79,10 @@ public class AdminStartupController {
                                                HttpServletRequest httpRequest) {
         return ApiResponse.ok(startupService.setRemovedByAdmin(
                 principal.id(), id, request.removed(), request.reason(), httpRequest.getRemoteAddr()));
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     private ModerationStatus parseModerationStatus(String status) {

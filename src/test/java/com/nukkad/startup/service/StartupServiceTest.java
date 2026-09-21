@@ -38,6 +38,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -206,6 +207,74 @@ class StartupServiceTest {
         verify(teamMemberRepository).save(member.capture());
         assertThat(member.getValue().getUserId()).isEqualTo("creator1");
         assertThat(member.getValue().getTeamRole()).isEqualTo(StartupTeamMember.TeamRole.FOUNDER);
+    }
+
+    // ---- admin adds a startup ----
+
+    private com.nukkad.startup.dto.CreateStartupRequest newStartupRequest() {
+        return new com.nukkad.startup.dto.CreateStartupRequest("Rocket Labs", null, null, null, null, null, null, null, null);
+    }
+
+    private void saveWithId() {
+        when(startupRepository.saveAndFlush(any(Startup.class))).thenAnswer(inv -> {
+            Startup saved = inv.getArgument(0);
+            saved.setId("s-new");
+            return saved;
+        });
+    }
+
+    @Test
+    void anAdminWithNoFounderEmailOwnsTheStartupThemselves() {
+        saveWithId();
+
+        StartupDto dto = service().createStartupAsAdmin("admin1", newStartupRequest(), "  ", "1.2.3.4");
+
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        org.mockito.ArgumentCaptor<StartupTeamMember> member = org.mockito.ArgumentCaptor.forClass(StartupTeamMember.class);
+        verify(teamMemberRepository).save(member.capture());
+        assertThat(member.getValue().getUserId()).isEqualTo("admin1");
+        assertThat(member.getValue().getTeamRole()).isEqualTo(StartupTeamMember.TeamRole.FOUNDER);
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_STARTUP_CREATED),
+                eq("Startup"), eq("s-new"), eq("1.2.3.4"), any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anAdminCanMakeAMemberTheFounderByEmailAndTheMemberIsTold() {
+        saveWithId();
+        when(userRepository.findByEmail("founder@example.com"))
+                .thenReturn(Optional.of(User.builder().id("founder1").email("founder@example.com").build()));
+
+        service().createStartupAsAdmin("admin1", newStartupRequest(), "  Founder@Example.com ", "1.2.3.4");
+
+        org.mockito.ArgumentCaptor<StartupTeamMember> member = org.mockito.ArgumentCaptor.forClass(StartupTeamMember.class);
+        verify(teamMemberRepository).save(member.capture());
+        assertThat(member.getValue().getUserId()).isEqualTo("founder1");
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_STARTUP_CREATED),
+                eq("Startup"), eq("s-new"), eq("1.2.3.4"), any());
+        verify(notificationService).notify(eq("founder1"), any(), anyString(), anyString(), eq("s-new"), eq("admin1"));
+    }
+
+    @Test
+    void anUnknownFounderEmailIsRejectedAndNothingIsCreated() {
+        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().createStartupAsAdmin("admin1", newStartupRequest(), "nobody@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(startupRepository, never()).saveAndFlush(any(Startup.class));
+        verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aSuspendedMemberCannotBeMadeFounder() {
+        when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
+                User.builder().id("sus1").email("sus@example.com").status(com.nukkad.user.entity.AccountStatus.SUSPENDED).build()));
+
+        assertThatThrownBy(() -> service().createStartupAsAdmin("admin1", newStartupRequest(), "sus@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(startupRepository, never()).saveAndFlush(any(Startup.class));
     }
 
     @Test
