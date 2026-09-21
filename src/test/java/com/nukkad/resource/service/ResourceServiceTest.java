@@ -9,6 +9,7 @@ import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.resource.dto.ResourceDto;
 import com.nukkad.resource.dto.UpdateResourceRequest;
 import com.nukkad.resource.entity.Resource;
+import com.nukkad.resource.entity.ResourceCategory;
 import com.nukkad.resource.entity.ResourceSave;
 import com.nukkad.resource.entity.ResourceType;
 import com.nukkad.resource.mapper.ResourceMapper;
@@ -16,13 +17,20 @@ import com.nukkad.resource.repository.ResourceRepository;
 import com.nukkad.resource.repository.ResourceSaveRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
@@ -33,6 +41,7 @@ import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -510,5 +519,144 @@ class ResourceServiceTest {
         assertThat(secondToggle).isFalse();
         verify(resourceSaveRepository).save(any(ResourceSave.class));
         verify(resourceSaveRepository).delete(any(ResourceSave.class));
+    }
+
+    // ---- front-page mix -----------------------------------------------------------------------------
+
+    private static Resource item(String id, ResourceCategory category, ResourceType type, long ageMinutes, boolean featured) {
+        return Resource.builder().id(id).title("Title " + id).description("d").type(type).category(category)
+                .url("https://example.com/" + id).uploaderUserId("admin1").featured(featured)
+                .createdAt(Instant.parse("2026-09-20T12:00:00Z").minusSeconds(ageMinutes * 60))
+                .tags(new java.util.HashSet<>()).build();
+    }
+
+    private static Object[] group(ResourceCategory category, ResourceType type) {
+        return new Object[] {category, type};
+    }
+
+    /** A list of {category, type} rows. (List.of would spread a single array into its elements.) */
+    private static List<Object[]> groups(Object[]... rows) {
+        return java.util.Arrays.asList(rows);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void lanesReturnInOrder(Page<Resource>... pages) {
+        var stubbing = when(resourceRepository.findAll(any(Specification.class), any(Pageable.class)));
+        var chain = stubbing.thenReturn(pages[0]);
+        for (int i = 1; i < pages.length; i++) chain = chain.thenReturn(pages[i]);
+    }
+
+    private static Page<Resource> page(Resource... items) {
+        return new PageImpl<>(List.of(items));
+    }
+
+    private List<String> ids(List<ResourceDto> dtos) {
+        return dtos.stream().map(ResourceDto::id).toList();
+    }
+
+    @Test
+    void theMixTakesOneFromEachShelfAndTypeBeforeGoingRoundAgain() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(
+                group(ResourceCategory.PLAYBOOKS, ResourceType.LINK),
+                group(ResourceCategory.FREE_LEARNING, ResourceType.VIDEO),
+                group(ResourceCategory.TEMPLATES, ResourceType.DOCUMENT)));
+        lanesReturnInOrder(
+                page(item("e1", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 1, false),
+                        item("e2", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 2, false),
+                        item("e3", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 3, false)),
+                page(item("v1", ResourceCategory.FREE_LEARNING, ResourceType.VIDEO, 10, false)),
+                page(item("d1", ResourceCategory.TEMPLATES, ResourceType.DOCUMENT, 20, false)));
+
+        List<ResourceDto> mix = service().mix(4, false, "u1");
+
+        // Newest lane leads each round: essay, video, document, then the second essay.
+        assertThat(ids(mix)).containsExactly("e1", "v1", "d1", "e2");
+    }
+
+    @Test
+    void aBulkUploadOfOneKindCannotCrowdOutEverythingElse() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(
+                group(ResourceCategory.PLAYBOOKS, ResourceType.LINK),
+                group(ResourceCategory.FREE_LEARNING, ResourceType.VIDEO)));
+        lanesReturnInOrder(
+                page(item("e1", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 1, false),
+                        item("e2", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 2, false),
+                        item("e3", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 3, false),
+                        item("e4", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 4, false)),
+                page(item("v1", ResourceCategory.FREE_LEARNING, ResourceType.VIDEO, 500, false)));
+
+        // Plain newest-first would be e1, e2, e3: three essays and no video.
+        assertThat(ids(service().mix(3, false, "u1"))).containsExactly("e1", "v1", "e2");
+    }
+
+    @Test
+    void whenAskedToPreferFeaturedTheFeaturedGroupLeadsAndTheQueryOrdersFeaturedFirst() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(
+                group(ResourceCategory.PLAYBOOKS, ResourceType.LINK),
+                group(ResourceCategory.TOOLS, ResourceType.TOOL)));
+        lanesReturnInOrder(
+                page(item("e1", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 1, false)),
+                page(item("t1", ResourceCategory.TOOLS, ResourceType.TOOL, 900, true)));
+
+        assertThat(ids(service().mix(2, true, "u1"))).containsExactly("t1", "e1");
+
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(resourceRepository, times(2)).findAll(any(Specification.class), pageable.capture());
+        assertThat(pageable.getValue().getSort().getOrderFor("featured")).isNotNull();
+        assertThat(pageable.getValue().getSort().getOrderFor("featured").isDescending()).isTrue();
+    }
+
+    @Test
+    void withoutThePreferenceTheQueryIsPlainlyNewestFirst() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(group(ResourceCategory.TOOLS, ResourceType.TOOL)));
+        lanesReturnInOrder(page(item("t1", ResourceCategory.TOOLS, ResourceType.TOOL, 5, false)));
+
+        service().mix(3, false, "u1");
+
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(resourceRepository).findAll(any(Specification.class), pageable.capture());
+        assertThat(pageable.getValue().getSort().getOrderFor("featured")).isNull();
+        assertThat(pageable.getValue().getSort().getOrderFor("createdAt").isDescending()).isTrue();
+    }
+
+    @Test
+    void aResourceThatSitsOnNoShelfStillGetsItsOwnLane() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(
+                group(ResourceCategory.PLAYBOOKS, ResourceType.LINK),
+                group(null, ResourceType.DOCUMENT)));
+        lanesReturnInOrder(
+                page(item("e1", ResourceCategory.PLAYBOOKS, ResourceType.LINK, 1, false)),
+                page(item("n1", null, ResourceType.DOCUMENT, 2, false)));
+
+        assertThat(ids(service().mix(2, false, "u1"))).containsExactly("e1", "n1");
+    }
+
+    @Test
+    void theMixNeverReturnsMoreThanWasAskedForOrMoreThanExists() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(group(ResourceCategory.TOOLS, ResourceType.TOOL)));
+        lanesReturnInOrder(page(item("t1", ResourceCategory.TOOLS, ResourceType.TOOL, 5, false),
+                item("t2", ResourceCategory.TOOLS, ResourceType.TOOL, 6, false)));
+
+        assertThat(service().mix(10, false, "u1")).hasSize(2);
+    }
+
+    @Test
+    void anEmptyLibraryGivesAnEmptyMix() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups());
+
+        assertThat(service().mix(6, true, "u1")).isEmpty();
+    }
+
+    @Test
+    void theRequestedSizeIsClampedToASaneRange() {
+        when(resourceRepository.findShelfAndTypeGroups()).thenReturn(groups(group(ResourceCategory.TOOLS, ResourceType.TOOL)));
+        lanesReturnInOrder(page(item("t1", ResourceCategory.TOOLS, ResourceType.TOOL, 5, false)));
+
+        service().mix(1000, false, "u1");
+        service().mix(-5, false, "u1");
+
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(resourceRepository, times(2)).findAll(any(Specification.class), pageable.capture());
+        assertThat(pageable.getAllValues()).extracting(Pageable::getPageSize).containsExactly(24, 1);
     }
 }

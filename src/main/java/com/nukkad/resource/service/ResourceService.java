@@ -28,6 +28,8 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -92,6 +94,52 @@ public class ResourceService {
         // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         return resourceRepository.findAll(spec, pageable).map(r -> toDto(r, viewerId));
+    }
+
+    /** The most a front-page mix can ask for. */
+    private static final int MAX_MIX_SIZE = 24;
+
+    /**
+     * A varied selection for the library's front page. Just taking the newest resources fills the page with
+     * whatever was uploaded last (a bulk import of essays buries everything else), so this takes one from every
+     * shelf-and-type combination in turn (a video, an essay, a template, a tool, ...) and then goes round again.
+     * Inside a combination the order is newest first, or featured first when {@code preferFeatured}.
+     */
+    @Transactional(readOnly = true)
+    public List<ResourceDto> mix(int size, boolean preferFeatured, String viewerId) {
+        int wanted = Math.max(1, Math.min(size, MAX_MIX_SIZE));
+        // createdAt only has second precision, so break ties on id (same reason as listResources).
+        Sort sort = preferFeatured
+                ? Sort.by(Sort.Order.desc("featured"), Sort.Order.desc("createdAt"), Sort.Order.desc("id"))
+                : Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
+
+        List<List<Resource>> lanes = new ArrayList<>();
+        for (Object[] group : resourceRepository.findShelfAndTypeGroups()) {
+            Page<Resource> best = resourceRepository.findAll(
+                    ResourceSpecifications.shelfAndType((ResourceCategory) group[0], (ResourceType) group[1]),
+                    PageRequest.of(0, wanted, sort));
+            if (best.hasContent()) lanes.add(best.getContent());
+        }
+
+        // The combination whose best resource is most preferred (featured first if asked, then newest) leads every round.
+        Comparator<Resource> mostPreferred = Comparator
+                .comparing((Resource r) -> preferFeatured && r.isFeatured() ? 0 : 1)
+                .thenComparing(Resource::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(Resource::getId, Comparator.reverseOrder());
+        lanes.sort((a, b) -> mostPreferred.compare(a.get(0), b.get(0)));
+
+        List<Resource> picked = new ArrayList<>();
+        for (int round = 0; picked.size() < wanted; round++) {
+            boolean tookAny = false;
+            for (List<Resource> lane : lanes) {
+                if (round < lane.size() && picked.size() < wanted) {
+                    picked.add(lane.get(round));
+                    tookAny = true;
+                }
+            }
+            if (!tookAny) break;
+        }
+        return picked.stream().map(r -> toDto(r, viewerId)).toList();
     }
 
     @Transactional(readOnly = true)
