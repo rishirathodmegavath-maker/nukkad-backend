@@ -12,7 +12,9 @@ import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.entity.PostComment;
 import com.nukkad.feed.entity.PostLike;
 import com.nukkad.feed.entity.PostSave;
+import com.nukkad.feed.entity.PostHashtag;
 import com.nukkad.feed.repository.PostCommentRepository;
+import com.nukkad.feed.repository.PostHashtagRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
@@ -52,10 +54,11 @@ class FeedServiceTest {
     @Mock private FileStorageService fileStorageService;
     @Mock private AuditService auditService;
     @Mock private ConnectionRepository connectionRepository;
+    @Mock private PostHashtagRepository postHashtagRepository;
 
     private FeedService service() {
         return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
-                fileStorageService, auditService, connectionRepository);
+                fileStorageService, auditService, connectionRepository, postHashtagRepository);
     }
 
     private Post post(String id) {
@@ -368,12 +371,12 @@ class FeedServiceTest {
 
     @Test
     void publicListingAsksForOnlyWhatTheViewerMayRead() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", null, null, 0, 20);
+        service().list("user-1", null, null, null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any());
         // The admin listings ignore visibility and must never be what a member's feed uses.
         verify(postRepository, never()).findAllByOrderByCreatedAtDesc(any());
         verify(postRepository, never()).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
@@ -381,37 +384,37 @@ class FeedServiceTest {
 
     @Test
     void listingByTypePassesTheTypeToTheVisibleQuery() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", null, "discussion", 0, 20);
+        service().list("user-1", null, "discussion", null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), isNull(), any());
     }
 
     @Test
     void listingByAuthorAndTypeCombinesBothFilters() {
-        when(postRepository.findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", "a1", "question", 0, 20);
+        service().list("user-1", "a1", "question", null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), isNull(), any());
     }
 
     @Test
     void aBlankAuthorFilterMeansEveryone() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", "  ", "", 0, 20);
+        service().list("user-1", "  ", "", null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any());
     }
 
     @Test
     void listingWithAnUnknownTypeIsRejected() {
-        assertThatThrownBy(() -> service().list("user-1", null, "gossip", 0, 20)).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> service().list("user-1", null, "gossip", null, 0, 20)).isInstanceOf(BadRequestException.class);
     }
 
     @Test
@@ -599,5 +602,112 @@ class FeedServiceTest {
 
         assertThat(dto.content()).isEmpty();
         assertThat(dto.linkUrl()).isEqualTo("https://example.com");
+    }
+
+    // ---- hashtags
+
+    @SuppressWarnings("unchecked")
+    private List<PostHashtag> savedHashtags() {
+        ArgumentCaptor<Iterable<PostHashtag>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(postHashtagRepository).saveAll(captor.capture());
+        List<PostHashtag> rows = new java.util.ArrayList<>();
+        captor.getValue().forEach(rows::add);
+        return rows;
+    }
+
+    @Test
+    void theHashtagsInANewPostAreRecordedLowercaseOnce() {
+        when(postRepository.save(any())).thenAnswer(inv -> {
+            Post p = inv.getArgument(0);
+            p.setId("new-post");
+            return p;
+        });
+
+        service().create("author-1", request("Shipping #BuildInPublic today, #AI and #ai again. Issue #12 is not a tag", "text", null, null));
+
+        List<PostHashtag> rows = savedHashtags();
+        assertThat(rows).extracting(PostHashtag::getTag).containsExactly("buildinpublic", "ai");
+        assertThat(rows).extracting(PostHashtag::getPostId).containsOnly("new-post");
+    }
+
+    @Test
+    void aPostWithoutHashtagsRecordsNone() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().create("author-1", request("no tags here", "text", null, null));
+
+        verify(postHashtagRepository, never()).saveAll(any());
+    }
+
+    @Test
+    void editingAPostRewritesItsHashtags() {
+        Post post = Post.builder().id("post-1").authorId("author-1").content("old #oldtag").build();
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(postLikeRepository.findByPostIdAndUserId(any(), any())).thenReturn(Optional.empty());
+        when(postSaveRepository.findByPostIdAndUserId(any(), any())).thenReturn(Optional.empty());
+
+        service().update("author-1", "post-1", new com.nukkad.feed.dto.UpdatePostRequest("new #NewTag"));
+
+        verify(postHashtagRepository).deleteByPostId("post-1");
+        assertThat(savedHashtags()).extracting(PostHashtag::getTag).containsExactly("newtag");
+    }
+
+    @Test
+    void listingByATagAsksForTheNormalisedTag() {
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), eq("ai"), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", null, null, "#AI", 0, 20);
+
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), eq("ai"), any());
+    }
+
+    @Test
+    void aTagThatCanNeverExistMatchesNothingInsteadOfMeaningNoFilter() {
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), eq("no such tag"), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        var page = service().list("user-1", null, null, "not a tag!", 0, 20);
+
+        assertThat(page.getContent()).isEmpty();
+        verify(postRepository, never()).findVisibleTo(any(), any(), any(), isNull(), any());
+    }
+
+    private PostHashtagRepository.TagCount tagCount(String tag, long count) {
+        return new PostHashtagRepository.TagCount() {
+            public String getTag() { return tag; }
+            public long getPostCount() { return count; }
+        };
+    }
+
+    @Test
+    void trendingTopicsAreTheRepositorysCountsForTheViewerOverTheRequestedWindow() {
+        when(postHashtagRepository.findTrending(eq("user-1"), any(), any()))
+                .thenReturn(List.of(tagCount("buildinpublic", 12), tagCount("ai", 7)));
+
+        var topics = service().trendingTopics("user-1", 14, 5);
+
+        assertThat(topics).extracting("tag").containsExactly("buildinpublic", "ai");
+        assertThat(topics).extracting("postCount").containsExactly(12L, 7L);
+        ArgumentCaptor<Instant> since = ArgumentCaptor.forClass(Instant.class);
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(postHashtagRepository).findTrending(eq("user-1"), since.capture(), pageable.capture());
+        assertThat(since.getValue()).isBetween(Instant.now().minusSeconds(14L * 86400 + 60), Instant.now().minusSeconds(14L * 86400 - 60));
+        assertThat(pageable.getValue().getPageSize()).isEqualTo(5);
+    }
+
+    @Test
+    void trendingTopicsClampTheWindowAndTheCount() {
+        when(postHashtagRepository.findTrending(any(), any(), any())).thenReturn(List.of());
+
+        service().trendingTopics("user-1", 100000, 500);
+        service().trendingTopics("user-1", -3, 0);
+
+        ArgumentCaptor<Instant> since = ArgumentCaptor.forClass(Instant.class);
+        ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(postHashtagRepository, org.mockito.Mockito.times(2)).findTrending(any(), since.capture(), pageable.capture());
+        assertThat(pageable.getAllValues()).extracting(Pageable::getPageSize).containsExactly(20, 1);
+        assertThat(since.getAllValues().get(0)).isAfter(Instant.now().minusSeconds(91L * 86400));
+        assertThat(since.getAllValues().get(1)).isBefore(Instant.now().minusSeconds(86400 - 60));
     }
 }
