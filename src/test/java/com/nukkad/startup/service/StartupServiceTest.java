@@ -2,7 +2,6 @@ package com.nukkad.startup.service;
 
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
-import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
@@ -34,13 +33,11 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 
-import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -180,62 +177,53 @@ class StartupServiceTest {
                 eq("Startup"), eq("s1"), eq("9.9.9.9"), any());
     }
 
-    // ---- pre-publish moderation ----
+    // ---- moderation status ----
+    // New startups are live at once (no review). REJECTED can still exist on startups an admin rejected earlier, and
+    // stays visible only to the startup's own managers.
 
-    private Startup pendingStartup() {
+    private Startup rejectedStartup() {
         Startup startup = startup("s1", StartupVisibility.PUBLIC, false, true);
-        startup.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.PENDING);
+        startup.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.REJECTED);
         return startup;
     }
 
     @Test
-    void publicGetterHidesAPendingStartupFromANonFounder() {
-        when(startupRepository.findById("s1")).thenReturn(Optional.of(pendingStartup()));
+    void aNewStartupIsApprovedStraightAwayAndItsCreatorBecomesFounder() {
+        when(startupRepository.saveAndFlush(any(Startup.class))).thenAnswer(inv -> {
+            Startup saved = inv.getArgument(0);
+            saved.setId("s-new");
+            return saved;
+        });
+
+        StartupDto dto = service().createStartup("creator1",
+                new com.nukkad.startup.dto.CreateStartupRequest("Rocket Labs", null, null, null, null, null, null, null, null));
+
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        org.mockito.ArgumentCaptor<Startup> saved = org.mockito.ArgumentCaptor.forClass(Startup.class);
+        verify(startupRepository).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getModerationStatus()).isEqualTo(com.nukkad.common.moderation.ModerationStatus.APPROVED);
+        org.mockito.ArgumentCaptor<StartupTeamMember> member = org.mockito.ArgumentCaptor.forClass(StartupTeamMember.class);
+        verify(teamMemberRepository).save(member.capture());
+        assertThat(member.getValue().getUserId()).isEqualTo("creator1");
+        assertThat(member.getValue().getTeamRole()).isEqualTo(StartupTeamMember.TeamRole.FOUNDER);
+    }
+
+    @Test
+    void publicGetterHidesARejectedStartupFromANonFounder() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(rejectedStartup()));
         when(teamMemberRepository.findByStartupIdAndUserId("s1", "randomUser")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service().getStartup("s1", "randomUser")).isInstanceOf(ResourceNotFoundException.class);
     }
 
     @Test
-    void publicGetterStillShowsAPendingStartupToItsFounder() {
-        when(startupRepository.findById("s1")).thenReturn(Optional.of(pendingStartup()));
+    void publicGetterStillShowsARejectedStartupToItsFounder() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(rejectedStartup()));
         when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.of(founder("s1", "founder1")));
 
         StartupDto dto = service().getStartup("s1", "founder1");
 
-        assertThat(dto.moderationStatus()).isEqualTo("PENDING");
-    }
-
-    @Test
-    void approvingAPendingStartupLogsAuditAndNotifiesTheFounder() {
-        Startup startup = pendingStartup();
-        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup));
-        when(startupRepository.saveAndFlush(any(Startup.class))).thenAnswer(inv -> inv.getArgument(0));
-        when(teamMemberRepository.findByStartupIdAndTeamRoleIn(eq("s1"), any()))
-                .thenReturn(List.of(founder("s1", "founder1")));
-
-        StartupDto dto = service().reviewModeration("admin1", "s1", true, null, "1.2.3.4");
-
-        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
-        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_CONTENT_APPROVED),
-                eq("Startup"), eq("s1"), eq("1.2.3.4"), any());
-        verify(notificationService).notify(eq("founder1"), any(), anyString(), anyString(), eq("s1"), eq("admin1"));
-    }
-
-    @Test
-    void rejectingAPendingStartupRequiresAReason() {
-        when(startupRepository.findById("s1")).thenReturn(Optional.of(pendingStartup()));
-
-        assertThatThrownBy(() -> service().reviewModeration("admin1", "s1", false, null, "1.2.3.4"))
-                .isInstanceOf(BadRequestException.class);
-    }
-
-    @Test
-    void anAlreadyReviewedStartupCannotBeReviewedAgain() {
-        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
-
-        assertThatThrownBy(() -> service().reviewModeration("admin1", "s1", true, null, "1.2.3.4"))
-                .isInstanceOf(ConflictException.class);
+        assertThat(dto.moderationStatus()).isEqualTo("REJECTED");
     }
 
     // ---- fundraising status suppression ----

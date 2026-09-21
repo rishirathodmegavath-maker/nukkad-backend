@@ -131,7 +131,7 @@ public class Startup {
     @Enumerated(EnumType.STRING)
     @Column(name = "moderation_status", nullable = false, length = 20)
     @Builder.Default
-    private ModerationStatus moderationStatus = ModerationStatus.PENDING;
+    private ModerationStatus moderationStatus = ModerationStatus.APPROVED;
 
     @Column(name = "rejection_reason", length = 500)
     private String rejectionReason;

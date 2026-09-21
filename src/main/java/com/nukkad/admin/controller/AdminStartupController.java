@@ -1,6 +1,5 @@
 package com.nukkad.admin.controller;
 
-import com.nukkad.admin.dto.ReviewContentRequest;
 import com.nukkad.admin.dto.SetContentRemovedRequest;
 import com.nukkad.admin.util.AdminPaging;
 import com.nukkad.common.moderation.ModerationStatus;
@@ -64,15 +63,6 @@ public class AdminStartupController {
                                                HttpServletRequest httpRequest) {
         return ApiResponse.ok(startupService.setRemovedByAdmin(
                 principal.id(), id, request.removed(), request.reason(), httpRequest.getRemoteAddr()));
-    }
-
-    @PatchMapping("/{id}/moderation")
-    public ApiResponse<StartupDto> review(@AuthenticationPrincipal AuthenticatedUser principal,
-                                           @PathVariable String id,
-                                           @Valid @RequestBody ReviewContentRequest request,
-                                           HttpServletRequest httpRequest) {
-        return ApiResponse.ok(startupService.reviewModeration(
-                principal.id(), id, request.approved(), request.reason(), httpRequest.getRemoteAddr()));
     }
 
     private ModerationStatus parseModerationStatus(String status) {

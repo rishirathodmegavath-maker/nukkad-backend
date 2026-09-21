@@ -65,7 +65,6 @@ public class AdminDashboardService {
                 opportunityRepository.countByClosedFalse(),
                 reportService.countByStatus(ReportStatus.OPEN),
                 ideaRepository.countByModerationStatus(ModerationStatus.PENDING)
-                        + startupRepository.countByModerationStatus(ModerationStatus.PENDING)
                         + opportunityRepository.countByModerationStatus(ModerationStatus.PENDING)
                         + grantRepository.countByModerationStatus(ModerationStatus.PENDING),
                 withdrawalRequestRepository.countByStatus(WithdrawalStatus.PENDING),
