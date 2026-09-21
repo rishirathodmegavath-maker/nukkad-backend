@@ -120,17 +120,19 @@ public class FeedController {
     }
 
     @GetMapping("/{id}/comments")
-    public ApiResponse<PageResponse<CommentDto>> listComments(@PathVariable String id,
+    public ApiResponse<PageResponse<CommentDto>> listComments(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                                @PathVariable String id,
                                                                 @RequestParam(defaultValue = "0") int page,
                                                                 @RequestParam(defaultValue = "50") int size) {
-        return ApiResponse.ok(PageResponse.from(feedService.listComments(id, page, size)));
+        return ApiResponse.ok(PageResponse.from(feedService.listComments(principal.id(), id, page, size)));
     }
 
     @GetMapping("/{id}/comments/{commentId}/replies")
-    public ApiResponse<PageResponse<CommentDto>> listReplies(@PathVariable String id, @PathVariable String commentId,
+    public ApiResponse<PageResponse<CommentDto>> listReplies(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                               @PathVariable String id, @PathVariable String commentId,
                                                                @RequestParam(defaultValue = "0") int page,
                                                                @RequestParam(defaultValue = "50") int size) {
-        return ApiResponse.ok(PageResponse.from(feedService.listReplies(id, commentId, page, size)));
+        return ApiResponse.ok(PageResponse.from(feedService.listReplies(principal.id(), id, commentId, page, size)));
     }
 
     @PostMapping("/{id}/comments")
@@ -148,10 +150,11 @@ public class FeedController {
     }
 
     @GetMapping("/{id}/likes")
-    public ApiResponse<PageResponse<PostLikeDto>> listLikers(@PathVariable String id,
+    public ApiResponse<PageResponse<PostLikeDto>> listLikers(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                               @PathVariable String id,
                                                                @RequestParam(defaultValue = "0") int page,
                                                                @RequestParam(defaultValue = "50") int size) {
-        return ApiResponse.ok(PageResponse.from(feedService.listLikers(id, page, size)));
+        return ApiResponse.ok(PageResponse.from(feedService.listLikers(principal.id(), id, page, size)));
     }
 
     @PostMapping("/attachments")

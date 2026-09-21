@@ -28,7 +28,8 @@ import java.time.Instant;
 @Builder
 public class PostAttachment {
 
-    public enum Kind { IMAGE, VIDEO, PDF }
+    /** FILE is a Word / PowerPoint / Excel document (PDFs keep their own kind). */
+    public enum Kind { IMAGE, VIDEO, PDF, FILE }
 
     @Id
     @UuidGenerator

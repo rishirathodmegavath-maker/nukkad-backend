@@ -9,5 +9,6 @@ public record PostDto(String id, String authorId, String type, String content, S
                        int likesCount, int commentsCount, boolean isLiked, boolean isSaved,
                        boolean hideLikeCount, boolean commentsDisabled, Instant createdAt,
                        List<AttachmentDto> attachments, Instant savedAt,
-                       boolean removedByAdmin, String removalReason) {
+                       boolean removedByAdmin, String removalReason,
+                       String visibility, String linkUrl) {
 }

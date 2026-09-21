@@ -16,6 +16,7 @@ import com.nukkad.feed.repository.PostCommentRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
+import com.nukkad.user.repository.ConnectionRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -50,10 +51,11 @@ class FeedServiceTest {
     @Mock private PostSaveRepository postSaveRepository;
     @Mock private FileStorageService fileStorageService;
     @Mock private AuditService auditService;
+    @Mock private ConnectionRepository connectionRepository;
 
     private FeedService service() {
         return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
-                fileStorageService, auditService);
+                fileStorageService, auditService, connectionRepository);
     }
 
     private Post post(String id) {
@@ -63,7 +65,6 @@ class FeedServiceTest {
     @Test
     void likingAnUnlikedPostInsertsExactlyOneRowAndIncrementsCount() {
         Post post = post("post-1");
-        when(postRepository.existsById("post-1")).thenReturn(true);
         when(postLikeRepository.findByPostIdAndUserId("post-1", "user-1")).thenReturn(Optional.empty());
         when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
         when(postSaveRepository.findByPostIdAndUserId("post-1", "user-1")).thenReturn(Optional.empty());
@@ -83,7 +84,6 @@ class FeedServiceTest {
     @Test
     void togglingAnAlreadyLikedPostRemovesItInsteadOfInsertingAgain() {
         Post post = post("post-1");
-        when(postRepository.existsById("post-1")).thenReturn(true);
         when(postLikeRepository.findByPostIdAndUserId("post-1", "user-1"))
                 .thenReturn(Optional.of(PostLike.builder().id("like-1").postId("post-1").userId("user-1").build()));
         when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
@@ -100,7 +100,7 @@ class FeedServiceTest {
 
     @Test
     void likingANonexistentPostIsNotFound() {
-        when(postRepository.existsById("missing")).thenReturn(false);
+        when(postRepository.findById("missing")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service().toggleLike("user-1", "missing"))
                 .isInstanceOf(ResourceNotFoundException.class);
@@ -111,7 +111,6 @@ class FeedServiceTest {
     @Test
     void twoDifferentUsersLikingTheSamePostEachGetTheirOwnIndependentLikeRow() {
         Post post = post("post-1");
-        when(postRepository.existsById("post-1")).thenReturn(true);
         when(postLikeRepository.findByPostIdAndUserId(eq("post-1"), any())).thenReturn(Optional.empty());
         when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
         when(postSaveRepository.findByPostIdAndUserId(eq("post-1"), any())).thenReturn(Optional.empty());
@@ -216,12 +215,12 @@ class FeedServiceTest {
 
     @Test
     void listLikersReturnsAPaginatedPageOfLikerRows() {
-        when(postRepository.existsById("post-1")).thenReturn(true);
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post("post-1")));
         PostLike like = PostLike.builder().id("like-1").postId("post-1").userId("user-1").build();
         when(postLikeRepository.findByPostIdOrderByCreatedAtDesc(eq("post-1"), any()))
                 .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(like)));
 
-        var page = service().listLikers("post-1", 0, 50);
+        var page = service().listLikers("user-1", "post-1", 0, 50);
 
         assertThat(page.getContent()).hasSize(1);
         assertThat(page.getContent().get(0).userId()).isEqualTo("user-1");
@@ -229,9 +228,9 @@ class FeedServiceTest {
 
     @Test
     void listLikersOnANonexistentPostIsNotFound() {
-        when(postRepository.existsById("missing")).thenReturn(false);
+        when(postRepository.findById("missing")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().listLikers("missing", 0, 50))
+        assertThatThrownBy(() -> service().listLikers("user-1", "missing", 0, 50))
                 .isInstanceOf(ResourceNotFoundException.class);
     }
 
@@ -368,35 +367,46 @@ class FeedServiceTest {
     }
 
     @Test
-    void publicListingExcludesRemovedPosts() {
-        when(postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(any()))
+    void publicListingAsksForOnlyWhatTheViewerMayRead() {
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
         service().list("user-1", null, null, 0, 20);
 
-        verify(postRepository).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), any());
+        // The admin listings ignore visibility and must never be what a member's feed uses.
         verify(postRepository, never()).findAllByOrderByCreatedAtDesc(any());
-    }
-
-    @Test
-    void listingByTypeUsesTheTypeQueryAndStillHidesRemovedPosts() {
-        when(postRepository.findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq(Post.Type.discussion), any()))
-                .thenReturn(new PageImpl<>(List.of()));
-
-        service().list("user-1", null, "discussion", 0, 20);
-
-        verify(postRepository).findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq(Post.Type.discussion), any());
         verify(postRepository, never()).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
     }
 
     @Test
+    void listingByTypePassesTheTypeToTheVisibleQuery() {
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", null, "discussion", 0, 20);
+
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), any());
+    }
+
+    @Test
     void listingByAuthorAndTypeCombinesBothFilters() {
-        when(postRepository.findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq("a1"), eq(Post.Type.question), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
         service().list("user-1", "a1", "question", 0, 20);
 
-        verify(postRepository).findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(eq("a1"), eq(Post.Type.question), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), any());
+    }
+
+    @Test
+    void aBlankAuthorFilterMeansEveryone() {
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", "  ", "", 0, 20);
+
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), any());
     }
 
     @Test
@@ -407,15 +417,16 @@ class FeedServiceTest {
     @Test
     void aMemberCanWriteEachOfTheNewPostKinds() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        for (String kind : new String[]{"discussion", "build_update", "question", "milestone"}) {
-            PostDto dto = service().create("author-1", new CreatePostRequest("Shipped the beta", kind, null, null));
+        for (String kind : new String[]{"discussion", "build_update", "question", "milestone",
+                "idea", "feedback", "cofounder", "announcement", "resource", "hiring", "fundraising", "product_launch", "event"}) {
+            PostDto dto = service().create("author-1", request("Shipped the beta", kind, null, null));
             assertThat(dto.type()).isEqualTo(kind);
         }
     }
 
     @Test
     void creatingAPostWithAnUnknownKindIsRejected() {
-        assertThatThrownBy(() -> service().create("author-1", new CreatePostRequest("hi", "gossip", null, null)))
+        assertThatThrownBy(() -> service().create("author-1", request("hi", "gossip", null, null)))
                 .isInstanceOf(BadRequestException.class);
         verify(postRepository, never()).save(any());
     }
@@ -434,5 +445,159 @@ class FeedServiceTest {
         var restored = service().setRemovedByAdmin("admin-1", "post-1", false, null, "127.0.0.1");
         assertThat(restored.removedByAdmin()).isFalse();
         assertThat(restored.removalReason()).isNull();
+    }
+
+    private CreatePostRequest request(String content, String type, String visibility, String linkUrl) {
+        return new CreatePostRequest(content, type, null, null, visibility, linkUrl);
+    }
+
+    private Post connectionsOnlyPost() {
+        return Post.builder().id("post-c").authorId("author-1").content("for my network")
+                .visibility(Post.Visibility.CONNECTIONS).build();
+    }
+
+    // ---- visibility on create
+
+    @Test
+    void aPostIsPublicUnlessTheAuthorChoosesOtherwise() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(service().create("author-1", request("hi", "text", null, null)).visibility()).isEqualTo("PUBLIC");
+        assertThat(service().create("author-1", request("hi", "text", "", null)).visibility()).isEqualTo("PUBLIC");
+        assertThat(service().create("author-1", request("hi", "text", "connections", null)).visibility()).isEqualTo("CONNECTIONS");
+        assertThat(service().create("author-1", request("hi", "text", "CONNECTIONS", null)).visibility()).isEqualTo("CONNECTIONS");
+    }
+
+    @Test
+    void anUnknownVisibilityIsRejected() {
+        assertThatThrownBy(() -> service().create("author-1", request("hi", "text", "friends-of-friends", null)))
+                .isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    // ---- links
+
+    @Test
+    void aLinkIsTrimmedAndKept() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().create("author-1", request("worth a read", "resource", null, "  https://example.com/a?b=1  "));
+
+        assertThat(dto.linkUrl()).isEqualTo("https://example.com/a?b=1");
+    }
+
+    @Test
+    void aPostMayBeJustALink() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().create("author-1", request("", "resource", null, "https://example.com"));
+
+        assertThat(dto.content()).isEmpty();
+        assertThat(dto.linkUrl()).isEqualTo("https://example.com");
+    }
+
+    @Test
+    void aBlankLinkMeansNoLinkAndAnEmptyPostIsStillRejected() {
+        assertThatThrownBy(() -> service().create("author-1", request("  ", "text", null, "   ")))
+                .isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void onlyWebLinksAreAccepted() {
+        for (String bad : new String[]{"javascript:alert(1)", "ftp://example.com/file", "data:text/html,hi", "example.com",
+                "https://", "//example.com", "not a link", "https://exa mple.com"}) {
+            assertThatThrownBy(() -> service().create("author-1", request("x", "text", null, bad)))
+                    .as(bad).isInstanceOf(BadRequestException.class);
+        }
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void aLinkOver500CharactersIsRejected() {
+        String tooLong = "https://example.com/" + "a".repeat(490);
+        assertThatThrownBy(() -> service().create("author-1", request("x", "text", null, tooLong)))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    // ---- who can read a connections-only post
+
+    @Test
+    void theAuthorCanAlwaysReadTheirConnectionsOnlyPost() {
+        when(postRepository.findById("post-c")).thenReturn(Optional.of(connectionsOnlyPost()));
+
+        assertThat(service().get("author-1", "post-c").id()).isEqualTo("post-c");
+        verify(connectionRepository, never()).existsAcceptedBetween(any(), any());
+    }
+
+    @Test
+    void anAcceptedConnectionCanReadAConnectionsOnlyPost() {
+        when(postRepository.findById("post-c")).thenReturn(Optional.of(connectionsOnlyPost()));
+        when(connectionRepository.existsAcceptedBetween("author-1", "friend-1")).thenReturn(true);
+
+        assertThat(service().get("friend-1", "post-c").visibility()).isEqualTo("CONNECTIONS");
+    }
+
+    @Test
+    void aStrangerGetsNotFoundForAConnectionsOnlyPost() {
+        when(postRepository.findById("post-c")).thenReturn(Optional.of(connectionsOnlyPost()));
+        when(connectionRepository.existsAcceptedBetween("author-1", "stranger")).thenReturn(false);
+
+        assertThatThrownBy(() -> service().get("stranger", "post-c")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void aPublicPostNeedsNoConnectionCheck() {
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post("post-1")));
+
+        assertThat(service().get("stranger", "post-1").visibility()).isEqualTo("PUBLIC");
+        verify(connectionRepository, never()).existsAcceptedBetween(any(), any());
+    }
+
+    @Test
+    void aStrangerCannotLikeSaveCommentOrListLikersOfAConnectionsOnlyPost() {
+        when(postRepository.findById("post-c")).thenReturn(Optional.of(connectionsOnlyPost()));
+        when(connectionRepository.existsAcceptedBetween("author-1", "stranger")).thenReturn(false);
+
+        assertThatThrownBy(() -> service().toggleLike("stranger", "post-c")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().toggleSave("stranger", "post-c")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().addComment("stranger", "post-c", new CreateCommentRequest("hi", null)))
+                .isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().listComments("stranger", "post-c", 0, 50)).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().listReplies("stranger", "post-c", "c1", 0, 50)).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().listLikers("stranger", "post-c", 0, 50)).isInstanceOf(ResourceNotFoundException.class);
+
+        verify(postLikeRepository, never()).saveAndFlush(any());
+        verify(postSaveRepository, never()).save(any());
+        verify(postCommentRepository, never()).saveAndFlush(any());
+        verify(postRepository, never()).incrementLikesCount(any());
+        verify(postRepository, never()).incrementCommentsCount(any());
+    }
+
+    @Test
+    void aConnectionCanInteractWithAConnectionsOnlyPost() {
+        when(postRepository.findById("post-c")).thenReturn(Optional.of(connectionsOnlyPost()));
+        when(connectionRepository.existsAcceptedBetween("author-1", "friend-1")).thenReturn(true);
+        when(postCommentRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        var comment = service().addComment("friend-1", "post-c", new CreateCommentRequest("nice", null));
+
+        assertThat(comment.content()).isEqualTo("nice");
+        verify(postRepository).incrementCommentsCount("post-c");
+    }
+
+    // ---- editing
+
+    @Test
+    void anAuthorMayClearTheTextOfAPostThatHasALink() {
+        Post post = Post.builder().id("post-l").authorId("author-1").content("caption").linkUrl("https://example.com").build();
+        when(postRepository.findById("post-l")).thenReturn(Optional.of(post));
+        when(postLikeRepository.findByPostIdAndUserId(any(), any())).thenReturn(Optional.empty());
+        when(postSaveRepository.findByPostIdAndUserId(any(), any())).thenReturn(Optional.empty());
+
+        PostDto dto = service().update("author-1", "post-l", new com.nukkad.feed.dto.UpdatePostRequest(""));
+
+        assertThat(dto.content()).isEmpty();
+        assertThat(dto.linkUrl()).isEqualTo("https://example.com");
     }
 }

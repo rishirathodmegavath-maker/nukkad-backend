@@ -23,6 +23,7 @@ import com.nukkad.feed.repository.PostCommentRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
+import com.nukkad.user.repository.ConnectionRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -31,6 +32,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -47,33 +50,28 @@ public class FeedService {
     private final PostSaveRepository postSaveRepository;
     private final FileStorageService fileStorageService;
     private final AuditService auditService;
+    private final ConnectionRepository connectionRepository;
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
                         PostCommentRepository postCommentRepository, PostSaveRepository postSaveRepository,
-                        FileStorageService fileStorageService, AuditService auditService) {
+                        FileStorageService fileStorageService, AuditService auditService,
+                        ConnectionRepository connectionRepository) {
         this.postRepository = postRepository;
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
         this.postSaveRepository = postSaveRepository;
         this.fileStorageService = fileStorageService;
         this.auditService = auditService;
+        this.connectionRepository = connectionRepository;
     }
 
     @Transactional(readOnly = true)
     public Page<PostDto> list(String viewerId, String authorId, String type, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
-        boolean byAuthor = authorId != null && !authorId.isBlank();
+        String author = (authorId == null || authorId.isBlank()) ? null : authorId;
         Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
-        Page<Post> posts;
-        if (typeFilter == null) {
-            posts = byAuthor
-                    ? postRepository.findByAuthorIdAndRemovedByAdminFalseOrderByCreatedAtDesc(authorId, pageable)
-                    : postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(pageable);
-        } else {
-            posts = byAuthor
-                    ? postRepository.findByAuthorIdAndTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(authorId, typeFilter, pageable)
-                    : postRepository.findByTypeAndRemovedByAdminFalseOrderByCreatedAtDesc(typeFilter, pageable);
-        }
+        // Only posts this viewer may read (public, their own, or connections-only from a connection).
+        Page<Post> posts = postRepository.findVisibleTo(viewerId, author, typeFilter, pageable);
 
         List<String> postIds = posts.getContent().stream().map(Post::getId).toList();
         Set<String> likedIds = postIds.isEmpty() ? Set.of() : postLikeRepository.findLikedPostIds(viewerId, postIds);
@@ -138,17 +136,21 @@ public class FeedService {
     public PostDto create(String authorId, CreatePostRequest request) {
         String content = request.content() == null ? "" : request.content().trim();
         List<AttachmentRef> attachmentRefs = request.attachments() == null ? List.of() : request.attachments();
-        if (content.isEmpty() && attachmentRefs.isEmpty()) {
-            throw new BadRequestException("A post needs text or at least one attachment");
+        String linkUrl = cleanLink(request.linkUrl());
+        if (content.isEmpty() && attachmentRefs.isEmpty() && linkUrl == null) {
+            throw new BadRequestException("A post needs text, a link or at least one attachment");
         }
 
         Post.Type type = parseType(request.type());
+        Post.Visibility visibility = parseVisibility(request.visibility());
 
         Post post = Post.builder()
                 .authorId(authorId)
                 .type(type)
                 .content(content)
                 .relatedId(request.relatedId())
+                .visibility(visibility)
+                .linkUrl(linkUrl)
                 .build();
 
         for (int i = 0; i < attachmentRefs.size(); i++) {
@@ -167,9 +169,7 @@ public class FeedService {
 
     @Transactional
     public PostDto toggleLike(String viewerId, String postId) {
-        if (!postRepository.existsById(postId)) {
-            throw new ResourceNotFoundException("Post not found: " + postId);
-        }
+        requireVisiblePost(viewerId, postId);
 
         var existing = postLikeRepository.findByPostIdAndUserId(postId, viewerId);
         boolean liked;
@@ -197,8 +197,7 @@ public class FeedService {
 
     @Transactional
     public PostDto toggleSave(String viewerId, String postId) {
-        Post post = postRepository.findById(postId)
-                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        Post post = requireVisiblePost(viewerId, postId);
 
         var existing = postSaveRepository.findByPostIdAndUserId(postId, viewerId);
         boolean saved;
@@ -215,8 +214,7 @@ public class FeedService {
 
     @Transactional(readOnly = true)
     public PostDto get(String viewerId, String postId) {
-        Post post = postRepository.findById(postId)
-                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        Post post = requireVisiblePost(viewerId, postId);
         if (post.isRemovedByAdmin()) {
             throw new ResourceNotFoundException("Post not found: " + postId);
         }
@@ -270,8 +268,8 @@ public class FeedService {
     public PostDto update(String viewerId, String postId, UpdatePostRequest request) {
         Post post = requireOwnedPost(viewerId, postId);
         String content = request.content() == null ? "" : request.content().trim();
-        if (content.isEmpty() && post.getAttachments().isEmpty()) {
-            throw new BadRequestException("A post needs text or at least one attachment");
+        if (content.isEmpty() && post.getAttachments().isEmpty() && post.getLinkUrl() == null) {
+            throw new BadRequestException("A post needs text, a link or at least one attachment");
         }
         post.setContent(content);
         postRepository.save(post);
@@ -303,11 +301,29 @@ public class FeedService {
         return post;
     }
 
-    @Transactional(readOnly = true)
-    public Page<CommentDto> listComments(String postId, int page, int size) {
-        if (!postRepository.existsById(postId)) {
+    /**
+     * The post, or "not found" when it doesn't exist OR the viewer isn't allowed to read it: a connections-only post
+     * answers exactly like a missing one, so its existence isn't revealed to people it was hidden from.
+     */
+    private Post requireVisiblePost(String viewerId, String postId) {
+        Post post = postRepository.findById(postId)
+                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        if (!canView(post, viewerId)) {
             throw new ResourceNotFoundException("Post not found: " + postId);
         }
+        return post;
+    }
+
+    /** Same rule as {@code PostVisibilityQuery}: public, the viewer's own, or a connection's when connections-only. */
+    private boolean canView(Post post, String viewerId) {
+        return post.getVisibility() == Post.Visibility.PUBLIC
+                || post.getAuthorId().equals(viewerId)
+                || connectionRepository.existsAcceptedBetween(post.getAuthorId(), viewerId);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<CommentDto> listComments(String viewerId, String postId, int page, int size) {
+        requireVisiblePost(viewerId, postId);
         Page<PostComment> comments = postCommentRepository
                 .findByPostIdAndParentCommentIdIsNullOrderByCreatedAtAsc(postId, PageRequest.of(page, size));
 
@@ -320,7 +336,8 @@ public class FeedService {
     }
 
     @Transactional(readOnly = true)
-    public Page<CommentDto> listReplies(String postId, String commentId, int page, int size) {
+    public Page<CommentDto> listReplies(String viewerId, String postId, String commentId, int page, int size) {
+        requireVisiblePost(viewerId, postId);
         PostComment parent = postCommentRepository.findById(commentId)
                 .filter(c -> c.getPostId().equals(postId))
                 .orElseThrow(() -> new ResourceNotFoundException("Comment not found: " + commentId));
@@ -333,8 +350,7 @@ public class FeedService {
 
     @Transactional
     public CommentDto addComment(String authorId, String postId, CreateCommentRequest request) {
-        Post post = postRepository.findById(postId)
-                .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        Post post = requireVisiblePost(authorId, postId);
         if (post.isCommentsDisabled()) {
             throw new BadRequestException("Comments are turned off for this post");
         }
@@ -390,16 +406,14 @@ public class FeedService {
     }
 
     @Transactional(readOnly = true)
-    public Page<PostLikeDto> listLikers(String postId, int page, int size) {
-        if (!postRepository.existsById(postId)) {
-            throw new ResourceNotFoundException("Post not found: " + postId);
-        }
+    public Page<PostLikeDto> listLikers(String viewerId, String postId, int page, int size) {
+        requireVisiblePost(viewerId, postId);
         return postLikeRepository.findByPostIdOrderByCreatedAtDesc(postId, PageRequest.of(page, size))
                 .map(l -> new PostLikeDto(l.getUserId(), l.getCreatedAt()));
     }
 
     public AttachmentRef uploadAttachment(MultipartFile file) {
-        var stored = fileStorageService.storeMedia(file, "feed");
+        var stored = fileStorageService.storeFeedAttachment(file, "feed");
         String originalName = file.getOriginalFilename();
         return new AttachmentRef(stored.url(), stored.kind().name(), originalName);
     }
@@ -411,6 +425,35 @@ public class FeedService {
         } catch (IllegalArgumentException e) {
             throw new BadRequestException("Invalid post type: " + type);
         }
+    }
+
+    private Post.Visibility parseVisibility(String visibility) {
+        if (visibility == null || visibility.isBlank()) return Post.Visibility.PUBLIC;
+        try {
+            return Post.Visibility.valueOf(visibility.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Invalid visibility: " + visibility);
+        }
+    }
+
+    /** Null for "no link"; otherwise the trimmed link, which must be an absolute http(s) URL with a host. */
+    private String cleanLink(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String link = raw.trim();
+        if (link.length() > 500) {
+            throw new BadRequestException("That link is too long. Links can be up to 500 characters.");
+        }
+        try {
+            URI uri = new URI(link);
+            String scheme = uri.getScheme();
+            boolean web = "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+            if (!web || uri.getHost() == null || uri.getHost().isBlank()) {
+                throw new BadRequestException("Enter a link that starts with http:// or https://");
+            }
+        } catch (URISyntaxException e) {
+            throw new BadRequestException("Enter a link that starts with http:// or https://");
+        }
+        return link;
     }
 
     private PostAttachment.Kind parseKind(String kind) {
@@ -437,7 +480,8 @@ public class FeedService {
                 .toList();
         return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
-                post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason());
+                post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason(),
+                post.getVisibility().name(), post.getLinkUrl());
     }
 
     private CommentDto toCommentDto(PostComment comment, int replyCount) {
