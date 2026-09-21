@@ -5,6 +5,7 @@ import com.nukkad.chapter.repository.ChapterRepository;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.dto.CreateEventRequest;
 import com.nukkad.event.dto.EventDto;
 import com.nukkad.event.dto.UpdateEventRequest;
@@ -25,6 +26,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -52,12 +55,13 @@ class EventServiceTest {
     @Mock private UserRepository userRepository;
     @Mock private UserService userService;
     @Mock private NotificationService notificationService;
+    @Mock private FileStorageService fileStorageService;
 
     private final EventMapper eventMapper = new EventMapper();
 
     private EventService service() {
         return new EventService(eventRepository, attendeeRepository, eventStartupRepository, chapterRepository,
-                startupRepository, startupTeamMemberRepository, userRepository, userService, eventMapper, notificationService);
+                startupRepository, startupTeamMemberRepository, userRepository, userService, eventMapper, notificationService, fileStorageService);
     }
 
     private Chapter chapter(String id, String presidentUserId) {
@@ -401,5 +405,48 @@ class EventServiceTest {
         var result = service().getEventsForStartup("s1");
 
         assertThat(result).extracting("id").containsExactly("e-sooner", "e-later");
+    }
+
+    // ---- cover image upload -------------------------------------------------------------------------
+
+    @Test
+    void uploadingACoverImageStoresItUnderEventCoversAndReturnsItsUrl() {
+        MockMultipartFile file = new MockMultipartFile("file", "cover.png", "image/png", new byte[] {1, 2, 3});
+        when(fileStorageService.storeImage(file, "event-covers")).thenReturn("https://media.example.com/event-covers/a.png");
+
+        var result = service().uploadCoverImage(file);
+
+        assertThat(result.url()).isEqualTo("https://media.example.com/event-covers/a.png");
+    }
+
+    @Test
+    void aCoverImageOverTheSizeLimitIsRejectedWithoutTouchingStorage() {
+        MultipartFile tooBig = org.mockito.Mockito.mock(MultipartFile.class);
+        when(tooBig.getSize()).thenReturn(EventService.MAX_COVER_IMAGE_BYTES + 1);
+
+        assertThatThrownBy(() -> service().uploadCoverImage(tooBig))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("8 MB");
+        org.mockito.Mockito.verifyNoInteractions(fileStorageService);
+    }
+
+    @Test
+    void aCoverImageExactlyAtTheSizeLimitIsAccepted() {
+        MultipartFile atLimit = org.mockito.Mockito.mock(MultipartFile.class);
+        when(atLimit.getSize()).thenReturn(EventService.MAX_COVER_IMAGE_BYTES);
+        when(fileStorageService.storeImage(atLimit, "event-covers")).thenReturn("https://media.example.com/event-covers/b.jpg");
+
+        assertThat(service().uploadCoverImage(atLimit).url()).isEqualTo("https://media.example.com/event-covers/b.jpg");
+    }
+
+    @Test
+    void storageRejectionsSuchAsANonImageFilePassStraightThrough() {
+        MockMultipartFile pdf = new MockMultipartFile("file", "cover.pdf", "application/pdf", new byte[] {1});
+        when(fileStorageService.storeImage(pdf, "event-covers"))
+                .thenThrow(new BadRequestException("Only PNG, JPEG, WEBP or GIF images are allowed"));
+
+        assertThatThrownBy(() -> service().uploadCoverImage(pdf))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("images are allowed");
     }
 }

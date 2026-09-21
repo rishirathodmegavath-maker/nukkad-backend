@@ -3,6 +3,7 @@ package com.nukkad.event.controller;
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.event.dto.CreateEventRequest;
+import com.nukkad.event.dto.EventCoverImageDto;
 import com.nukkad.event.dto.EventDto;
 import com.nukkad.event.dto.StartupEventSummaryDto;
 import com.nukkad.event.dto.UpdateEventRequest;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -70,6 +72,17 @@ public class EventController {
     public ApiResponse<EventDto> create(@AuthenticationPrincipal AuthenticatedUser principal,
                                           @Valid @RequestBody CreateEventRequest request) {
         return ApiResponse.ok(eventService.createEvent(principal.id(), request));
+    }
+
+    /**
+     * Uploads an image to use as an event cover and returns its URL. It is separate from create/update so a
+     * cover can be picked while the event is still being written; the client sends the URL back as
+     * {@code coverImageUrl}. Anyone who can create an event can upload one.
+     */
+    @PostMapping("/cover-images")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<EventCoverImageDto> uploadCoverImage(@RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(eventService.uploadCoverImage(file));
     }
 
     @PutMapping("/{id}")
