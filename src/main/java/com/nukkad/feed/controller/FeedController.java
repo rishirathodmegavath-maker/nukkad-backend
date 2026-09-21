@@ -8,6 +8,7 @@ import com.nukkad.feed.dto.CreateCommentRequest;
 import com.nukkad.feed.dto.CreatePostRequest;
 import com.nukkad.feed.dto.PostDto;
 import com.nukkad.feed.dto.PostLikeDto;
+import com.nukkad.feed.dto.TrendingTopicDto;
 import com.nukkad.feed.dto.UpdatePostRequest;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.security.AuthenticatedUser;
@@ -29,6 +30,8 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/feed")
 @SecurityRequirement(name = "bearerAuth")
@@ -44,9 +47,18 @@ public class FeedController {
     public ApiResponse<PageResponse<PostDto>> list(@AuthenticationPrincipal AuthenticatedUser principal,
                                                      @RequestParam(required = false) String authorId,
                                                      @RequestParam(required = false) String type,
+                                                     @RequestParam(required = false) String tag,
                                                      @RequestParam(defaultValue = "0") int page,
                                                      @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, type, page, size)));
+        return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, type, tag, page, size)));
+    }
+
+    /** The hashtags most used lately in posts the caller may read, for the Home page's Trending Topics. */
+    @GetMapping("/trending-topics")
+    public ApiResponse<List<TrendingTopicDto>> trendingTopics(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                                @RequestParam(defaultValue = "14") int days,
+                                                                @RequestParam(defaultValue = "5") int limit) {
+        return ApiResponse.ok(feedService.trendingTopics(principal.id(), days, limit));
     }
 
     /** Dedicated saved-posts query — see {@link FeedService#listSaved}. Registered before the more

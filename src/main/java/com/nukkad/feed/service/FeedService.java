@@ -19,7 +19,10 @@ import com.nukkad.feed.entity.PostAttachment;
 import com.nukkad.feed.entity.PostComment;
 import com.nukkad.feed.entity.PostLike;
 import com.nukkad.feed.entity.PostSave;
+import com.nukkad.feed.dto.TrendingTopicDto;
+import com.nukkad.feed.entity.PostHashtag;
 import com.nukkad.feed.repository.PostCommentRepository;
+import com.nukkad.feed.repository.PostHashtagRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
@@ -34,6 +37,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -51,11 +55,12 @@ public class FeedService {
     private final FileStorageService fileStorageService;
     private final AuditService auditService;
     private final ConnectionRepository connectionRepository;
+    private final PostHashtagRepository postHashtagRepository;
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
                         PostCommentRepository postCommentRepository, PostSaveRepository postSaveRepository,
                         FileStorageService fileStorageService, AuditService auditService,
-                        ConnectionRepository connectionRepository) {
+                        ConnectionRepository connectionRepository, PostHashtagRepository postHashtagRepository) {
         this.postRepository = postRepository;
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
@@ -63,15 +68,17 @@ public class FeedService {
         this.fileStorageService = fileStorageService;
         this.auditService = auditService;
         this.connectionRepository = connectionRepository;
+        this.postHashtagRepository = postHashtagRepository;
     }
 
     @Transactional(readOnly = true)
-    public Page<PostDto> list(String viewerId, String authorId, String type, int page, int size) {
+    public Page<PostDto> list(String viewerId, String authorId, String type, String tag, int page, int size) {
         Pageable pageable = PageRequest.of(page, size);
         String author = (authorId == null || authorId.isBlank()) ? null : authorId;
         Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
         // Only posts this viewer may read (public, their own, or connections-only from a connection).
-        Page<Post> posts = postRepository.findVisibleTo(viewerId, author, typeFilter, pageable);
+        String tagFilter = (tag == null || tag.isBlank()) ? null : normalizedTagOrNoMatch(tag);
+        Page<Post> posts = postRepository.findVisibleTo(viewerId, author, typeFilter, tagFilter, pageable);
 
         List<String> postIds = posts.getContent().stream().map(Post::getId).toList();
         Set<String> likedIds = postIds.isEmpty() ? Set.of() : postLikeRepository.findLikedPostIds(viewerId, postIds);
@@ -164,7 +171,9 @@ public class FeedService {
                     .build());
         }
 
-        return toDto(postRepository.save(post), false, false);
+        Post saved = postRepository.save(post);
+        saveHashtags(saved);
+        return toDto(saved, false, false);
     }
 
     @Transactional
@@ -273,6 +282,8 @@ public class FeedService {
         }
         post.setContent(content);
         postRepository.save(post);
+        postHashtagRepository.deleteByPostId(post.getId());
+        saveHashtags(post);
         return toDto(post, viewerId);
     }
 
@@ -290,6 +301,32 @@ public class FeedService {
         post.setCommentsDisabled(!post.isCommentsDisabled());
         postRepository.save(post);
         return toDto(post, viewerId);
+    }
+
+    /** Records the #hashtags in the post's current text (call after clearing the old ones when editing). */
+    private void saveHashtags(Post post) {
+        Set<String> tags = Hashtags.extract(post.getContent());
+        if (tags.isEmpty()) return;
+        postHashtagRepository.saveAll(tags.stream()
+                .map(tag -> PostHashtag.builder().postId(post.getId()).tag(tag).build())
+                .toList());
+    }
+
+    /** The tag as stored; a value that can never be a tag matches nothing rather than turning into "no filter". */
+    private String normalizedTagOrNoMatch(String tag) {
+        String normalized = Hashtags.normalize(tag);
+        return normalized != null ? normalized : "no such tag";
+    }
+
+    /** The most-used hashtags among posts from the last {@code days} days that {@code viewerId} may read. */
+    @Transactional(readOnly = true)
+    public List<TrendingTopicDto> trendingTopics(String viewerId, int days, int limit) {
+        int windowDays = Math.max(1, Math.min(days, 90));
+        int topics = Math.max(1, Math.min(limit, 20));
+        Instant since = Instant.now().minus(Duration.ofDays(windowDays));
+        return postHashtagRepository.findTrending(viewerId, since, PageRequest.of(0, topics)).stream()
+                .map(row -> new TrendingTopicDto(row.getTag(), row.getPostCount()))
+                .toList();
     }
 
     private Post requireOwnedPost(String viewerId, String postId) {
