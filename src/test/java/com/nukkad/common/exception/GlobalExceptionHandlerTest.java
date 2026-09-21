@@ -94,6 +94,53 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getBody().errorCode()).isEqualTo("BAD_REQUEST");
     }
 
+    /** Only exists to give the validation exception a real method parameter to point at. */
+    @SuppressWarnings("unused")
+    private void sampleEndpoint(Object body) {
+    }
+
+    @Test
+    void aListItemValidationErrorNamesTheFieldWithoutTheStrayBrackets() throws Exception {
+        when(request.getRequestURI()).thenReturn("/api/startups");
+        var binding = new org.springframework.validation.BeanPropertyBindingResult(new Object(), "request");
+        binding.addError(new org.springframework.validation.FieldError(
+                "request", "needs[]", "each item must be 100 characters or fewer"));
+        var param = new org.springframework.core.MethodParameter(
+                getClass().getDeclaredMethod("sampleEndpoint", Object.class), 0);
+        var ex = new org.springframework.web.bind.MethodArgumentNotValidException(param, binding);
+
+        var response = handler.handleValidation(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        assertThat(response.getBody().message()).isEqualTo("needs: each item must be 100 characters or fewer");
+    }
+
+    @Test
+    void aValueThatIsTooLongForItsColumnSaysSoInsteadOfTalkingAboutConflicts() {
+        when(request.getRequestURI()).thenReturn("/api/startups");
+        // What MySQL raises when a startup "need" tag is longer than its VARCHAR(100) column.
+        var ex = new DataIntegrityViolationException("could not execute statement",
+                new java.sql.SQLException("Data truncation: Data too long for column 'need' at row 1"));
+
+        var response = handler.handleDataIntegrityViolation(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().errorCode()).isEqualTo("BAD_REQUEST");
+        assertThat(response.getBody().message()).contains("too long").doesNotContain("conflicts");
+    }
+
+    @Test
+    void otherConstraintFailuresKeepTheConflictWording() {
+        when(request.getRequestURI()).thenReturn("/api/chapters");
+        var ex = new DataIntegrityViolationException("could not execute statement",
+                new java.sql.SQLException("Duplicate entry 'Bengaluru' for key 'uq_chapters_name'"));
+
+        var response = handler.handleDataIntegrityViolation(ex, request);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("conflicts with existing data");
+    }
+
     @Test
     void lockContentionReturnsARetryable409NotAGeneric500() {
         when(request.getRequestURI()).thenReturn("/api/wallet/withdrawals");

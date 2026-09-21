@@ -13,7 +13,7 @@ public record CreateStartupRequest(
         String problem,
         String solution,
         String stage,
-        Set<String> needs,
+        Set<@Size(max = 100, message = "each item must be 100 characters or fewer") String> needs,
         String chapterId
 ) {
 }

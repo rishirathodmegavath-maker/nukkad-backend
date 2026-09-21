@@ -53,7 +53,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse.Error> handleValidation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         String message = ex.getBindingResult().getFieldErrors().stream()
-                .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+                // A constraint on each item of a list is reported against "needs[]"; the brackets mean nothing to a reader.
+                .map(fe -> fe.getField().replace("[]", "") + ": " + fe.getDefaultMessage())
                 .collect(Collectors.joining("; "));
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(ApiResponse.Error.of(message.isBlank() ? "Validation failed" : message, "VALIDATION_ERROR", request.getRequestURI()));
@@ -142,9 +143,18 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse.Error> handleDataIntegrityViolation(DataIntegrityViolationException ex, HttpServletRequest request) {
         log.warn("Data integrity violation on {} {}: {}", request.getMethod(), request.getRequestURI(), ex.getMessage());
+        String message = isValueTooLong(ex)
+                ? "One of the values you entered is too long. Please shorten it and try again."
+                : "The request could not be processed because it conflicts with existing data";
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(ApiResponse.Error.of("The request could not be processed because it conflicts with existing data",
-                        "BAD_REQUEST", request.getRequestURI()));
+                .body(ApiResponse.Error.of(message, "BAD_REQUEST", request.getRequestURI()));
+    }
+
+    /** MySQL's "Data truncation: Data too long for column 'x'": a value longer than the column it is stored in.
+     *  The user can fix that, so they get told what to do rather than a vague "conflicts with existing data". */
+    private static boolean isValueTooLong(DataIntegrityViolationException ex) {
+        String detail = ex.getMostSpecificCause().getMessage();
+        return detail != null && detail.contains("Data too long for column");
     }
 
     // Two concurrent writes to the same row (e.g. two near-simultaneous withdrawal requests on one
