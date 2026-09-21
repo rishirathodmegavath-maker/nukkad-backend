@@ -31,7 +31,8 @@ public class FileStorageService {
     private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("image/png", "image/jpeg", "image/webp", "image/gif");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("png", "jpg", "jpeg", "webp", "gif");
 
-    public enum AttachmentKind { IMAGE, VIDEO, PDF }
+    /** FILE is a Word / PowerPoint / Excel document: only {@link #storeFeedAttachment} produces it. */
+    public enum AttachmentKind { IMAGE, VIDEO, PDF, FILE }
 
     public record StoredMedia(String url, AttachmentKind kind) {}
 
@@ -47,6 +48,19 @@ public class FileStorageService {
     );
     private static final Set<String> ALLOWED_MEDIA_EXTENSIONS =
             Set.of("png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov", "pdf");
+
+    /**
+     * Office documents a member may attach to a feed post, by extension. As with resources the stored Content-Type
+     * comes from THIS table, never from what the client claimed.
+     */
+    private static final Map<String, String> FEED_FILE_CONTENT_TYPES = Map.of(
+            "doc", "application/msword",
+            "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "xls", "application/vnd.ms-excel",
+            "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "ppt", "application/vnd.ms-powerpoint",
+            "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    );
 
     /**
      * Everything an admin may add to the resource library, keyed by file extension. The stored
@@ -125,6 +139,28 @@ public class FileStorageService {
 
         String url = uploadToS3(file, subDir, extension);
         return new StoredMedia(url, kind);
+    }
+
+    /**
+     * A feed post's attachment: everything {@link #storeMedia} takes (images, video, PDF) plus Word, PowerPoint and
+     * Excel documents (kind {@link AttachmentKind#FILE}). Separate from storeMedia on purpose: startup materials also
+     * use storeMedia and expect PDFs only.
+     */
+    public StoredMedia storeFeedAttachment(MultipartFile file, String subDir) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("No file was uploaded");
+        }
+        String contentType = file.getContentType();
+        if (contentType != null && ALLOWED_MEDIA_CONTENT_TYPES.containsKey(contentType.toLowerCase())) {
+            return storeMedia(file, subDir);
+        }
+        String original = file.getOriginalFilename() != null ? file.getOriginalFilename() : "";
+        String extension = original.contains(".") ? original.substring(original.lastIndexOf('.') + 1).toLowerCase() : "";
+        String documentType = FEED_FILE_CONTENT_TYPES.get(extension);
+        if (documentType == null) {
+            throw new BadRequestException("Attach an image, a video (mp4/webm/mov), a PDF, or a Word, PowerPoint or Excel file");
+        }
+        return new StoredMedia(uploadToS3(file, subDir, extension, documentType), AttachmentKind.FILE);
     }
 
     /**

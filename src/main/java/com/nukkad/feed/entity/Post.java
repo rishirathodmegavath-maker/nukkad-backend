@@ -31,10 +31,17 @@ import java.util.List;
 @Builder
 public class Post {
 
-    /** text / startup_update / idea / opportunity / event exist from the start (the last four are posts the
-     *  system writes about an entity). discussion / build_update / question / milestone are the kinds a member
-     *  picks when writing a post. */
-    public enum Type { text, startup_update, idea, opportunity, event, discussion, build_update, question, milestone }
+    /** text / startup_update / idea / opportunity / event exist from the start (the last four were meant to be posts
+     *  the system writes about an entity; today they are simply kinds a member can pick as well). discussion through
+     *  product_launch are the other kinds a member picks in the Create a Post dialog. */
+    public enum Type {
+        text, startup_update, idea, opportunity, event,
+        discussion, build_update, question, milestone,
+        feedback, cofounder, announcement, resource, hiring, fundraising, product_launch
+    }
+
+    /** Who may read a post: everyone, or only its author and the author's accepted connections. */
+    public enum Visibility { PUBLIC, CONNECTIONS }
 
     @Id
     @UuidGenerator
@@ -54,6 +61,15 @@ public class Post {
 
     @Column(name = "related_id", columnDefinition = "CHAR(36)")
     private String relatedId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    @Builder.Default
+    private Visibility visibility = Visibility.PUBLIC;
+
+    /** An optional http(s) link the author attached (shown as a link card). */
+    @Column(name = "link_url", length = 500)
+    private String linkUrl;
 
     @Column(name = "likes_count", nullable = false)
     @Builder.Default

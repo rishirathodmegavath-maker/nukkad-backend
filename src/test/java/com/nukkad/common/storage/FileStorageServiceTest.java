@@ -123,6 +123,97 @@ class FileStorageServiceTest {
                 .hasMessageContaining("No file was uploaded");
     }
 
+    // ---- feed post attachments: media as before, plus Word / PowerPoint / Excel ----
+
+    private PutObjectRequest storeFeedAttachmentAndCaptureRequest(MockMultipartFile file, FileStorageService.AttachmentKind expected) {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+        FileStorageService.StoredMedia stored = fileStorageService.storeFeedAttachment(file, "feed");
+        assertThat(stored.url()).startsWith("https://cdn.example.com/feed/");
+        assertThat(stored.kind()).isEqualTo(expected);
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(software.amazon.awssdk.core.sync.RequestBody.class));
+        return captor.getValue();
+    }
+
+    @Test
+    void aFeedPostMayAttachWordPowerPointAndExcelFilesAsKindFile() {
+        String[][] documents = {
+                {"proposal.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+                {"proposal.doc", "application/msword"},
+                {"deck.pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+                {"deck.ppt", "application/vnd.ms-powerpoint"},
+                {"model.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                {"model.xls", "application/vnd.ms-excel"},
+        };
+        for (String[] doc : documents) {
+            org.mockito.Mockito.clearInvocations(s3Client);
+            // The client claims a generic type; the stored Content-Type must still come from our table.
+            MockMultipartFile file = new MockMultipartFile("file", doc[0], "application/octet-stream", "content".getBytes());
+
+            PutObjectRequest request = storeFeedAttachmentAndCaptureRequest(file, FileStorageService.AttachmentKind.FILE);
+
+            assertThat(request.contentType()).as(doc[0]).isEqualTo(doc[1]);
+            assertThat(request.key()).endsWith("." + doc[0].substring(doc[0].lastIndexOf('.') + 1));
+        }
+    }
+
+    @Test
+    void aFeedAttachmentDoesNotTrustAnOfficeFilesClaimedContentType() {
+        // Claiming text/html for a .docx must not get the file stored as html.
+        MockMultipartFile file = new MockMultipartFile("file", "proposal.docx", "text/html", "content".getBytes());
+
+        PutObjectRequest request = storeFeedAttachmentAndCaptureRequest(file, FileStorageService.AttachmentKind.FILE);
+
+        assertThat(request.contentType()).doesNotContain("html");
+    }
+
+    @Test
+    void feedAttachmentsStillTakeImagesVideoAndPdfsExactlyAsBefore() {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+
+        assertThat(fileStorageService.storeFeedAttachment(
+                new MockMultipartFile("file", "a.png", "image/png", "x".getBytes()), "feed").kind())
+                .isEqualTo(FileStorageService.AttachmentKind.IMAGE);
+        assertThat(fileStorageService.storeFeedAttachment(
+                new MockMultipartFile("file", "a.mp4", "video/mp4", "x".getBytes()), "feed").kind())
+                .isEqualTo(FileStorageService.AttachmentKind.VIDEO);
+        assertThat(fileStorageService.storeFeedAttachment(
+                new MockMultipartFile("file", "a.pdf", "application/pdf", "x".getBytes()), "feed").kind())
+                .isEqualTo(FileStorageService.AttachmentKind.PDF);
+    }
+
+    @Test
+    void feedAttachmentsRefuseMarkupScriptsAndArchives() {
+        for (String name : new String[]{"page.html", "logo.svg", "run.js", "tool.exe", "bundle.zip", "notes.txt", "noextension"}) {
+            MockMultipartFile file = new MockMultipartFile("file", name, "application/octet-stream", "content".getBytes());
+            assertThatThrownBy(() -> fileStorageService.storeFeedAttachment(file, "feed"))
+                    .as(name).isInstanceOf(BadRequestException.class)
+                    .hasMessageContaining("Word, PowerPoint or Excel");
+        }
+        verify(s3Client, never()).putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class));
+    }
+
+    @Test
+    void anEmptyFeedAttachmentIsRejected() {
+        MockMultipartFile file = new MockMultipartFile("file", "deck.pptx", "application/octet-stream", new byte[0]);
+
+        assertThatThrownBy(() -> fileStorageService.storeFeedAttachment(file, "feed"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("No file was uploaded");
+    }
+
+    @Test
+    void startupMaterialsStillRefuseOfficeFilesBecauseStoreMediaIsUnchanged() {
+        // StartupService relies on storeMedia returning IMAGE/VIDEO/PDF only; Office files are a feed-only addition.
+        MockMultipartFile file = new MockMultipartFile("file", "deck.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation", "content".getBytes());
+
+        assertThatThrownBy(() -> fileStorageService.storeMedia(file, "startup-materials"))
+                .isInstanceOf(BadRequestException.class);
+    }
+
     // ---- resource library files (admin uploads): documents allowed, executable/markup types never ----
 
     private PutObjectRequest storeResourceAndCaptureRequest(MockMultipartFile file) {

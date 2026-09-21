@@ -27,24 +27,28 @@ public interface PostSaveRepository extends JpaRepository<PostSave, String> {
     // join (JPA 2.1+) since PostSave has no @ManyToOne to Post; `id` is a secondary sort key so two
     // saves landing in the same second (created_at is second-precision) still paginate deterministically.
     @Query("select s from PostSave s join Post p on p.id = s.postId "
-            + "where s.userId = :userId and (:type is null or p.type = :type) "
+            + "where s.userId = :viewerId and (:type is null or p.type = :type) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
             + "order by s.createdAt desc, s.id desc")
-    Page<PostSave> findByUserOrderBySavedAtDesc(@Param("userId") String userId, @Param("type") Post.Type type, Pageable pageable);
+    Page<PostSave> findByUserOrderBySavedAtDesc(@Param("viewerId") String viewerId, @Param("type") Post.Type type, Pageable pageable);
 
     @Query("select s from PostSave s join Post p on p.id = s.postId "
-            + "where s.userId = :userId and (:type is null or p.type = :type) "
+            + "where s.userId = :viewerId and (:type is null or p.type = :type) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
             + "order by s.createdAt asc, s.id asc")
-    Page<PostSave> findByUserOrderBySavedAtAsc(@Param("userId") String userId, @Param("type") Post.Type type, Pageable pageable);
+    Page<PostSave> findByUserOrderBySavedAtAsc(@Param("viewerId") String viewerId, @Param("type") Post.Type type, Pageable pageable);
 
     @Query("select s from PostSave s join Post p on p.id = s.postId "
-            + "where s.userId = :userId and (:type is null or p.type = :type) "
+            + "where s.userId = :viewerId and (:type is null or p.type = :type) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
             + "order by p.createdAt desc, p.id desc")
-    Page<PostSave> findByUserOrderByPostCreatedAtDesc(@Param("userId") String userId, @Param("type") Post.Type type, Pageable pageable);
+    Page<PostSave> findByUserOrderByPostCreatedAtDesc(@Param("viewerId") String viewerId, @Param("type") Post.Type type, Pageable pageable);
 
     @Query("select s from PostSave s join Post p on p.id = s.postId "
-            + "where s.userId = :userId and (:type is null or p.type = :type) "
+            + "where s.userId = :viewerId and (:type is null or p.type = :type) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
             + "order by p.createdAt asc, p.id asc")
-    Page<PostSave> findByUserOrderByPostCreatedAtAsc(@Param("userId") String userId, @Param("type") Post.Type type, Pageable pageable);
+    Page<PostSave> findByUserOrderByPostCreatedAtAsc(@Param("viewerId") String viewerId, @Param("type") Post.Type type, Pageable pageable);
 
     /**
      * A bulk delete-by-criteria, unlike delete(entity), doesn't check "was exactly one row
