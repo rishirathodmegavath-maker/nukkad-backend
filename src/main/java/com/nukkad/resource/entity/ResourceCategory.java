@@ -8,7 +8,9 @@ package com.nukkad.resource.entity;
 public enum ResourceCategory {
     FREE_LEARNING("free-learning"),
     TEMPLATES("templates"),
+    /** Shown to members as "Startup Essays". The slug stays "playbooks" so rows already filed here keep working. */
     PLAYBOOKS("playbooks"),
+    STARTUP_BLOCKS("startup-blocks"),
     PROGRAMS("programs"),
     TOOLS("tools"),
     GOVERNMENT("government");
