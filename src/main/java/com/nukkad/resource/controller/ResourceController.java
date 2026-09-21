@@ -20,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -49,6 +50,17 @@ public class ResourceController {
                                                           @RequestParam(defaultValue = "0") int page,
                                                           @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(PageResponse.from(resourceService.listResources(q, type, category, featured, chapterId, principal.id(), page, size)));
+    }
+
+    /**
+     * A varied selection (one from each shelf and type in turn) for the library's front page, instead of
+     * whatever was uploaded last. {@code preferFeatured} puts admin-featured resources first inside each group.
+     */
+    @GetMapping("/mix")
+    public ApiResponse<List<ResourceDto>> mix(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                @RequestParam(defaultValue = "6") int size,
+                                                @RequestParam(defaultValue = "false") boolean preferFeatured) {
+        return ApiResponse.ok(resourceService.mix(size, preferFeatured, principal.id()));
     }
 
     @GetMapping("/{id}")

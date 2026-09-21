@@ -58,4 +58,11 @@ public final class ResourceSpecifications {
         if (featured == null || !featured) return null;
         return (root, query, cb) -> cb.isTrue(root.get("featured"));
     }
+
+    /** One shelf-and-type combination; a null category matches the resources that sit on no shelf. */
+    public static Specification<Resource> shelfAndType(ResourceCategory category, ResourceType type) {
+        return (root, query, cb) -> cb.and(
+                category == null ? cb.isNull(root.get("category")) : cb.equal(root.get("category"), category),
+                cb.equal(root.get("type"), type));
+    }
 }
