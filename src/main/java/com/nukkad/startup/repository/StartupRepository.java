@@ -1,6 +1,5 @@
 package com.nukkad.startup.repository;
 
-import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.startup.entity.Startup;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -10,7 +9,6 @@ import java.util.List;
 
 public interface StartupRepository extends JpaRepository<Startup, String>, JpaSpecificationExecutor<Startup> {
     long countByChapterId(String chapterId);
-    long countByModerationStatus(ModerationStatus moderationStatus);
 
     /** Feeds the chapter "recent activity" list — pageable's Sort (createdAt desc) determines order. */
     List<Startup> findByChapterId(String chapterId, Pageable pageable);

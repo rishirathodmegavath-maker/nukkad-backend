@@ -218,42 +218,6 @@ public class StartupService {
         return startupMapper.toDto(startup, false, true, true);
     }
 
-    // Pre-publish approval gate: a startup may be reviewed exactly once (PENDING -> APPROVED/REJECTED)
-    // — see ReportService.resolve for the identical "reviewed once" rationale. A rejection reason is
-    // required so the founder understands why.
-    @Transactional
-    public StartupDto reviewModeration(String adminId, String startupId, boolean approved, String reason, String ip) {
-        Startup startup = getEntityOrThrow(startupId);
-        if (startup.getModerationStatus() != ModerationStatus.PENDING) {
-            throw new ConflictException("This startup has already been reviewed");
-        }
-        if (!approved && (reason == null || reason.isBlank())) {
-            throw new BadRequestException("A reason is required when rejecting a startup");
-        }
-
-        startup.setModerationStatus(approved ? ModerationStatus.APPROVED : ModerationStatus.REJECTED);
-        startup.setRejectionReason(approved ? null : reason);
-        startup.setModerationReviewedBy(adminId);
-        startup.setModerationReviewedAt(Instant.now());
-        startup = startupRepository.saveAndFlush(startup);
-
-        java.util.Map<String, Object> details = new java.util.HashMap<>();
-        details.put("entityType", "Startup");
-        if (!approved) details.put("reason", reason);
-        auditService.log(adminId, approved ? AuditAction.ADMIN_CONTENT_APPROVED : AuditAction.ADMIN_CONTENT_REJECTED,
-                "Startup", startupId, ip, details);
-
-        String startupName = startup.getName();
-        teamMemberRepository.findByStartupIdAndTeamRoleIn(startupId, MANAGER_ROLES).forEach(manager ->
-                notificationService.notify(manager.getUserId(), NotificationType.startup,
-                        approved ? "Your startup was approved" : "Your startup was not approved",
-                        approved ? startupName + " is now visible to the community."
-                                : startupName + " was not approved: " + reason,
-                        startupId, adminId));
-
-        return startupMapper.toDto(startup, false, true, true);
-    }
-
     @Transactional(readOnly = true)
     public List<StartupDto> listMyFoundedStartups(String userId) {
         List<String> startupIds = teamMemberRepository.findByUserIdAndTeamRoleInAndStatus(userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)
