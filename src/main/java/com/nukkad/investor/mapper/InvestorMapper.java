@@ -3,10 +3,14 @@ package com.nukkad.investor.mapper;
 import com.nukkad.investor.dto.FundraiseDto;
 import com.nukkad.investor.dto.IntroRequestDto;
 import com.nukkad.investor.dto.InvestorActivationRequestDto;
+import com.nukkad.investor.dto.InvestorDto;
+import com.nukkad.investor.dto.InvestorIntroRequestDto;
 import com.nukkad.investor.dto.InvestorProfileDto;
 import com.nukkad.investor.entity.Fundraise;
 import com.nukkad.investor.entity.IntroRequest;
+import com.nukkad.investor.entity.Investor;
 import com.nukkad.investor.entity.InvestorActivationRequest;
+import com.nukkad.investor.entity.InvestorIntroRequest;
 import com.nukkad.investor.entity.InvestorProfile;
 import com.nukkad.user.dto.UserDto;
 import org.springframework.stereotype.Component;
@@ -72,6 +76,40 @@ public class InvestorMapper {
                 request.getReviewNote(),
                 request.getCreatedAt(),
                 request.getReviewedAt()
+        );
+    }
+
+    /** Founder-facing Investor Discovery card/profile — never carries the internal live-account link. */
+    public InvestorDto toDto(Investor investor) {
+        return new InvestorDto(
+                investor.getId(),
+                investor.getName(),
+                investor.getInvestorType().getLabel(),
+                investor.getDescription(),
+                investor.getLocation(),
+                investor.getWebsite(),
+                investor.getLogoUrl(),
+                new HashSet<>(investor.getSectors()),
+                new HashSet<>(investor.getStages()),
+                investor.getChequeMin(),
+                investor.getChequeMax(),
+                investor.getCreatedAt()
+        );
+    }
+
+    public InvestorIntroRequestDto toDto(InvestorIntroRequest request, String investorName, String requesterName, String startupName) {
+        return new InvestorIntroRequestDto(
+                request.getId(),
+                request.getInvestorId(),
+                investorName,
+                request.getRequesterUserId(),
+                requesterName,
+                request.getStartupId(),
+                startupName,
+                request.getMessage(),
+                request.getStatus().name(),
+                request.getCreatedAt(),
+                request.getClosedAt()
         );
     }
 
