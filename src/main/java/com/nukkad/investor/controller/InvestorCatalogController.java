@@ -50,11 +50,12 @@ public class InvestorCatalogController {
                                                           @RequestParam(required = false) String sector,
                                                           @RequestParam(required = false) String stage,
                                                           @RequestParam(required = false) String location,
+                                                          @RequestParam(required = false) String country,
                                                           @RequestParam(required = false) Long chequeSize,
                                                           @RequestParam(defaultValue = "0") int page,
                                                           @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(PageResponse.from(
-                investorCatalogService.list(type, sector, stage, location, chequeSize, q, principal.id(), page, size)));
+                investorCatalogService.list(type, sector, stage, location, country, chequeSize, q, principal.id(), page, size)));
     }
 
     @GetMapping("/{id}")

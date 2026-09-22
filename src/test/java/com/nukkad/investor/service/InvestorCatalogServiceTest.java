@@ -82,7 +82,7 @@ class InvestorCatalogServiceTest {
     @Test
     void aUserWithNoActiveStartupCannotListInvestors() {
         when(startupAccessPolicy.hasActiveStartup("u1")).thenReturn(false);
-        assertThatThrownBy(() -> service().list(null, null, null, null, null, null, "u1", 0, 20))
+        assertThatThrownBy(() -> service().list(null, null, null, null, null, null, null, "u1", 0, 20))
                 .isInstanceOf(ForbiddenException.class);
         verify(investorRepository, never()).findAll(any(Specification.class), any(Pageable.class));
     }
@@ -93,7 +93,7 @@ class InvestorCatalogServiceTest {
     @Test
     void searchingInvestorsByNameIsBlockedTheSameWayBrowsingIs() {
         when(startupAccessPolicy.hasActiveStartup("u1")).thenReturn(false);
-        assertThatThrownBy(() -> service().list(null, null, null, null, null, "Peak Capital", "u1", 0, 5))
+        assertThatThrownBy(() -> service().list(null, null, null, null, null, null, "Peak Capital", "u1", 0, 5))
                 .isInstanceOf(ForbiddenException.class);
         verify(investorRepository, never()).findAll(any(Specification.class), any(Pageable.class));
     }
@@ -117,7 +117,7 @@ class InvestorCatalogServiceTest {
         when(startupAccessPolicy.hasActiveStartup("founder1")).thenReturn(true);
         when(investorRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(investor("inv1", true, true, null))));
-        Page<InvestorDto> result = service().list(null, null, null, null, null, null, "founder1", 0, 20);
+        Page<InvestorDto> result = service().list(null, null, null, null, null, null, null, "founder1", 0, 20);
         assertThat(result.getContent()).hasSize(1);
     }
 
@@ -227,7 +227,8 @@ class InvestorCatalogServiceTest {
     @Test
     void creatingWithAChequeMinAboveTheMaxIsRejected() {
         var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", null, null, null,
-                Set.of(), Set.of(), 5_000_000L, 1_000_000L, true, true, null);
+                Set.of(), Set.of(), 5_000_000L, 1_000_000L, true, true, null,
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
         assertThatThrownBy(() -> service().create("admin1", in, null, null)).isInstanceOf(BadRequestException.class);
         verify(investorRepository, never()).saveAndFlush(any());
     }
@@ -235,7 +236,8 @@ class InvestorCatalogServiceTest {
     @Test
     void creatingWithAnUnknownInvestorTypeIsRejected() {
         var in = new InvestorCatalogService.NewInvestor("Peak Capital", "Not A Real Type", null, null, null,
-                Set.of(), Set.of(), null, null, true, true, null);
+                Set.of(), Set.of(), null, null, true, true, null,
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
         assertThatThrownBy(() -> service().create("admin1", in, null, null)).isInstanceOf(BadRequestException.class);
     }
 
@@ -243,7 +245,8 @@ class InvestorCatalogServiceTest {
     void creatingWithALinkToAnInvestorProfileThatDoesNotExistIsRejected() {
         when(investorProfileRepository.existsById("ghost")).thenReturn(false);
         var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", null, null, null,
-                Set.of(), Set.of(), null, null, true, true, "ghost");
+                Set.of(), Set.of(), null, null, true, true, "ghost",
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
         assertThatThrownBy(() -> service().create("admin1", in, null, null)).isInstanceOf(ResourceNotFoundException.class);
     }
 
@@ -257,7 +260,8 @@ class InvestorCatalogServiceTest {
             return i;
         });
         var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", "Backs bold founders", "India", "https://peak.vc",
-                Set.of("AI"), Set.of("Seed"), 500_000L, 5_000_000L, true, true, null);
+                Set.of("AI"), Set.of("Seed"), 500_000L, 5_000_000L, true, true, null,
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
 
         AdminInvestorDto dto = service().create("admin1", in, null, "127.0.0.1");
 
@@ -274,7 +278,8 @@ class InvestorCatalogServiceTest {
         when(investorRepository.findById("inv1")).thenReturn(Optional.of(existing));
         when(investorRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        var request = new UpdateInvestorRequest(null, null, null, null, null, null, null, null, null, null, false, null);
+        var request = new UpdateInvestorRequest(null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, false, null, null, null, null, null, null, null, null, null);
         AdminInvestorDto dto = service().update("admin1", "inv1", request, null);
 
         assertThat(dto.location()).isEqualTo("India");

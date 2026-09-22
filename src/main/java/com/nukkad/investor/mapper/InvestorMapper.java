@@ -79,7 +79,8 @@ public class InvestorMapper {
         );
     }
 
-    /** Founder-facing Investor Discovery card/profile — never carries the internal live-account link. */
+    /** Founder-facing Investor Discovery card/profile — never carries the internal live-account link or any
+     *  private contact detail (see InvestorDto). */
     public InvestorDto toDto(Investor investor) {
         return new InvestorDto(
                 investor.getId(),
@@ -87,10 +88,20 @@ public class InvestorMapper {
                 investor.getInvestorType().getLabel(),
                 investor.getDescription(),
                 investor.getLocation(),
+                investor.getCountry(),
                 investor.getWebsite(),
+                investor.getDomain(),
                 investor.getLogoUrl(),
                 new HashSet<>(investor.getSectors()),
                 new HashSet<>(investor.getStages()),
+                new HashSet<>(investor.getPrograms()),
+                investor.getInvestmentCount(),
+                investor.getExitCount(),
+                new HashSet<>(investor.getKeyPeople()),
+                investor.getFacebookUrl(),
+                investor.getInstagramUrl(),
+                investor.getLinkedinUrl(),
+                investor.getTwitterUrl(),
                 investor.getChequeMin(),
                 investor.getChequeMax(),
                 investor.getCreatedAt()

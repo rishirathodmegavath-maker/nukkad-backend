@@ -48,6 +48,12 @@ public class Investor {
     @Column(columnDefinition = "CHAR(36)", updatable = false, nullable = false)
     private String id;
 
+    /** The source dataset's own id for this row (CSV column "id"), preserved so a later re-import of the same
+     *  file updates this row instead of creating a duplicate — see InvestorImportService. Null for a
+     *  hand-created row; unique when set (enforced by a DB index), never shown to a founder. */
+    @Column(name = "external_source_id", length = 100)
+    private String externalSourceId;
+
     @Column(nullable = false, length = 200)
     private String name;
 
@@ -61,10 +67,18 @@ public class Investor {
     @Column(length = 200)
     private String location;
 
+    @Column(length = 100)
+    private String country;
+
     @Column(length = 300)
     private String website;
 
-    /** A hosted image (uploaded by an admin); null falls back to an initials avatar. */
+    /** The bare domain (e.g. "peak.vc"), separate from {@link #website} — used to derive a best-effort logo
+     *  fallback when no admin-uploaded one exists (see the frontend's investor-logo helper). */
+    @Column(length = 255)
+    private String domain;
+
+    /** A hosted image (uploaded by an admin); null falls back to a domain-derived logo, then an initials avatar. */
     @Column(name = "logo_url", length = 500)
     private String logoUrl;
 
@@ -80,11 +94,62 @@ public class Investor {
     @Builder.Default
     private Set<String> stages = new HashSet<>();
 
+    /** Named programs this investor runs (e.g. an accelerator cohort) — only ever populated from real data
+     *  (CSV "program" or admin entry), never inferred. */
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "investor_programs", joinColumns = @JoinColumn(name = "investor_id"))
+    @Column(name = "program", nullable = false)
+    @Builder.Default
+    private Set<String> programs = new HashSet<>();
+
+    @ElementCollection(fetch = FetchType.LAZY)
+    @CollectionTable(name = "investor_key_people", joinColumns = @JoinColumn(name = "investor_id"))
+    @Column(name = "person", nullable = false)
+    @Builder.Default
+    private Set<String> keyPeople = new HashSet<>();
+
+    @Column(name = "investment_count")
+    private Integer investmentCount;
+
+    @Column(name = "exit_count")
+    private Integer exitCount;
+
     @Column(name = "cheque_min")
     private Long chequeMin;
 
     @Column(name = "cheque_max")
     private Long chequeMax;
+
+    // ---- Admin-only contact details — InvestorMapper (founder-facing InvestorDto) never reads these. ----
+
+    @Column(name = "contact_email", length = 255)
+    private String contactEmail;
+
+    @Column(name = "contact_email_verified")
+    private Boolean contactEmailVerified;
+
+    @Column(name = "secondary_email", length = 255)
+    private String secondaryEmail;
+
+    @Column(name = "phone_number", length = 50)
+    private String phoneNumber;
+
+    @Column(name = "facebook_url", length = 300)
+    private String facebookUrl;
+
+    @Column(name = "instagram_url", length = 300)
+    private String instagramUrl;
+
+    @Column(name = "linkedin_url", length = 300)
+    private String linkedinUrl;
+
+    @Column(name = "twitter_url", length = 300)
+    private String twitterUrl;
+
+    /** Which import batch last created/updated the CSV-sourced fields on this row — null for a hand-created
+     *  or never-reimported row. Traceability only; nothing reads this to decide behavior. */
+    @Column(name = "source_batch_id", columnDefinition = "CHAR(36)")
+    private String sourceBatchId;
 
     /** Off = hidden everywhere in Discovery, same as {@link #visible} false — the two are separate admin controls
      *  (spec: "Active/inactive" and "Visible/Hidden" are distinct toggles) even though founders see one outcome. */

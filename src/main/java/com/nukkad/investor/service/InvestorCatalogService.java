@@ -56,10 +56,15 @@ import java.util.Set;
 @Service
 public class InvestorCatalogService {
 
-    /** What an admin fills in to add a catalog investor. */
+    /** What an admin fills in to add a catalog investor by hand — see InvestorImportWorker for how a CSV row
+     *  becomes an Investor instead. */
     public record NewInvestor(String name, String investorType, String description, String location, String website,
                                Set<String> sectors, Set<String> stages, Long chequeMin, Long chequeMax,
-                               boolean active, boolean visible, String linkedInvestorProfileId) {}
+                               boolean active, boolean visible, String linkedInvestorProfileId,
+                               String country, String domain, Set<String> programs, Set<String> keyPeople,
+                               Integer investmentCount, Integer exitCount,
+                               String facebookUrl, String instagramUrl, String linkedinUrl, String twitterUrl,
+                               String contactEmail, Boolean contactEmailVerified, String secondaryEmail, String phoneNumber) {}
 
     private final InvestorRepository investorRepository;
     private final InvestorIntroRequestRepository investorIntroRequestRepository;
@@ -110,7 +115,7 @@ public class InvestorCatalogService {
     }
 
     @Transactional(readOnly = true)
-    public Page<InvestorDto> list(String type, String sector, String stage, String location, Long chequeSize,
+    public Page<InvestorDto> list(String type, String sector, String stage, String location, String country, Long chequeSize,
                                    String q, String viewerId, int page, int size) {
         requireAccess(viewerId);
         Specification<Investor> spec = InvestorSpecifications.combine(
@@ -120,6 +125,7 @@ public class InvestorCatalogService {
                 InvestorSpecifications.sector(sector),
                 InvestorSpecifications.stage(stage),
                 InvestorSpecifications.location(location),
+                InvestorSpecifications.country(country),
                 InvestorSpecifications.chequeSize(chequeSize)
         );
         // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
@@ -212,14 +218,28 @@ public class InvestorCatalogService {
                 .investorType(type)
                 .description(blankToNull(in.description()))
                 .location(blankToNull(in.location()))
+                .country(blankToNull(in.country()))
                 .website(blankToNull(in.website()))
+                .domain(blankToNull(in.domain()))
                 .logoUrl(logoUrl)
                 .sectors(in.sectors() == null ? new HashSet<>() : new HashSet<>(in.sectors()))
                 .stages(in.stages() == null ? new HashSet<>() : new HashSet<>(in.stages()))
+                .programs(in.programs() == null ? new HashSet<>() : new HashSet<>(in.programs()))
+                .keyPeople(in.keyPeople() == null ? new HashSet<>() : new HashSet<>(in.keyPeople()))
+                .investmentCount(in.investmentCount())
+                .exitCount(in.exitCount())
                 .chequeMin(in.chequeMin())
                 .chequeMax(in.chequeMax())
                 .active(in.active())
                 .visible(in.visible())
+                .facebookUrl(blankToNull(in.facebookUrl()))
+                .instagramUrl(blankToNull(in.instagramUrl()))
+                .linkedinUrl(blankToNull(in.linkedinUrl()))
+                .twitterUrl(blankToNull(in.twitterUrl()))
+                .contactEmail(blankToNull(in.contactEmail()))
+                .contactEmailVerified(in.contactEmailVerified())
+                .secondaryEmail(blankToNull(in.secondaryEmail()))
+                .phoneNumber(blankToNull(in.phoneNumber()))
                 .linkedInvestorProfileId(linkedId)
                 .createdByAdminId(adminId)
                 .build();
@@ -240,14 +260,28 @@ public class InvestorCatalogService {
         if (request.investorType() != null) investor.setInvestorType(parseType(request.investorType()));
         if (request.description() != null) investor.setDescription(blankToNull(request.description()));
         if (request.location() != null) investor.setLocation(blankToNull(request.location()));
+        if (request.country() != null) investor.setCountry(blankToNull(request.country()));
         if (request.website() != null) investor.setWebsite(blankToNull(request.website()));
+        if (request.domain() != null) investor.setDomain(blankToNull(request.domain()));
         if (request.sectors() != null) investor.setSectors(new HashSet<>(request.sectors()));
         if (request.stages() != null) investor.setStages(new HashSet<>(request.stages()));
+        if (request.programs() != null) investor.setPrograms(new HashSet<>(request.programs()));
+        if (request.keyPeople() != null) investor.setKeyPeople(new HashSet<>(request.keyPeople()));
+        if (request.investmentCount() != null) investor.setInvestmentCount(request.investmentCount());
+        if (request.exitCount() != null) investor.setExitCount(request.exitCount());
         if (request.chequeMin() != null) investor.setChequeMin(request.chequeMin());
         if (request.chequeMax() != null) investor.setChequeMax(request.chequeMax());
         validateChequeRange(investor.getChequeMin(), investor.getChequeMax());
         if (request.active() != null) investor.setActive(request.active());
         if (request.visible() != null) investor.setVisible(request.visible());
+        if (request.facebookUrl() != null) investor.setFacebookUrl(blankToNull(request.facebookUrl()));
+        if (request.instagramUrl() != null) investor.setInstagramUrl(blankToNull(request.instagramUrl()));
+        if (request.linkedinUrl() != null) investor.setLinkedinUrl(blankToNull(request.linkedinUrl()));
+        if (request.twitterUrl() != null) investor.setTwitterUrl(blankToNull(request.twitterUrl()));
+        if (request.contactEmail() != null) investor.setContactEmail(blankToNull(request.contactEmail()));
+        if (request.contactEmailVerified() != null) investor.setContactEmailVerified(request.contactEmailVerified());
+        if (request.secondaryEmail() != null) investor.setSecondaryEmail(blankToNull(request.secondaryEmail()));
+        if (request.phoneNumber() != null) investor.setPhoneNumber(blankToNull(request.phoneNumber()));
         if (request.linkedInvestorProfileId() != null) {
             investor.setLinkedInvestorProfileId(resolveLinkedProfileId(request.linkedInvestorProfileId()));
         }
