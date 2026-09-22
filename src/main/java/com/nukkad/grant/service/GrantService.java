@@ -8,9 +8,11 @@ import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.grant.dto.CreateGrantRequest;
+import com.nukkad.grant.dto.DiscoveredGrantCandidate;
 import com.nukkad.grant.dto.GrantDto;
 import com.nukkad.grant.dto.UpdateGrantRequest;
 import com.nukkad.grant.entity.Grant;
+import com.nukkad.grant.entity.GrantDiscoveryOrigin;
 import com.nukkad.grant.entity.GrantProviderType;
 import com.nukkad.grant.mapper.GrantMapper;
 import com.nukkad.grant.repository.GrantRepository;
@@ -193,6 +195,63 @@ public class GrantService {
                     "\"" + grant.getName() + "\" was posted to BuildAdda for you.", grant.getId(), adminId);
         }
         return grantMapper.toDto(grant, true);
+    }
+
+    /**
+     * A scheduled AI-discovery run (see GrantDiscoveryService) publishing a newly found scheme.
+     * Always live immediately, since the discovery pipeline runs with no admin-review step -- the
+     * candidate has already passed that service's own validation (real provider type, a verified
+     * source URL, a not-yet-expired deadline) before it ever reaches here. Attributed to the
+     * platform's own system admin account, never a member -- there's no "posted for you" concept
+     * for something nobody submitted.
+     */
+    @Transactional
+    public GrantDto createGrantFromDiscovery(DiscoveredGrantCandidate candidate, String systemAdminId, String batchLabel) {
+        Grant grant = Grant.builder()
+                .name(candidate.name())
+                .provider(candidate.provider())
+                .providerType(candidate.providerType())
+                .description(candidate.description())
+                .fundingAmount(candidate.fundingAmount())
+                .eligibilityCriteria(candidate.eligibilityCriteria())
+                .eligibleSectors(new HashSet<>(candidate.eligibleSectors()))
+                .eligibleStages(new HashSet<>(candidate.eligibleStages()))
+                .deadline(candidate.deadline())
+                .applicationUrl(candidate.applicationUrl())
+                .sourceUrl(candidate.sourceUrl())
+                .discoveryOrigin(GrantDiscoveryOrigin.AI_DISCOVERY)
+                .lastVerifiedAt(Instant.now())
+                .createdByUserId(systemAdminId)
+                .moderationStatus(ModerationStatus.APPROVED)
+                .build();
+        grant = grantRepository.saveAndFlush(grant);
+
+        auditService.log(systemAdminId, AuditAction.AI_GRANT_DISCOVERED, "Grant", grant.getId(),
+                "internal:grant-discovery", Map.of("batch", batchLabel));
+        return grantMapper.toDto(grant, false);
+    }
+
+    /** Re-verification of an existing AI-discovered grant on a later run -- refreshes the mutable
+     *  details (a deadline can move, a funding cap can change) and bumps lastVerifiedAt, but never
+     *  touches moderationStatus/createdByUserId/discoveryOrigin: this only ever updates a row that
+     *  createGrantFromDiscovery already created. */
+    @Transactional
+    public GrantDto refreshGrantFromDiscovery(String grantId, DiscoveredGrantCandidate candidate,
+                                               String systemAdminId, String batchLabel) {
+        Grant grant = getEntityOrThrow(grantId);
+        grant.setDescription(candidate.description());
+        grant.setFundingAmount(candidate.fundingAmount());
+        grant.setEligibilityCriteria(candidate.eligibilityCriteria());
+        grant.setEligibleSectors(new HashSet<>(candidate.eligibleSectors()));
+        grant.setEligibleStages(new HashSet<>(candidate.eligibleStages()));
+        grant.setDeadline(candidate.deadline());
+        grant.setSourceUrl(candidate.sourceUrl());
+        grant.setLastVerifiedAt(Instant.now());
+        grant = grantRepository.saveAndFlush(grant);
+
+        auditService.log(systemAdminId, AuditAction.AI_GRANT_VERIFIED, "Grant", grant.getId(),
+                "internal:grant-discovery", Map.of("batch", batchLabel));
+        return grantMapper.toDto(grant, false);
     }
 
     private String resolveCreator(String adminId, String createdByEmail) {

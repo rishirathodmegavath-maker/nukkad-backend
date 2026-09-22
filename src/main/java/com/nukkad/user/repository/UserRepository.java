@@ -3,6 +3,7 @@ package com.nukkad.user.repository;
 import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
@@ -53,6 +54,12 @@ public interface UserRepository extends JpaRepository<User, String>, JpaSpecific
 
     @Query("SELECT COUNT(u) FROM User u JOIN u.securityRoles r WHERE r = :role")
     long countByRole(@Param("role") SecurityRole role);
+
+    /** Resolves the account the AI grant-discovery pipeline attributes its auto-published grants
+     *  to (see GrantDiscoveryService) -- the platform's own longest-standing Admin account, never
+     *  a member's. Pageable(0, 1) picks the single oldest match. */
+    @Query("SELECT u FROM User u JOIN u.securityRoles r WHERE r = :role ORDER BY u.createdAt ASC")
+    Page<User> findByRoleOrderByCreatedAtAsc(@Param("role") SecurityRole role, Pageable pageable);
 
     /**
      * Single-column projection by primary key — used on every authenticated request by

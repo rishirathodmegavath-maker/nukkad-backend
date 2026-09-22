@@ -143,6 +143,20 @@ nukkad:
     endpoint-override: ${S3_ENDPOINT_OVERRIDE:http://localhost:9000}
     force-path-style: ${S3_FORCE_PATH_STYLE:true}
     public-base-url: ${S3_PUBLIC_BASE_URL:http://localhost:9000/nukkad-uploads}
+  discovery:
+    # Scheduled AI grant-discovery pipeline (com.nukkad.grant.discovery) -- see .env.example for
+    # what each of these does. Off by default: nothing calls Gemini or touches the Grants table
+    # until this is explicitly turned on. Neither cron below is a hard-coded production schedule --
+    # both are fully overridable via their env var, with the current values only acting as a
+    # sensible off-peak default when unset.
+    enabled: ${GRANT_DISCOVERY_ENABLED:false}
+    api-key: ${GEMINI_API_KEY:}
+    model: ${GEMINI_MODEL:gemini-2.5-flash}
+    max-new-grants-per-run: ${GRANT_DISCOVERY_MAX_NEW_PER_RUN:10}
+    governments: ${GRANT_DISCOVERY_GOVERNMENTS:Central Government,Maharashtra,Karnataka,Delhi,Telangana,Gujarat,Tamil Nadu,Uttar Pradesh}
+    topics: ${GRANT_DISCOVERY_TOPICS:General startup funding (all sectors),Women-led startups,Technology / Deep-tech / AI,Agritech / Rural enterprise,Manufacturing / MSME}
+    cron: ${GRANT_DISCOVERY_CRON:0 17 3 * * *}
+    expiry-sweep-cron: ${GRANT_DISCOVERY_EXPIRY_SWEEP_CRON:0 0 4 * * *}
 
 logging:
   level:

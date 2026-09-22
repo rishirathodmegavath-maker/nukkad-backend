@@ -84,6 +84,22 @@ public class Grant {
     @Column(name = "application_url", nullable = false, length = 500)
     private String applicationUrl;
 
+    /** The official page the details were verified against. Optional — most manually-entered
+     *  grants won't have one, but every AI-discovered grant always does (see GrantDiscoveryService,
+     *  which refuses to auto-publish a candidate with no verifiable source). */
+    @Column(name = "source_url", length = 500)
+    private String sourceUrl;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "discovery_origin", nullable = false, length = 20)
+    @Builder.Default
+    private GrantDiscoveryOrigin discoveryOrigin = GrantDiscoveryOrigin.MANUAL;
+
+    /** Last time the discovery pipeline re-confirmed an AI-discovered grant is still live. Null for
+     *  every manually-entered grant. */
+    @Column(name = "last_verified_at")
+    private Instant lastVerifiedAt;
+
     @Column(name = "created_by_user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String createdByUserId;
 
