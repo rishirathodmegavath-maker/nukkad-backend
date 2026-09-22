@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 
 public interface PostHashtagRepository extends JpaRepository<PostHashtag, String> {
@@ -36,4 +37,12 @@ public interface PostHashtagRepository extends JpaRepository<PostHashtag, String
     void deleteByPostId(@Param("postId") String postId);
 
     boolean existsBy();
+
+    /** A discussion's own tags, for its detail-page chip row. */
+    @Query("select h.tag from PostHashtag h where h.postId = :postId order by h.tag asc")
+    List<String> findTagsByPostId(@Param("postId") String postId);
+
+    /** Same, batched for a whole list page: rows of (postId, tag). */
+    @Query("select h.postId, h.tag from PostHashtag h where h.postId in :postIds")
+    List<Object[]> findTagsByPostIds(@Param("postIds") Collection<String> postIds);
 }

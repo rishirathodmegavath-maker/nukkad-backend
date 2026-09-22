@@ -1,4 +1,4 @@
-package com.nukkad.feed.entity;
+package com.nukkad.discussion.entity;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -14,14 +14,19 @@ import org.hibernate.annotations.UuidGenerator;
 
 import java.time.Instant;
 
+/**
+ * One page view of a discussion. Mirrors {@code StartupProfileView} exactly: not deduplicated (every
+ * read inserts a new row, so a refresh does inflate the count — the same tradeoff already accepted
+ * for startup profile views), {@code viewerId} nullable for an anonymous viewer.
+ */
 @Entity
-@Table(name = "post_comments")
+@Table(name = "post_views")
 @Getter
 @Setter
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class PostComment {
+public class PostView {
 
     @Id
     @UuidGenerator
@@ -31,18 +36,8 @@ public class PostComment {
     @Column(name = "post_id", nullable = false, columnDefinition = "CHAR(36)")
     private String postId;
 
-    @Column(name = "parent_comment_id", columnDefinition = "CHAR(36)")
-    private String parentCommentId;
-
-    @Column(name = "author_id", nullable = false, columnDefinition = "CHAR(36)")
-    private String authorId;
-
-    @Column(nullable = false, length = 2000)
-    private String content;
-
-    @Column(name = "likes_count", nullable = false)
-    @Builder.Default
-    private int likesCount = 0;
+    @Column(name = "viewer_id", columnDefinition = "CHAR(36)")
+    private String viewerId;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
