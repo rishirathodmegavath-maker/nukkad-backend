@@ -435,6 +435,40 @@ class ResourceServiceTest {
         assertThatThrownBy(() -> service().getResource("gone", "u1")).isInstanceOf(ResourceNotFoundException.class);
     }
 
+    @Test
+    void bulkDeleteRemovesEveryRequestedResourceAndAuditLogsEachOne() {
+        Resource a = resource("r1", HOSTED_PDF);
+        Resource b = resource("r2", "https://example.com/link");
+        when(resourceRepository.findAllById(Set.of("r1", "r2"))).thenReturn(List.of(a, b));
+
+        service().bulkDeleteResources("admin1", List.of("r1", "r2"), "1.2.3.4");
+
+        verify(resourceRepository).delete(a);
+        verify(resourceRepository).delete(b);
+        verify(fileStorageService).deleteIfHosted(HOSTED_PDF);
+        verify(auditService, times(2))
+                .log(eq("admin1"), eq(AuditAction.ADMIN_RESOURCE_DELETED), eq("Resource"), any(), eq("1.2.3.4"), anyMap());
+    }
+
+    @Test
+    void bulkDeleteResourcesIsAllOrNothingIfAnyRequestedIdDoesNotExist() {
+        Resource a = resource("r1", HOSTED_PDF);
+        when(resourceRepository.findAllById(Set.of("r1", "ghost"))).thenReturn(List.of(a));
+
+        assertThatThrownBy(() -> service().bulkDeleteResources("admin1", List.of("r1", "ghost"), null))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(resourceRepository, never()).delete(any(Resource.class));
+        verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void bulkDeleteResourcesRejectsAnEmptyIdList() {
+        assertThatThrownBy(() -> service().bulkDeleteResources("admin1", List.of(), null))
+                .isInstanceOf(BadRequestException.class);
+        verify(resourceRepository, never()).findAllById(any());
+    }
+
     // ---- open in browser / download metadata ----
 
     @Test

@@ -300,6 +300,42 @@ class InvestorCatalogServiceTest {
     }
 
     @Test
+    void bulkDeleteRemovesEveryRequestedInvestorAndAuditLogsEachOne() {
+        Investor a = investor("inv1", true, true, null);
+        a.setLogoUrl("/uploads/investor-logos/a.png");
+        Investor b = investor("inv2", true, true, null);
+        when(investorRepository.findAllById(Set.of("inv1", "inv2"))).thenReturn(List.of(a, b));
+
+        service().bulkDelete("admin1", List.of("inv1", "inv2"), "127.0.0.1");
+
+        verify(investorRepository).delete(a);
+        verify(investorRepository).delete(b);
+        verify(fileStorageService).deleteIfHosted("/uploads/investor-logos/a.png");
+        verify(auditService, org.mockito.Mockito.times(2))
+                .log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_INVESTOR_DELETED), eq("Investor"), anyString(), eq("127.0.0.1"), any());
+    }
+
+    @Test
+    void bulkDeleteIsAllOrNothingIfAnyRequestedIdDoesNotExist() {
+        Investor a = investor("inv1", true, true, null);
+        // Only inv1 comes back — inv2 doesn't exist.
+        when(investorRepository.findAllById(Set.of("inv1", "inv2"))).thenReturn(List.of(a));
+
+        assertThatThrownBy(() -> service().bulkDelete("admin1", List.of("inv1", "inv2"), null))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        verify(investorRepository, never()).delete(any(Investor.class));
+        verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void bulkDeleteRejectsAnEmptyIdList() {
+        assertThatThrownBy(() -> service().bulkDelete("admin1", List.of(), null))
+                .isInstanceOf(BadRequestException.class);
+        verify(investorRepository, never()).findAllById(any());
+    }
+
+    @Test
     void closingAnAlreadyClosedIntroRequestIsAConflict() {
         InvestorIntroRequest closed = InvestorIntroRequest.builder().id("rec1").investorId("inv1").requesterUserId("founder1")
                 .startupId("s1").message("hi").status(InvestorIntroRequestStatus.CLOSED).build();

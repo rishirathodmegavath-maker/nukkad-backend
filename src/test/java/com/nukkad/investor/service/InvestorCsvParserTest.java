@@ -225,6 +225,94 @@ class InvestorCsvParserTest {
     }
 
     @Test
+    void parseExcelRendersALargeNumericCellAsAPlainNumberNotScientificNotation() {
+        // A phone number entered as a number rather than text (common in real exports, since Excel
+        // auto-detects all-digit cells as numeric) — General format normally switches to scientific
+        // notation once a whole number needs more than ~11 digits, which would otherwise turn a UK number
+        // with country code into "4.42037E+11".
+        List<Object[]> sheet = List.of(
+                new Object[]{"company_name", "phone_number"},
+                new Object[]{"Acme", 442037276601.0});
+        InvestorCsvRow row = parser.parseExcel(xlsx(sheet)).rows().get(0);
+        assertThat(row.phoneNumber()).isEqualTo("442037276601");
+    }
+
+    @Test
+    void parseExcelPreservesTheExactValueOfANumericCellEvenUnderAnExplicitRoundingFormat() {
+        // A cell can carry an explicit display format ("0" — zero decimal places) independently of the
+        // column's other cells. Excel would *display* -2592.328947 as "-2592", but that's a cosmetic
+        // rounding, not the actual stored value — this pipeline must capture the real value, not what a
+        // spreadsheet happened to render it as.
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Sheet1");
+            sheet.createRow(0).createCell(0).setCellValue("company_name");
+            sheet.getRow(0).createCell(1).setCellValue("phone_number");
+            org.apache.poi.ss.usermodel.CellStyle roundedStyle = workbook.createCellStyle();
+            roundedStyle.setDataFormat((short) 1); // built-in "0" — zero decimal places
+            Row dataRow = sheet.createRow(1);
+            dataRow.createCell(0).setCellValue("Acme");
+            var phoneCell = dataRow.createCell(1);
+            phoneCell.setCellValue(-2592.328947);
+            phoneCell.setCellStyle(roundedStyle);
+
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            workbook.write(out);
+            InvestorCsvRow row = parser.parseExcel(new java.io.ByteArrayInputStream(out.toByteArray())).rows().get(0);
+            assertThat(row.phoneNumber()).isEqualTo("-2592.328947");
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void parseExcelStillFormatsARealDateCellNormally() {
+        // Defends the narrowing in the fix above: only non-date numeric formats bypass Excel's own
+        // formatting. This pipeline has no date column of its own, so this routes the date value through
+        // "location" (an ordinary mapped string field) purely to be able to inspect what came out — a
+        // broken fix would turn it into a raw serial-day number (e.g. "45306") instead of a real date.
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Sheet1");
+            sheet.createRow(0).createCell(0).setCellValue("company_name");
+            sheet.getRow(0).createCell(1).setCellValue("location");
+            org.apache.poi.ss.usermodel.CreationHelper helper = workbook.getCreationHelper();
+            org.apache.poi.ss.usermodel.CellStyle dateStyle = workbook.createCellStyle();
+            dateStyle.setDataFormat(helper.createDataFormat().getFormat("yyyy-mm-dd"));
+            Row dataRow = sheet.createRow(1);
+            dataRow.createCell(0).setCellValue("Acme");
+            var dateCell = dataRow.createCell(1);
+            dateCell.setCellValue(java.time.LocalDate.of(2024, 1, 15));
+            dateCell.setCellStyle(dateStyle);
+
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            workbook.write(out);
+            InvestorCsvRow row = parser.parseExcel(new java.io.ByteArrayInputStream(out.toByteArray())).rows().get(0);
+            assertThat(row.location()).isEqualTo("2024-01-15");
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void controlCharactersFromAnXHhhhEscapeAreStrippedNotPreservedAsGarbage() {
+        // Excel/XML represents an XML-invalid control character in a shared string as a literal "_xHHHH_"
+        // escape (the documented OOXML convention); POI decodes that back into the raw control byte, but a
+        // raw control character has no legitimate place in a name — this simulates that decoded byte
+        // arriving via a plain string cell (CSV path, to isolate the sanitizer from the xlsx/POI machinery).
+        String content = "company_name\nSkip \u009dStritter\n";
+        InvestorCsvRow row = parser.parse(csv(content)).rows().get(0);
+        assertThat(row.name()).isEqualTo("Skip Stritter");
+    }
+
+    @Test
+    void aNonBreakingSpaceAtTheEdgeOfAValueIsTrimmedLikeOrdinaryWhitespace() {
+        // U+00A0 (non-breaking space) survives both String.trim() and String.strip() in Java — neither
+        // treats it as whitespace — so a trailing NBSP from a scraped/pasted source was slipping through.
+        String content = "company_name,description\nAcme,\"Leading edtech investor. \"\n";
+        InvestorCsvRow row = parser.parse(csv(content)).rows().get(0);
+        assertThat(row.description()).isEqualTo("Leading edtech investor.");
+    }
+
+    @Test
     void parseExcelSkipsBlankRowsBetweenDataRows() {
         List<Object[]> sheet = List.of(
                 new Object[]{"company_name"},

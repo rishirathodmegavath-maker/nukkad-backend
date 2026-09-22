@@ -41,6 +41,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -293,7 +295,31 @@ public class InvestorCatalogService {
 
     @Transactional
     public void delete(String adminId, String id, String ip) {
-        Investor investor = getEntityOrThrow(id);
+        deleteOne(adminId, getEntityOrThrow(id), ip);
+    }
+
+    /** Deletes every one of the given investors, or none of them. Every id must exist first — if any is
+     *  missing (already deleted, never existed, or just a typo from the caller), nothing is deleted and a
+     *  {@link ResourceNotFoundException} is thrown; there's no partial bulk delete. One
+     *  {@code ADMIN_INVESTOR_DELETED} audit-log row is still written per investor, exactly like the
+     *  single-item {@link #delete}, so the audit trail reads the same either way. */
+    @Transactional
+    public void bulkDelete(String adminId, List<String> ids, String ip) {
+        if (ids == null || ids.isEmpty()) {
+            throw new BadRequestException("No investors specified");
+        }
+        Set<String> uniqueIds = new LinkedHashSet<>(ids);
+        List<Investor> investors = investorRepository.findAllById(uniqueIds);
+        if (investors.size() != uniqueIds.size()) {
+            throw new ResourceNotFoundException("One or more investors were not found");
+        }
+        for (Investor investor : investors) {
+            deleteOne(adminId, investor, ip);
+        }
+    }
+
+    private void deleteOne(String adminId, Investor investor, String ip) {
+        String id = investor.getId();
         String name = investor.getName();
         String logoUrl = investor.getLogoUrl();
         investorRepository.delete(investor);

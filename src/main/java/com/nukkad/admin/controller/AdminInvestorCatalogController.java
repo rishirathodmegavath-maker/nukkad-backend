@@ -31,6 +31,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -118,6 +119,16 @@ public class AdminInvestorCatalogController {
                                      @PathVariable String id,
                                      HttpServletRequest httpRequest) {
         investorCatalogService.delete(principal.id(), id, httpRequest.getRemoteAddr());
+        return ApiResponse.ok(null);
+    }
+
+    /** All-or-nothing: if any id doesn't exist, none of them are deleted — see
+     *  {@link InvestorCatalogService#bulkDelete}. */
+    @DeleteMapping
+    public ApiResponse<Void> bulkDelete(@AuthenticationPrincipal AuthenticatedUser principal,
+                                         @RequestParam List<String> ids,
+                                         HttpServletRequest httpRequest) {
+        investorCatalogService.bulkDelete(principal.id(), ids, httpRequest.getRemoteAddr());
         return ApiResponse.ok(null);
     }
 
