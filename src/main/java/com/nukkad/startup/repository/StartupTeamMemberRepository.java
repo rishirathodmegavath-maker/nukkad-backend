@@ -36,4 +36,16 @@ public interface StartupTeamMemberRepository extends JpaRepository<StartupTeamMe
             + "and m2.status = com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE "
             + "and ((m1.userId = :userA and m2.userId = :userB) or (m1.userId = :userB and m2.userId = :userA))")
     boolean existsActiveTeamMembershipBetween(@Param("userA") String userA, @Param("userB") String userB);
+
+    /**
+     * Whether {@code userId} manages (Founder or Admin of) at least one startup an admin hasn't removed — the
+     * "active Startup Profile" gate used outside the startup module itself (e.g. Investor Discovery). A raw
+     * {@code startupId} column (no JPA association on this entity) means this needs an explicit join rather than
+     * a derived {@code ..._Startup_RemovedByAdminFalse} method name.
+     */
+    @Query("select case when count(tm) > 0 then true else false end from StartupTeamMember tm, Startup s "
+            + "where tm.startupId = s.id and tm.userId = :userId and tm.status = :status "
+            + "and tm.teamRole in :roles and s.removedByAdmin = false")
+    boolean existsManagerOnLiveStartup(@Param("userId") String userId, @Param("status") StartupTeamMember.Status status,
+                                        @Param("roles") List<StartupTeamMember.TeamRole> roles);
 }

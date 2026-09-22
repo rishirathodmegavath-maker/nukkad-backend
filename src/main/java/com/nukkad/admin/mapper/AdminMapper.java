@@ -2,10 +2,12 @@ package com.nukkad.admin.mapper;
 
 import com.nukkad.admin.dto.AdminAuditLogDto;
 import com.nukkad.admin.dto.AdminInvestorActivationDto;
+import com.nukkad.admin.dto.AdminInvestorDto;
 import com.nukkad.admin.dto.AdminReportDto;
 import com.nukkad.admin.dto.AdminUserDto;
 import com.nukkad.admin.dto.AdminWithdrawalDto;
 import com.nukkad.common.audit.AuditLog;
+import com.nukkad.investor.entity.Investor;
 import com.nukkad.investor.entity.InvestorActivationRequest;
 import com.nukkad.report.entity.Report;
 import com.nukkad.user.entity.User;
@@ -118,6 +120,31 @@ public class AdminMapper {
                 reviewer != null ? reviewer.getName() : null,
                 request.getCreatedAt(),
                 request.getReviewedAt()
+        );
+    }
+
+    /** {@code linkedProfileName} is the display name of the live investor account this catalog row is tied to
+     *  (via {@link Investor#getLinkedInvestorProfileId()}), or null when it isn't linked to one. */
+    public AdminInvestorDto toDto(Investor investor, String linkedProfileName) {
+        return new AdminInvestorDto(
+                investor.getId(),
+                investor.getName(),
+                investor.getInvestorType().getLabel(),
+                investor.getDescription(),
+                investor.getLocation(),
+                investor.getWebsite(),
+                investor.getLogoUrl(),
+                new HashSet<>(investor.getSectors()),
+                new HashSet<>(investor.getStages()),
+                investor.getChequeMin(),
+                investor.getChequeMax(),
+                investor.isActive(),
+                investor.isVisible(),
+                investor.getLinkedInvestorProfileId(),
+                linkedProfileName,
+                investor.getCreatedByAdminId(),
+                investor.getCreatedAt(),
+                investor.getUpdatedAt()
         );
     }
 }

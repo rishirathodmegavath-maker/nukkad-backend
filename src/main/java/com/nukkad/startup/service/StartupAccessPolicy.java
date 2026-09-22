@@ -9,6 +9,8 @@ import com.nukkad.startup.repository.StartupRepository;
 import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
  * The one place that decides whether a viewer may READ a startup, and therefore anything hanging off it (its team,
  * materials, updates, roles, fundraise, tagged events, introduction requests). Every read path goes through here so the
@@ -22,6 +24,9 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class StartupAccessPolicy {
+
+    private static final List<StartupTeamMember.TeamRole> MANAGER_ROLES =
+            List.of(StartupTeamMember.TeamRole.FOUNDER, StartupTeamMember.TeamRole.ADMIN);
 
     private final StartupRepository startupRepository;
     private final StartupTeamMemberRepository teamMemberRepository;
@@ -55,5 +60,17 @@ public class StartupAccessPolicy {
         return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
                 .map(m -> m.canManage() && m.getStatus() == StartupTeamMember.Status.ACTIVE)
                 .orElse(false);
+    }
+
+    /**
+     * Whether {@code userId} has an "active Startup Profile" — the gate features outside the startup module (e.g.
+     * Investor Discovery) key off. Same tier as everywhere else a startup-facing action is restricted to the people
+     * who represent it (fundraising, materials, team): Founder or Admin of at least one startup an admin hasn't
+     * removed. A plain team Member does not unlock these — unchanged from every other "manage" boundary already in
+     * this codebase.
+     */
+    public boolean hasActiveStartup(String userId) {
+        if (userId == null) return false;
+        return teamMemberRepository.existsManagerOnLiveStartup(userId, StartupTeamMember.Status.ACTIVE, MANAGER_ROLES);
     }
 }
