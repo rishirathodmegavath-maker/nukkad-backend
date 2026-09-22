@@ -95,6 +95,14 @@
 			<version>1.12.0</version>
 		</dependency>
 
+		<!-- Same pipeline also accepts .xlsx uploads (real investor-list exports rarely arrive as plain
+		     CSV) — streaming read of the first sheet only, no write/formatting support needed. -->
+		<dependency>
+			<groupId>org.apache.poi</groupId>
+			<artifactId>poi-ooxml</artifactId>
+			<version>5.3.0</version>
+		</dependency>
+
 		<!-- OpenAPI / Swagger -->
 		<dependency>
 			<groupId>org.springdoc</groupId>

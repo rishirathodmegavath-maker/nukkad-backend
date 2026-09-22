@@ -9,12 +9,15 @@ import com.nukkad.investor.entity.InvestorImportBatch;
 import com.nukkad.investor.entity.InvestorImportStatus;
 import com.nukkad.investor.repository.InvestorImportBatchRepository;
 import com.nukkad.investor.repository.InvestorImportIssueRepository;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.io.ByteArrayOutputStream;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,6 +46,24 @@ class InvestorImportServiceTest {
 
     private static MockMultipartFile csvFile(String content) {
         return new MockMultipartFile("file", "investors.csv", "text/csv", content.getBytes());
+    }
+
+    /** A minimal real .xlsx, one header row + one data row, to prove {@code preview}/{@code startImport}
+     *  route a spreadsheet upload to {@link InvestorCsvParser#parseExcel} by filename, not just by
+     *  content-type (browsers are inconsistent about the latter). */
+    private static MockMultipartFile xlsxFile(String filename, String contentType) {
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            var sheet = workbook.createSheet("Sheet1");
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue("company_name");
+            Row data = sheet.createRow(1);
+            data.createCell(0).setCellValue("Acme");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            workbook.write(out);
+            return new MockMultipartFile("file", filename, contentType, out.toByteArray());
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
     }
 
     @Test
@@ -98,6 +119,20 @@ class InvestorImportServiceTest {
 
         assertThat(dto.id()).isEqualTo("batch1");
         verify(investorImportWorker).processImportAsync(eq("batch1"), any(), eq("admin1"), isNull());
+    }
+
+    @Test
+    void previewRoutesAnXlsxUploadThroughTheExcelParserByFilename() {
+        InvestorImportPreviewDto preview = service().preview(xlsxFile("investors.xlsx", "application/octet-stream"));
+        assertThat(preview.totalRows()).isEqualTo(1);
+        assertThat(preview.sampleRows().get(0).name()).isEqualTo("Acme");
+    }
+
+    @Test
+    void previewRoutesAnXlsxUploadThroughTheExcelParserByContentTypeWhenTheFilenameHasNoExtension() {
+        InvestorImportPreviewDto preview = service().preview(
+                xlsxFile("investors", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
+        assertThat(preview.totalRows()).isEqualTo(1);
     }
 
     @Test

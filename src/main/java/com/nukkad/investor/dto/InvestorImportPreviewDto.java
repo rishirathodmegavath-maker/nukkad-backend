@@ -9,6 +9,8 @@ public record InvestorImportPreviewDto(
         List<String> detectedColumns,
         List<String> unrecognizedColumns,
         boolean hasIdColumn,
+        /** Non-null only for a multi-sheet Excel upload — see {@code InvestorCsvParser#parseExcel}. */
+        String note,
         List<InvestorImportPreviewRowDto> sampleRows
 ) {
 }
