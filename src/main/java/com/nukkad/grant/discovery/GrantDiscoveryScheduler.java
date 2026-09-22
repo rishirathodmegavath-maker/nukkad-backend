@@ -6,10 +6,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * The only trigger for grant discovery -- there is deliberately no "run now" admin action (this
- * pipeline auto-publishes with no review step, so it runs on a fixed, predictable cadence rather
- * than on demand). Both jobs are no-ops until nukkad.discovery.enabled is true, which stays false
- * until GEMINI_API_KEY is actually configured.
+ * The unattended trigger for grant discovery -- runs on a fixed, predictable nightly cadence.
+ * AdminGrantDiscoveryController#runNow additionally lets an admin fire one batch on demand; both
+ * paths call the same GrantDiscoveryService#runNextBatch. Both jobs here are no-ops until
+ * nukkad.discovery.enabled is true, which stays false until GEMINI_API_KEY is actually configured.
  */
 @Component
 public class GrantDiscoveryScheduler {
