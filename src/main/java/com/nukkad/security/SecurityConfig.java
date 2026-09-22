@@ -92,6 +92,18 @@ public class SecurityConfig {
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .authorizeHttpRequests(auth -> auth
+                        // Must come first: a CORS preflight carries no Authorization header by
+                        // definition (browsers never attach it to an OPTIONS preflight), so without
+                        // this the catch-all anyRequest() rule below denies it before Spring's own
+                        // CorsFilter/DefaultCorsProcessor ever gets to answer it — producing exactly
+                        // "preflight doesn't pass access control check: no Access-Control-Allow-Origin
+                        // header", on every single cross-origin request, regardless of how
+                        // CORS_ALLOWED_ORIGINS is set. Harmless to permit broadly: CorsUtils
+                        // .isPreFlightRequest only matches an actual OPTIONS preflight (OPTIONS +
+                        // Access-Control-Request-Method header), never a real request, and the CORS
+                        // configuration itself (corsConfigurationSource() below) still fully controls
+                        // which origins/methods/headers are actually allowed.
+                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .requestMatchers(PUBLIC_PATHS).permitAll()
                         // Narrow, method-scoped exception so a PUBLIC-visibility startup can be
                         // viewed via a direct link or discovery without logging in. Scoped to
