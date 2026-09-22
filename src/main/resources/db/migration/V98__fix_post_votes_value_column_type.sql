@@ -1,0 +1,11 @@
+-- V95 hand-wrote post_votes.value as TINYINT, but the mapped entity field (PostVote.value) is a plain
+-- Java `int` with no columnDefinition override, so Hibernate validates it against the JDBC INTEGER type
+-- at startup -- exactly like every other bare-int column in this schema (e.g. posts.likes_count,
+-- post_comments.likes_count, both INT, added in that same V95 migration). That mismatch is fatal:
+-- "Schema validation: wrong column type ... found [tinyint], but expecting [integer]" stops the app
+-- before it can serve any request.
+--
+-- Value range was never the issue -- value is always exactly -1 or 1 (see DiscussionService#castVote),
+-- already enforced by chk_pvote_value below, which this migration leaves untouched. Existing rows widen
+-- losslessly; NOT NULL and the primary key (post_id, user_id) are unaffected since `value` is neither.
+ALTER TABLE post_votes MODIFY COLUMN value INT NOT NULL;
