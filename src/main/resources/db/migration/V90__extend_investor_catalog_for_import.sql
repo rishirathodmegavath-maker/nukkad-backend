@@ -64,15 +64,17 @@ CREATE TABLE investor_import_batches (
 -- entirely, e.g. no company name) or a soft anomaly the row still imported despite (WARNING — e.g. an
 -- unrecognised investor_type defaulted to "Other"). A clean CSV of 100,000 good rows produces zero rows
 -- here; this table is the exception report, not a full audit log of every row.
+-- row_num, not row_number: MySQL 8.0+ reserves ROW_NUMBER (the window function), so an unquoted
+-- `row_number` column fails with a syntax error (ER_PARSE_ERROR) at CREATE TABLE time.
 CREATE TABLE investor_import_issues (
     id                CHAR(36)      NOT NULL PRIMARY KEY,
     batch_id          CHAR(36)      NOT NULL,
-    row_number        INT           NOT NULL,
+    row_num           INT           NOT NULL,
     external_source_id VARCHAR(100) NULL,
     investor_name     VARCHAR(200)  NULL,
     severity          VARCHAR(10)   NOT NULL,
     message           VARCHAR(500)  NOT NULL,
     created_at        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_investor_import_issues_batch FOREIGN KEY (batch_id) REFERENCES investor_import_batches (id) ON DELETE CASCADE,
-    INDEX idx_investor_import_issues_batch (batch_id, row_number)
+    INDEX idx_investor_import_issues_batch (batch_id, row_num)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
