@@ -469,23 +469,37 @@ class StartupServiceTest {
         verify(followRepository, never()).save(any());
     }
 
-    // ---- discovery: follower counts and the sectors filter ----
+    // ---- discovery: follower counts (hidden from everyone but the startup's own founders/admins) and the sectors filter ----
 
     @Test
-    void aStartupPageShowsItsRealFollowerCount() {
+    void aStartupPageShowsItsRealFollowerCountToAFounderOrAdminOfIt() {
         when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.of(founder("s1", "founder1")));
         when(followRepository.countByStartupId("s1")).thenReturn(12L);
 
-        assertThat(service().getStartup("s1", "viewer1").followerCount()).isEqualTo(12L);
+        assertThat(service().getStartup("s1", "founder1").followerCount()).isEqualTo(12L);
     }
 
     @Test
-    void aListOfStartupsGetsFollowerCountsFromOneQueryAndAStartupNobodyFollowsIsZero() {
+    void aStartupPageHidesItsFollowerCountFromAViewerWhoDoesNotManageIt() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(followRepository.countByStartupId("s1")).thenReturn(12L);
+
+        // Following still works either way (see nobodyCanFollowOrAskToJoinAStartupTheyCannotSee et al.) — this
+        // only hides the number, and a real anonymous/member viewer never manages someone else's startup.
+        assertThat(service().getStartup("s1", "viewer1").followerCount()).isZero();
+        assertThat(service().getStartup("s1", null).followerCount()).isZero();
+    }
+
+    @Test
+    void aListOfStartupsGetsFollowerCountsFromOneQueryButOnlyRevealsThemForStartupsTheViewerManages() {
         Startup a = startup("s1", StartupVisibility.PUBLIC, false, true);
         Startup b = startup("s2", StartupVisibility.PUBLIC, false, true);
         when(startupRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
                 .thenReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(a, b)));
-        when(followRepository.countByStartupIds(any())).thenReturn(java.util.Collections.singletonList(new Object[] {"s1", 3L}));
+        when(followRepository.countByStartupIds(any())).thenReturn(java.util.List.of(new Object[] {"s1", 3L}, new Object[] {"s2", 7L}));
+        // The viewer manages s1 (so its real count of 3 shows) but not s2 (whose real count of 7 stays hidden).
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "viewer1")).thenReturn(Optional.of(founder("s1", "viewer1")));
 
         var page = service().listStartups(null, null, null, null, null, null, "viewer1", 0, 20);
 
