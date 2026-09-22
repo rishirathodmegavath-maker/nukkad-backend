@@ -25,6 +25,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PushbackInputStream;
 import java.io.Reader;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -140,6 +141,32 @@ public class InvestorCsvParser {
         String get(String header);
     }
 
+    /** {@link XSSFSheetXMLHandler} formats a numeric, "General"-format cell the way Excel's own General
+     *  format does — including switching to scientific notation once a whole number needs more than ~11
+     *  digits to display (e.g. a phone number with a country code, entered as a number rather than text:
+     *  442037276601 comes back as "4.42037E+11"). None of this pipeline's numeric-looking fields — phone
+     *  numbers, investment/exit counts — are ever meant to render that way, so General-format numbers are
+     *  rendered as a plain, non-scientific decimal instead. Any cell with an explicit format (currency, a
+     *  date, etc.) still uses the normal formatting — this only overrides the "no specific format" case. */
+    private static final class PlainNumberDataFormatter extends DataFormatter {
+        @Override
+        public String formatRawCellContents(double value, int formatIndex, String formatString) {
+            if (isGeneralFormat(formatIndex, formatString) && !Double.isNaN(value) && !Double.isInfinite(value)) {
+                return plainNumberString(value);
+            }
+            return super.formatRawCellContents(value, formatIndex, formatString);
+        }
+
+        private static boolean isGeneralFormat(int formatIndex, String formatString) {
+            return formatIndex == 0 || formatString == null || formatString.isBlank() || "General".equalsIgnoreCase(formatString.trim());
+        }
+
+        private static String plainNumberString(double value) {
+            BigDecimal decimal = BigDecimal.valueOf(value);
+            return value == Math.rint(value) ? decimal.toBigInteger().toString() : decimal.stripTrailingZeros().toPlainString();
+        }
+    }
+
     public InvestorCsvParseResult parse(InputStream rawInput) {
         try (Reader reader = stripBomAndOpen(rawInput)) {
             CSVFormat format = CSVFormat.DEFAULT.builder()
@@ -207,7 +234,7 @@ public class InvestorCsvParser {
             try (InputStream firstSheet = sheetIterator.next()) {
                 firstSheetName = sheetIterator.getSheetName();
                 XMLReader xmlReader = XMLHelper.newXMLReader();
-                xmlReader.setContentHandler(new XSSFSheetXMLHandler(styles, null, strings, handler, new DataFormatter(), false));
+                xmlReader.setContentHandler(new XSSFSheetXMLHandler(styles, null, strings, handler, new PlainNumberDataFormatter(), false));
                 xmlReader.parse(new InputSource(firstSheet));
             }
 

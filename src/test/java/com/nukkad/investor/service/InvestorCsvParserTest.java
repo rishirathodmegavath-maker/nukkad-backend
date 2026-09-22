@@ -225,6 +225,19 @@ class InvestorCsvParserTest {
     }
 
     @Test
+    void parseExcelRendersALargeNumericCellAsAPlainNumberNotScientificNotation() {
+        // A phone number entered as a number rather than text (common in real exports, since Excel
+        // auto-detects all-digit cells as numeric) — General format normally switches to scientific
+        // notation once a whole number needs more than ~11 digits, which would otherwise turn a UK number
+        // with country code into "4.42037E+11".
+        List<Object[]> sheet = List.of(
+                new Object[]{"company_name", "phone_number"},
+                new Object[]{"Acme", 442037276601.0});
+        InvestorCsvRow row = parser.parseExcel(xlsx(sheet)).rows().get(0);
+        assertThat(row.phoneNumber()).isEqualTo("442037276601");
+    }
+
+    @Test
     void parseExcelSkipsBlankRowsBetweenDataRows() {
         List<Object[]> sheet = List.of(
                 new Object[]{"company_name"},
