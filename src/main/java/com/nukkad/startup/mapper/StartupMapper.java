@@ -25,6 +25,10 @@ public class StartupMapper {
     /**
      * @param canManage          true for an active founder — drives edit/delete/manage-material affordances.
      * @param followerCount      how many members follow the startup: the real number, counted by the caller.
+     *                           Only surfaced to a viewer who can manage the startup (its founders/admins)
+     *                           — everyone else gets 0, same idea as {@code canViewFundraising} below. Who
+     *                           follows a startup is a signal for its own team to read, not a public metric;
+     *                           following itself still works for anyone, this only hides the count.
      * @param canViewFundraising true if this viewer may see real fundraising data: either the startup's
      *                           fundraising visibility is on, or the viewer is a founder/team member of
      *                           their own startup. When false, {@code isRaising} is also suppressed since
@@ -59,7 +63,7 @@ public class StartupMapper {
                 canViewFundraising && startup.isRaising(),
                 new HashSet<>(startup.getNeeds()),
                 isFollowing,
-                followerCount,
+                canManage ? followerCount : 0,
                 canManage,
                 profileCompletionPercent(startup),
                 startup.isRemovedByAdmin(),
