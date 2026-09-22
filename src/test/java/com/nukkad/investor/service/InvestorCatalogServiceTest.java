@@ -135,6 +135,29 @@ class InvestorCatalogServiceTest {
         assertThatThrownBy(() -> service().get("inv1", "founder1")).isInstanceOf(ResourceNotFoundException.class);
     }
 
+    // ---- Facets: the real sector/stage vocabulary, since neither has a fixed enum like type ----
+
+    @Test
+    void aUserWithNoActiveStartupCannotReadFacets() {
+        when(startupAccessPolicy.hasActiveStartup("u1")).thenReturn(false);
+        assertThatThrownBy(() -> service().facets("u1")).isInstanceOf(ForbiddenException.class);
+        verify(investorRepository, never()).findDistinctVisibleSectors();
+    }
+
+    @Test
+    void facetsCollapsesCaseInsensitiveDuplicatesToOneSpellingAndSortsThem() {
+        when(startupAccessPolicy.hasActiveStartup("founder1")).thenReturn(true);
+        when(investorRepository.findDistinctVisibleSectors()).thenReturn(List.of("Fintech", "AI", "ai", "Healthtech"));
+        when(investorRepository.findDistinctVisibleStages()).thenReturn(List.of("Series A", "seed", "Seed"));
+
+        var facets = service().facets("founder1");
+
+        // "AI" wins over "ai" only because it compares alphabetically first (a deterministic tiebreak) —
+        // either matches the same investors either way, since the actual filter is case-insensitive.
+        assertThat(facets.sectors()).containsExactly("AI", "Fintech", "Healthtech");
+        assertThat(facets.stages()).containsExactly("Seed", "Series A");
+    }
+
     // ---- Request introduction: LIVE (linked to a real investor account) vs RECORDED ----
 
     @Test
