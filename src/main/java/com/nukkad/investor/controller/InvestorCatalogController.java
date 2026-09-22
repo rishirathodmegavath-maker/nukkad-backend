@@ -2,6 +2,7 @@ package com.nukkad.investor.controller;
 
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
+import com.nukkad.investor.dto.InvestorCatalogFacetsDto;
 import com.nukkad.investor.dto.InvestorDto;
 import com.nukkad.investor.dto.InvestorIntroductionResultDto;
 import com.nukkad.investor.dto.RequestInvestorIntroductionRequest;
@@ -41,6 +42,14 @@ public class InvestorCatalogController {
     @GetMapping("/access")
     public ApiResponse<Boolean> access(@AuthenticationPrincipal AuthenticatedUser principal) {
         return ApiResponse.ok(investorCatalogService.hasAccess(principal.id()));
+    }
+
+    /** The real sector/stage values a founder can filter to right now — sector and stage are free text with
+     *  no fixed enum (unlike type), so the frontend's filter dropdowns are populated from here instead of a
+     *  hardcoded list. */
+    @GetMapping("/facets")
+    public ApiResponse<InvestorCatalogFacetsDto> facets(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(investorCatalogService.facets(principal.id()));
     }
 
     @GetMapping

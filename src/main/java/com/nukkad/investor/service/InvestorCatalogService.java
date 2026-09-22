@@ -11,6 +11,7 @@ import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.investor.dto.CreateIntroRequestRequest;
+import com.nukkad.investor.dto.InvestorCatalogFacetsDto;
 import com.nukkad.investor.dto.InvestorDto;
 import com.nukkad.investor.dto.InvestorIntroRequestDto;
 import com.nukkad.investor.dto.InvestorIntroductionResultDto;
@@ -133,6 +134,29 @@ public class InvestorCatalogService {
         // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         return investorRepository.findAll(spec, pageable).map(investorMapper::toDto);
+    }
+
+    /** The real sector/stage values a founder can actually filter to right now — see {@link InvestorCatalogFacetsDto}
+     *  for why this isn't a fixed list. */
+    @Transactional(readOnly = true)
+    public InvestorCatalogFacetsDto facets(String viewerId) {
+        requireAccess(viewerId);
+        return new InvestorCatalogFacetsDto(
+                distinctCaseInsensitive(investorRepository.findDistinctVisibleSectors()),
+                distinctCaseInsensitive(investorRepository.findDistinctVisibleStages()));
+    }
+
+    /** Collapses case-insensitive duplicates (e.g. "AI" and "ai") to one representative spelling — the
+     *  alphabetically-first one, purely for a deterministic result — then sorts case-insensitively for display.
+     *  Matching itself stays case-insensitive either way (see {@link InvestorSpecifications#sector}), so which
+     *  spelling wins here doesn't change what a selection returns. */
+    private static List<String> distinctCaseInsensitive(List<String> values) {
+        return values.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        v -> v.toLowerCase(java.util.Locale.ROOT), v -> v, (a, b) -> a.compareTo(b) <= 0 ? a : b))
+                .values().stream()
+                .sorted(String.CASE_INSENSITIVE_ORDER)
+                .toList();
     }
 
     @Transactional(readOnly = true)
