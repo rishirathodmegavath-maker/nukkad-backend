@@ -363,6 +363,36 @@ class StartupServiceTest {
         verify(startupRepository, never()).saveAndFlush(any(Startup.class));
     }
 
+    // ---- admin sets a startup's logo ----
+
+    @Test
+    void anAdminCanSetALogoEvenWhenNotAManagerOfThatStartup() {
+        Startup existing = startup("s1", StartupVisibility.PUBLIC, false, true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(existing));
+        when(startupRepository.save(any(Startup.class))).thenAnswer(inv -> inv.getArgument(0));
+        org.springframework.web.multipart.MultipartFile file = org.mockito.Mockito.mock(org.springframework.web.multipart.MultipartFile.class);
+        when(fileStorageService.storeImage(file, "startup-logos")).thenReturn("https://cdn.example.com/logo.png");
+        // No team-membership lookup is stubbed for "admin1" at all — proving canManageStartup is never consulted.
+
+        StartupDto dto = service().updateLogoAsAdmin("s1", file);
+
+        assertThat(dto).isNotNull();
+        org.mockito.ArgumentCaptor<Startup> saved = org.mockito.ArgumentCaptor.forClass(Startup.class);
+        verify(startupRepository).save(saved.capture());
+        assertThat(saved.getValue().getLogoUrl()).isEqualTo("https://cdn.example.com/logo.png");
+        verify(teamMemberRepository, never()).findByStartupIdAndUserId(any(), any());
+    }
+
+    @Test
+    void settingALogoOnARemovedStartupAsAdminIsRefused() {
+        removedStartupWithFounder();
+        org.springframework.web.multipart.MultipartFile file = org.mockito.Mockito.mock(org.springframework.web.multipart.MultipartFile.class);
+
+        assertThatThrownBy(() -> service().updateLogoAsAdmin("s1", file)).isInstanceOf(ResourceNotFoundException.class);
+
+        verify(startupRepository, never()).save(any());
+    }
+
     @Test
     void publicGetterHidesARejectedStartupFromANonFounder() {
         when(startupRepository.findById("s1")).thenReturn(Optional.of(rejectedStartup()));

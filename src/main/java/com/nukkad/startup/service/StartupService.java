@@ -422,6 +422,17 @@ public class StartupService {
         return manageDto(startupRepository.save(startup));
     }
 
+    /** Same upload as {@link #updateLogo}, minus the "must be a manager of this startup" gate — an admin sets this
+     *  right after creating the startup, before deciding (or without ever deciding) who its founder is. Still
+     *  refuses a removed startup, same as every other path: restore it first. */
+    @Transactional
+    public StartupDto updateLogoAsAdmin(String startupId, MultipartFile file) {
+        requireNotRemoved(startupId);
+        Startup startup = getEntityOrThrow(startupId);
+        startup.setLogoUrl(fileStorageService.storeImage(file, "startup-logos"));
+        return manageDto(startupRepository.save(startup));
+    }
+
     @Transactional(readOnly = true)
     public List<StartupTeamMemberDto> getMembers(String startupId, String viewerId) {
         accessPolicy.requireReadable(startupId, viewerId);
