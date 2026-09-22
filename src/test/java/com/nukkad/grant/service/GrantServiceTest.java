@@ -14,6 +14,9 @@ import com.nukkad.grant.mapper.GrantMapper;
 import com.nukkad.grant.repository.GrantRepository;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
+import com.nukkad.user.entity.AccountStatus;
+import com.nukkad.user.entity.User;
+import com.nukkad.user.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -27,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,11 +40,12 @@ class GrantServiceTest {
     @Mock private GrantRepository grantRepository;
     @Mock private NotificationService notificationService;
     @Mock private AuditService auditService;
+    @Mock private UserRepository userRepository;
 
     private final GrantMapper grantMapper = new GrantMapper();
 
     private GrantService service() {
-        return new GrantService(grantRepository, grantMapper, notificationService, auditService);
+        return new GrantService(grantRepository, grantMapper, notificationService, auditService, userRepository);
     }
 
     private CreateGrantRequest request(String applicationUrl) {
@@ -83,6 +88,59 @@ class GrantServiceTest {
     void createGrantRejectsAnUnknownStage() {
         CreateGrantRequest bad = new CreateGrantRequest("X", "Y", "Government", null, null, null, null, List.of("NotAStage"), null, "example.com");
         assertThatThrownBy(() -> service().createGrant("founder1", bad)).isInstanceOf(BadRequestException.class);
+    }
+
+    // ---- an admin publishing a grant listing from the admin panel ----
+
+    @Test
+    void createGrantAsAdminIsLiveImmediatelyUnderTheAdminsOwnAccount() {
+        when(grantRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        GrantDto dto = service().createGrantAsAdmin("admin1", request("example.com"), "  ", "1.2.3.4");
+
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        org.mockito.ArgumentCaptor<Grant> saved = org.mockito.ArgumentCaptor.forClass(Grant.class);
+        verify(grantRepository).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getCreatedByUserId()).isEqualTo("admin1");
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_GRANT_CREATED),
+                eq("Grant"), any(), eq("1.2.3.4"), any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anAdminCanAttributeAGrantToAMemberByEmailAndTheMemberIsTold() {
+        when(grantRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userRepository.findByEmail("creator@example.com"))
+                .thenReturn(Optional.of(User.builder().id("creator-9").email("creator@example.com").status(AccountStatus.ACTIVE).build()));
+
+        service().createGrantAsAdmin("admin1", request("example.com"), "  Creator@Example.com ", "1.2.3.4");
+
+        org.mockito.ArgumentCaptor<Grant> saved = org.mockito.ArgumentCaptor.forClass(Grant.class);
+        verify(grantRepository).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getCreatedByUserId()).isEqualTo("creator-9");
+        verify(notificationService).notify(eq("creator-9"), any(), anyString(), anyString(), any(), eq("admin1"));
+    }
+
+    @Test
+    void anUnknownCreatorEmailIsRejectedAndNothingIsCreated() {
+        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", request("example.com"), "nobody@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(grantRepository, never()).saveAndFlush(any());
+        verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aSuspendedMemberCannotBeMadeTheGrantCreator() {
+        when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
+                User.builder().id("sus-1").email("sus@example.com").status(AccountStatus.SUSPENDED).build()));
+
+        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", request("example.com"), "sus@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(grantRepository, never()).saveAndFlush(any());
     }
 
     @Test

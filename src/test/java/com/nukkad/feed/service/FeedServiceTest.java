@@ -18,7 +18,11 @@ import com.nukkad.feed.repository.PostHashtagRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
+import com.nukkad.notification.service.NotificationService;
+import com.nukkad.user.entity.AccountStatus;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
+import com.nukkad.user.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -37,6 +41,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
@@ -55,10 +60,13 @@ class FeedServiceTest {
     @Mock private AuditService auditService;
     @Mock private ConnectionRepository connectionRepository;
     @Mock private PostHashtagRepository postHashtagRepository;
+    @Mock private UserRepository userRepository;
+    @Mock private NotificationService notificationService;
 
     private FeedService service() {
         return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
-                fileStorageService, auditService, connectionRepository, postHashtagRepository);
+                fileStorageService, auditService, connectionRepository, postHashtagRepository,
+                userRepository, notificationService);
     }
 
     private Post post(String id) {
@@ -431,6 +439,57 @@ class FeedServiceTest {
     void creatingAPostWithAnUnknownKindIsRejected() {
         assertThatThrownBy(() -> service().create("author-1", request("hi", "gossip", null, null)))
                 .isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    // ---- an admin publishing a post from the admin panel ----
+
+    @Test
+    void anAdminCanPublishAPostUnderTheirOwnAccount() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null), "  ", "1.2.3.4");
+
+        assertThat(dto.authorId()).isEqualTo("admin-1");
+        verify(auditService).log(eq("admin-1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_POST_CREATED),
+                eq("Post"), any(), eq("1.2.3.4"), any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anAdminCanPublishAPostAsAMemberByEmailAndTheMemberIsTold() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userRepository.findByEmail("author@example.com"))
+                .thenReturn(Optional.of(User.builder().id("author-9").email("author@example.com").status(AccountStatus.ACTIVE).build()));
+
+        PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null),
+                "  Author@Example.com ", "1.2.3.4");
+
+        assertThat(dto.authorId()).isEqualTo("author-9");
+        verify(auditService).log(eq("admin-1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_POST_CREATED),
+                eq("Post"), any(), eq("1.2.3.4"), any());
+        verify(notificationService).notify(eq("author-9"), any(), anyString(), anyString(), any(), eq("admin-1"));
+    }
+
+    @Test
+    void anUnknownAuthorEmailIsRejectedAndNothingIsCreated() {
+        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "nobody@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(postRepository, never()).save(any());
+        verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aSuspendedMemberCannotBeMadeTheAuthor() {
+        when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
+                User.builder().id("sus-1").email("sus@example.com").status(AccountStatus.SUSPENDED).build()));
+
+        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "sus@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
         verify(postRepository, never()).save(any());
     }
 
