@@ -2,6 +2,7 @@ package com.nukkad.grant.mapper;
 
 import com.nukkad.grant.dto.GrantDto;
 import com.nukkad.grant.entity.Grant;
+import com.nukkad.grant.entity.GrantDiscoveryOrigin;
 import com.nukkad.startup.entity.StartupStage;
 import org.springframework.stereotype.Component;
 
@@ -21,6 +22,9 @@ public class GrantMapper {
                 grant.getEligibleStages().stream().map(StartupStage::getLabel).sorted().toList(),
                 grant.getDeadline(),
                 grant.getApplicationUrl(),
+                grant.getSourceUrl(),
+                grant.getDiscoveryOrigin() == GrantDiscoveryOrigin.AI_DISCOVERY ? "AI Discovery" : "Manual",
+                grant.getLastVerifiedAt(),
                 grant.getCreatedByUserId(),
                 grant.isRemovedByAdmin(),
                 grant.getRemovalReason(),
