@@ -34,8 +34,9 @@ public class InvestorImportIssue {
     @Column(name = "batch_id", nullable = false, columnDefinition = "CHAR(36)")
     private String batchId;
 
-    /** 1-based position in the CSV (header row excluded), so an admin can find it in the original file. */
-    @Column(name = "row_number", nullable = false)
+    /** 1-based position in the CSV (header row excluded), so an admin can find it in the original file.
+     *  Column is "row_num", not "row_number" -- MySQL 8.0+ reserves ROW_NUMBER (the window function). */
+    @Column(name = "row_num", nullable = false)
     private int rowNumber;
 
     @Column(name = "external_source_id", length = 100)
