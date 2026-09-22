@@ -8,6 +8,10 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
+
 public interface PostRepository extends JpaRepository<Post, String> {
     // Unfiltered — admin-only use (sees removed posts too).
     Page<Post> findAllByOrderByCreatedAtDesc(Pageable pageable);
@@ -54,4 +58,74 @@ public interface PostRepository extends JpaRepository<Post, String> {
     @Modifying(clearAutomatically = true)
     @Query("UPDATE Post p SET p.commentsCount = GREATEST(p.commentsCount - :by, 0) WHERE p.id = :id")
     void decrementCommentsCount(@Param("id") String id, @Param("by") int by);
+
+    // ---- Discussions ----
+
+    /**
+     * One flexible query behind every Discussions list tab: Recent (no extra filter), Unanswered
+     * ({@code unansweredOnly=true}), My Discussions ({@code authorId=viewerId}) and the topic/tag
+     * filters, all composable. "Following" and "Trending" are handled separately below since they
+     * need an id-list join / an in-memory score respectively.
+     */
+    @Query("select p from Post p where p.removedByAdmin = false and p.type = com.nukkad.feed.entity.Post.Type.discussion "
+            + "and (:authorId is null or p.authorId = :authorId) "
+            + "and (:topic is null or p.topic = :topic) "
+            + "and (:tag is null or exists (select h.id from PostHashtag h where h.postId = p.id and h.tag = :tag)) "
+            + "and (:unansweredOnly = false or p.commentsCount = 0) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc, p.id desc")
+    Page<Post> findDiscussions(@Param("viewerId") String viewerId, @Param("authorId") String authorId,
+                                @Param("topic") Post.Topic topic, @Param("tag") String tag,
+                                @Param("unansweredOnly") boolean unansweredOnly, Pageable pageable);
+
+    /** Backs the "Following" tab: discussions the viewer follows (see PostFollowRepository), same topic/tag filters. */
+    @Query("select p from Post p where p.removedByAdmin = false and p.type = com.nukkad.feed.entity.Post.Type.discussion "
+            + "and p.id in :ids "
+            + "and (:topic is null or p.topic = :topic) "
+            + "and (:tag is null or exists (select h.id from PostHashtag h where h.postId = p.id and h.tag = :tag)) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc, p.id desc")
+    Page<Post> findDiscussionsByIds(@Param("viewerId") String viewerId, @Param("ids") Collection<String> ids,
+                                     @Param("topic") Post.Topic topic, @Param("tag") String tag, Pageable pageable);
+
+    /**
+     * A bounded, recency-capped pool for the "Trending" tab: {@link com.nukkad.discussion.service.DiscussionService}
+     * scores this pool by real recent votes + replies and sorts/pages it in memory, rather than expressing that
+     * score as JPQL (which would need a correlated aggregate subquery per row). {@code pageable} caps the pool
+     * size (e.g. the 200 most recent), not the final page — trending is never a pure recency query.
+     */
+    @Query("select p from Post p where p.removedByAdmin = false and p.type = com.nukkad.feed.entity.Post.Type.discussion "
+            + "and p.createdAt >= :since "
+            + "and (:topic is null or p.topic = :topic) "
+            + "and (:tag is null or exists (select h.id from PostHashtag h where h.postId = p.id and h.tag = :tag)) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc")
+    List<Post> findRecentDiscussionsForTrending(@Param("viewerId") String viewerId, @Param("since") Instant since,
+                                                 @Param("topic") Post.Topic topic, @Param("tag") String tag, Pageable pageable);
+
+    /** Other discussions worth surfacing next to this one: same curated topic, or sharing at least one hashtag.
+     *  {@code tags} must never be empty — pass a sentinel value that can't match when there are none. */
+    @Query("select p from Post p where p.removedByAdmin = false and p.type = com.nukkad.feed.entity.Post.Type.discussion "
+            + "and p.id <> :excludeId "
+            + "and ((:topic is not null and p.topic = :topic) "
+            + "or exists (select h.id from PostHashtag h where h.postId = p.id and h.tag in :tags)) "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc")
+    List<Post> findRelatedDiscussions(@Param("viewerId") String viewerId, @Param("excludeId") String excludeId,
+                                       @Param("topic") Post.Topic topic, @Param("tags") Collection<String> tags, Pageable pageable);
+
+    /** Real, all-time counts for "Popular Topics" — public discussions only, so a connections-only
+     *  discussion never inflates a count anyone can see. A topic nobody has used yet has no row. */
+    @Query("select p.topic, count(p) from Post p where p.type = com.nukkad.feed.entity.Post.Type.discussion "
+            + "and p.removedByAdmin = false and p.visibility = com.nukkad.feed.entity.Post.Visibility.PUBLIC "
+            + "group by p.topic")
+    List<Object[]> countDiscussionsByTopic();
+
+    long countByTypeAndRemovedByAdminFalseAndVisibility(Post.Type type, Post.Visibility visibility);
+
+    /** Everyone who has started a public discussion — half of the "participants" platform stat (see
+     *  PostCommentRepository for the reply-side half); unioned and de-duplicated in Java. */
+    @Query("select distinct p.authorId from Post p where p.type = com.nukkad.feed.entity.Post.Type.discussion "
+            + "and p.removedByAdmin = false and p.visibility = com.nukkad.feed.entity.Post.Visibility.PUBLIC")
+    List<String> findDistinctDiscussionAuthorIds();
 }

@@ -43,6 +43,30 @@ public class Post {
     /** Who may read a post: everyone, or only its author and the author's accepted connections. */
     public enum Visibility { PUBLIC, CONNECTIONS }
 
+    /**
+     * A curated category, meaningful only for {@code type = discussion} (null for every other kind).
+     * Code-curated on purpose, same idea as {@code ResourceCategory} ("adding a topic is a code
+     * change") — a fixed, small, labelled list reads better for "Popular Topics" than the free-text,
+     * uncurated hashtags anyone can type (see PostHashtag/Hashtags), which stay a separate concept.
+     * Stored with @Enumerated(STRING) like {@link Type}/{@link Visibility} above, so adding a new
+     * topic later is a plain code change — no native-ENUM column to widen.
+     */
+    public enum Topic {
+        AI_TECHNOLOGY("AI & Technology"), PRODUCT("Product"), GROWTH("Growth"), FUNDRAISING("Fundraising"),
+        COFOUNDERS("Co-founders"), MARKETING("Marketing"), HIRING("Hiring"), TOOLS_RESOURCES("Tools & Resources"),
+        STARTUPS("Startups"), GENERAL("General");
+
+        private final String label;
+
+        Topic(String label) {
+            this.label = label;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+    }
+
     @Id
     @UuidGenerator
     @Column(columnDefinition = "CHAR(36)", updatable = false, nullable = false)
@@ -70,6 +94,13 @@ public class Post {
     /** An optional http(s) link the author attached (shown as a link card). */
     @Column(name = "link_url", length = 500)
     private String linkUrl;
+
+    /** Null for every post that isn't a discussion (and for a discussion created through the plain
+     *  generic Feed composer, which has no topic picker) — the Discussions UI treats a null topic
+     *  as "General" rather than requiring a value. */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 32)
+    private Topic topic;
 
     @Column(name = "likes_count", nullable = false)
     @Builder.Default
