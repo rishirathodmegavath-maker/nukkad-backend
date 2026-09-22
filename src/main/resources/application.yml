@@ -37,8 +37,10 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: 50MB
-      max-request-size: 50MB
+      # 100MB gives headroom for the admin investor bulk-CSV import (tens of thousands of rows) — the
+      # frontend's own MAX_UPLOAD_BYTES (api-client.ts) mirrors this value.
+      max-file-size: 100MB
+      max-request-size: 100MB
 
   jackson:
     deserialization:

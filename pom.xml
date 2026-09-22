@@ -87,6 +87,14 @@
 			<optional>true</optional>
 		</dependency>
 
+		<!-- CSV parsing for the admin investor bulk-import pipeline (quoted/escaped fields, embedded
+		     commas in description/industries columns — a hand-rolled split(",") would corrupt those). -->
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-csv</artifactId>
+			<version>1.12.0</version>
+		</dependency>
+
 		<!-- OpenAPI / Swagger -->
 		<dependency>
 			<groupId>org.springdoc</groupId>

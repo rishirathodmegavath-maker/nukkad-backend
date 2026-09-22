@@ -31,7 +31,9 @@ public final class InvestorSpecifications {
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("name")), like),
                 cb.like(cb.lower(cb.coalesce(root.get("description"), "")), like),
-                cb.like(cb.lower(cb.coalesce(root.get("location"), "")), like)
+                cb.like(cb.lower(cb.coalesce(root.get("location"), "")), like),
+                cb.like(cb.lower(cb.coalesce(root.get("country"), "")), like),
+                cb.like(cb.lower(cb.coalesce(root.get("domain"), "")), like)
         );
     }
 
@@ -63,6 +65,11 @@ public final class InvestorSpecifications {
         if (location == null || location.isBlank()) return null;
         String like = "%" + location.trim().toLowerCase() + "%";
         return (root, query, cb) -> cb.like(cb.lower(cb.coalesce(root.get("location"), "")), like);
+    }
+
+    public static Specification<Investor> country(String country) {
+        if (country == null || country.isBlank()) return null;
+        return (root, query, cb) -> cb.equal(cb.lower(cb.coalesce(root.get("country"), "")), country.trim().toLowerCase());
     }
 
     /** Investors whose [chequeMin, chequeMax] range covers the given amount (an open end counts as unbounded). */
