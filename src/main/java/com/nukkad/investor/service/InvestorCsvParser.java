@@ -8,6 +8,7 @@ import org.apache.commons.csv.CSVRecord;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.usermodel.DateUtil;
 import org.apache.poi.ss.util.CellReference;
 import org.apache.poi.util.XMLHelper;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
@@ -141,24 +142,23 @@ public class InvestorCsvParser {
         String get(String header);
     }
 
-    /** {@link XSSFSheetXMLHandler} formats a numeric, "General"-format cell the way Excel's own General
-     *  format does — including switching to scientific notation once a whole number needs more than ~11
-     *  digits to display (e.g. a phone number with a country code, entered as a number rather than text:
-     *  442037276601 comes back as "4.42037E+11"). None of this pipeline's numeric-looking fields — phone
-     *  numbers, investment/exit counts — are ever meant to render that way, so General-format numbers are
-     *  rendered as a plain, non-scientific decimal instead. Any cell with an explicit format (currency, a
-     *  date, etc.) still uses the normal formatting — this only overrides the "no specific format" case. */
+    /** {@link XSSFSheetXMLHandler} formats a numeric cell the way Excel itself would display it — including
+     *  switching to scientific notation past ~11 digits under General format (a phone number with a country
+     *  code, entered as a number rather than text: 442037276601 comes back as "4.42037E+11") and, under an
+     *  explicit low-decimal-places number format applied to the cell, silently rounding away a fractional
+     *  part (a garbage "phone number" like -2592.328947 came back as the cosmetically-rounded "-2592" rather
+     *  than the actual stored value). None of this pipeline's fields — phone numbers, investment/exit
+     *  counts — are ever meant to go through Excel's cosmetic number-format rendering; every non-date
+     *  numeric cell is rendered as its exact raw value, in plain decimal, regardless of whatever display
+     *  format a spreadsheet author applied to it. Dates are excluded and still use the normal formatting —
+     *  this pipeline has no date columns, but a stray one must not silently turn into a serial-day number. */
     private static final class PlainNumberDataFormatter extends DataFormatter {
         @Override
         public String formatRawCellContents(double value, int formatIndex, String formatString) {
-            if (isGeneralFormat(formatIndex, formatString) && !Double.isNaN(value) && !Double.isInfinite(value)) {
+            if (!Double.isNaN(value) && !Double.isInfinite(value) && !DateUtil.isADateFormat(formatIndex, formatString)) {
                 return plainNumberString(value);
             }
             return super.formatRawCellContents(value, formatIndex, formatString);
-        }
-
-        private static boolean isGeneralFormat(int formatIndex, String formatString) {
-            return formatIndex == 0 || formatString == null || formatString.isBlank() || "General".equalsIgnoreCase(formatString.trim());
         }
 
         private static String plainNumberString(double value) {
@@ -475,8 +475,42 @@ public class InvestorCsvParser {
 
     private static String blankToNull(String value) {
         if (value == null) return null;
-        String trimmed = value.trim();
-        return trimmed.isEmpty() ? null : trimmed;
+        String cleaned = sanitizeText(value);
+        return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    /** Every text field funnels through {@link #blankToNull}, so fixing text hygiene once here fixes it for
+     *  every column — name, description, location, emails, URLs before normalization, etc.
+     *  <p>
+     *  Two real problems seen in the actual ~115k-row production dataset:
+     *  <ol>
+     *    <li>A cell's shared-string XML can contain a literal {@code _xHHHH_} escape for a character that
+     *    isn't valid in XML 1.0 (this is the documented OOXML convention for it). POI correctly decodes that
+     *    back into the raw control byte — but a raw C0/C1 control character (typically a mis-encoded smart
+     *    quote or a Word paste's vertical-tab line break) has no legitimate display value in an investor's
+     *    name or description, so it's dropped rather than preserved as an invisible/garbled character.</li>
+     *    <li>A non-breaking space (U+00A0) at the start/end of a value survives both {@code String.trim()}
+     *    and {@code String.strip()} — Java explicitly excludes NBSP from {@code Character.isWhitespace},
+     *    unlike e.g. Python's {@code str.strip()} — so a trailing NBSP from a scraped/pasted source was
+     *    slipping through untrimmed.</li>
+     *  </ol>
+     *  Only ever removes non-content bytes/whitespace; never touches printable text. */
+    private static String sanitizeText(String value) {
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\t' || c == '\n' || c == '\r' || c >= 0x20 && !(c >= 0x7F && c <= 0x9F)) {
+                sb.append(c);
+            } // else: a C0 control character (other than tab/newline/CR) or a C1 control character — dropped.
+        }
+        int start = 0, end = sb.length();
+        while (start < end && isTrimmableSpace(sb.charAt(start))) start++;
+        while (end > start && isTrimmableSpace(sb.charAt(end - 1))) end--;
+        return sb.substring(start, end);
+    }
+
+    private static boolean isTrimmableSpace(char c) {
+        return c == ' ' || c == ' ' || c == ' ' || Character.isWhitespace(c);
     }
 
     private static String normalize(String header) {
