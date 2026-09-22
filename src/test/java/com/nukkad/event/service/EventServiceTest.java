@@ -61,7 +61,8 @@ class EventServiceTest {
 
     private EventService service() {
         return new EventService(eventRepository, attendeeRepository, eventStartupRepository, chapterRepository,
-                startupRepository, startupTeamMemberRepository, userRepository, userService, eventMapper, notificationService, fileStorageService);
+                startupRepository, startupTeamMemberRepository, userRepository, userService, eventMapper, notificationService, fileStorageService,
+                new com.nukkad.startup.service.StartupAccessPolicy(startupRepository, startupTeamMemberRepository));
     }
 
     private Chapter chapter(String id, String presidentUserId) {
@@ -328,8 +329,8 @@ class EventServiceTest {
         when(eventStartupRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         com.nukkad.startup.entity.Startup startup = com.nukkad.startup.entity.Startup.builder().id("s1").name("Ledgerly").build();
         when(startupRepository.findAllById(java.util.List.of("s1"))).thenReturn(java.util.List.of(startup));
-        when(eventStartupRepository.findByEventId(any())).thenReturn(java.util.List.of(
-                com.nukkad.event.entity.EventStartup.builder().eventId("e1").startupId("s1").build()));
+        when(eventStartupRepository.findByEventId(any())).thenReturn(java.util.List.of(),
+                java.util.List.of(com.nukkad.event.entity.EventStartup.builder().eventId("e1").startupId("s1").build()));
 
         Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
         CreateEventRequest request = new CreateEventRequest("Demo night", "Come build", null, start,
@@ -357,24 +358,240 @@ class EventServiceTest {
         org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
     }
 
+    private com.nukkad.startup.entity.Startup startupNamed(String id) {
+        return com.nukkad.startup.entity.Startup.builder().id(id).name("Startup " + id).build();
+    }
+
+    private void userManagesStartup(String userId, String startupId, boolean manages) {
+        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
+                org.mockito.ArgumentMatchers.eq(startupId), org.mockito.ArgumentMatchers.eq(userId), any(), any())).thenReturn(manages);
+    }
+
+    private com.nukkad.event.entity.EventStartup link(String eventId, String startupId) {
+        return com.nukkad.event.entity.EventStartup.builder().id("l-" + startupId).eventId(eventId).startupId(startupId).build();
+    }
+
     @Test
-    void updatingAnEventReplacesTheFullStartupSet() {
+    void updatingAnEventAddsTheNewStartupAndRemovesTheOneLeftOutWithoutTouchingTheRest() {
         Event personalEvent = event("e1", null, "organizer1", null);
         when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
         when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
         when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
-        when(startupTeamMemberRepository.existsByStartupIdAndUserIdAndTeamRoleInAndStatus(
-                "s2", "organizer1", java.util.List.of(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER,
-                        com.nukkad.startup.entity.StartupTeamMember.TeamRole.ADMIN),
-                com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE)).thenReturn(true);
+        userManagesStartup("organizer1", "s2", true);
         when(eventStartupRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of());
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of(link("e1", "s1"), link("e1", "s3")));
+        when(startupRepository.findAllById(any())).thenReturn(java.util.List.of(startupNamed("s1"), startupNamed("s2"), startupNamed("s3")));
+
+        // s3 stays, s2 is new, s1 is left out
+        service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, null, java.util.List.of("s3", "s2")));
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<Iterable<com.nukkad.event.entity.EventStartup>> removed = org.mockito.ArgumentCaptor.forClass(Iterable.class);
+        org.mockito.Mockito.verify(eventStartupRepository).deleteAll(removed.capture());
+        assertThat(removed.getValue()).extracting("startupId").containsExactly("s1");
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.times(1)).save(any());
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).deleteByEventId(any());
+    }
+
+    @Test
+    void editingAnEventNeverAsksYouToManageStartupsThatAreAlreadyOnIt() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
+        // the organizer manages nothing, but someone else's startup is already on the event
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of(link("e1", "theirs")));
+        when(startupRepository.findAllById(any())).thenReturn(java.util.List.of(startupNamed("theirs")));
 
         service().updateEvent("organizer1", "e1",
-                new UpdateEventRequest(null, null, null, null, null, null, null, null, null, java.util.List.of("s2")));
+                new UpdateEventRequest("New title", null, null, null, null, null, null, null, null, java.util.List.of("theirs")));
 
-        org.mockito.Mockito.verify(eventStartupRepository).deleteByEventId("e1");
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).deleteAll(any());
+    }
+
+    @Test
+    void aStartupTheEditorCannotSeeIsNotDroppedWhenTheyLeaveItOutOfTheList() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
+        com.nukkad.startup.entity.Startup removed = startupNamed("gone");
+        removed.setRemovedByAdmin(true);
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of(link("e1", "gone")));
+        when(startupRepository.findAllById(any())).thenReturn(java.util.List.of(removed));
+
+        service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, null, java.util.List.of()));
+
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).deleteAll(any());
+    }
+
+    @Test
+    void aRemovedOrRejectedStartupCannotBeAddedToAnEvent() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        userManagesStartup("organizer1", "removed", true);
+        userManagesStartup("organizer1", "rejected", true);
+        com.nukkad.startup.entity.Startup removed = startupNamed("removed");
+        removed.setRemovedByAdmin(true);
+        com.nukkad.startup.entity.Startup rejected = startupNamed("rejected");
+        rejected.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.REJECTED);
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of());
+        when(startupRepository.findAllById(any())).thenReturn(java.util.List.of(removed, rejected));
+
+        assertThatThrownBy(() -> service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, null, java.util.List.of("removed"))))
+                .isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, null, java.util.List.of("rejected"))))
+                .isInstanceOf(BadRequestException.class);
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
+    }
+
+    // ---- link / unlink one startup ----
+
+    @Test
+    void anOrganizerWhoManagesTheStartupCanLinkItOnce() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        userManagesStartup("organizer1", "s1", true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startupNamed("s1")));
+        when(eventStartupRepository.existsByEventIdAndStartupId("e1", "s1")).thenReturn(false);
+        when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
+
+        service().linkStartup("organizer1", "e1", "s1");
+
         org.mockito.Mockito.verify(eventStartupRepository).save(any());
+    }
+
+    @Test
+    void linkingTheSameStartupTwiceIsAConflictAndSavesNothing() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        userManagesStartup("organizer1", "s1", true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startupNamed("s1")));
+        when(eventStartupRepository.existsByEventIdAndStartupId("e1", "s1")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().linkStartup("organizer1", "e1", "s1"))
+                .isInstanceOf(com.nukkad.common.exception.ConflictException.class);
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void someoneWhoDoesNotRunTheEventCannotLinkEvenTheirOwnStartup() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+
+        assertThatThrownBy(() -> service().linkStartup("founder2", "e1", "s1")).isInstanceOf(ForbiddenException.class);
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void anOrganizerCannotLinkAStartupTheyDoNotManage() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        userManagesStartup("organizer1", "s1", false);
+
+        assertThatThrownBy(() -> service().linkStartup("organizer1", "e1", "s1")).isInstanceOf(ForbiddenException.class);
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void theOrganizerCanTakeAStartupOffTheEvent() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        com.nukkad.event.entity.EventStartup l = link("e1", "s1");
+        when(eventStartupRepository.findByEventIdAndStartupId("e1", "s1")).thenReturn(Optional.of(l));
+
+        service().unlinkStartup("organizer1", "e1", "s1");
+
+        org.mockito.Mockito.verify(eventStartupRepository).delete(l);
+    }
+
+    @Test
+    void aFounderOrAdminOfTheStartupCanTakeItOffSomeoneElsesEvent() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        userManagesStartup("founder2", "s1", true);
+        com.nukkad.event.entity.EventStartup l = link("e1", "s1");
+        when(eventStartupRepository.findByEventIdAndStartupId("e1", "s1")).thenReturn(Optional.of(l));
+
+        service().unlinkStartup("founder2", "e1", "s1");
+
+        org.mockito.Mockito.verify(eventStartupRepository).delete(l);
+    }
+
+    @Test
+    void aStrangerCannotTakeAStartupOffAnEvent() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        userManagesStartup("stranger", "s1", false);
+
+        assertThatThrownBy(() -> service().unlinkStartup("stranger", "e1", "s1")).isInstanceOf(ForbiddenException.class);
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).delete(any());
+    }
+
+    @Test
+    void takingOffAStartupThatIsNotOnTheEventIsNotFound() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(eventStartupRepository.findByEventIdAndStartupId("e1", "s1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().unlinkStartup("organizer1", "e1", "s1"))
+                .isInstanceOf(com.nukkad.common.exception.ResourceNotFoundException.class);
+    }
+
+    // ---- the event page: who may take a startup off ----
+
+    @Test
+    void theEventPageOffersTheUnlinkOnlyToWhoMayUseIt() {
+        Event personalEvent = event("e1", null, "organizer1", null);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(personalEvent));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(0L);
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of(link("e1", "mine"), link("e1", "other")));
+        when(startupRepository.findAllById(any())).thenReturn(java.util.List.of(startupNamed("mine"), startupNamed("other")));
+        when(startupTeamMemberRepository.findByUserIdAndTeamRoleInAndStatus(org.mockito.ArgumentMatchers.eq("founder2"), any(), any()))
+                .thenReturn(java.util.List.of(com.nukkad.startup.entity.StartupTeamMember.builder().startupId("mine").userId("founder2")
+                        .teamRole(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER)
+                        .status(com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE).build()));
+
+        var asFounder = service().getEvent("e1", "founder2").startups();
+        var asOrganizer = service().getEvent("e1", "organizer1").startups();
+        var asStranger = service().getEvent("e1", "stranger").startups();
+
+        assertThat(asFounder).extracting("id", "canUnlink").containsExactly(
+                org.assertj.core.groups.Tuple.tuple("mine", true), org.assertj.core.groups.Tuple.tuple("other", false));
+        assertThat(asOrganizer).extracting("canUnlink").containsExactly(true, true);
+        assertThat(asStranger).extracting("canUnlink").containsExactly(false, false);
+    }
+
+    // ---- a startup's events ----
+
+    @Test
+    void aStartupsEventsCarryTheImageTheChapterAndWhereTheyAreInTime() {
+        Instant now = Instant.now();
+        Event upcoming = Event.builder().id("up").title("Demo Day").chapterId("c1").coverImageUrl("http://img/up.png")
+                .startAt(now.plus(3, ChronoUnit.DAYS)).endAt(now.plus(3, ChronoUnit.DAYS).plus(2, ChronoUnit.HOURS)).build();
+        Event live = Event.builder().id("live").title("Hack").startAt(now.minus(1, ChronoUnit.HOURS)).endAt(now.plus(1, ChronoUnit.HOURS)).build();
+        Event ended = Event.builder().id("ended").title("Old meetup").startAt(now.minus(9, ChronoUnit.DAYS)).endAt(now.minus(9, ChronoUnit.DAYS).plus(1, ChronoUnit.HOURS)).build();
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startupNamed("s1")));
+        when(eventStartupRepository.findByStartupId("s1")).thenReturn(java.util.List.of(link("up", "s1"), link("live", "s1"), link("ended", "s1")));
+        when(eventRepository.findAllById(any())).thenReturn(java.util.List.of(upcoming, live, ended));
+        when(chapterRepository.findAllById(java.util.List.of("c1"))).thenReturn(java.util.List.of(chapter("c1", "p1")));
+
+        var result = service().getEventsForStartup("s1", "member1");
+
+        assertThat(result).extracting("id", "status").containsExactly(
+                org.assertj.core.groups.Tuple.tuple("ended", com.nukkad.event.entity.EventStatus.ENDED),
+                org.assertj.core.groups.Tuple.tuple("live", com.nukkad.event.entity.EventStatus.LIVE),
+                org.assertj.core.groups.Tuple.tuple("up", com.nukkad.event.entity.EventStatus.UPCOMING));
+        var demo = result.stream().filter(e -> e.id().equals("up")).findFirst().orElseThrow();
+        assertThat(demo.coverImageUrl()).isEqualTo("http://img/up.png");
+        assertThat(demo.chapterName()).isEqualTo("Nukkad Bengaluru");
+        assertThat(result.stream().filter(e -> e.id().equals("live")).findFirst().orElseThrow().chapterName()).isNull();
     }
 
     @Test
@@ -401,10 +618,62 @@ class EventServiceTest {
                 com.nukkad.event.entity.EventStartup.builder().eventId("e-later").startupId("s1").build(),
                 com.nukkad.event.entity.EventStartup.builder().eventId("e-sooner").startupId("s1").build()));
         when(eventRepository.findAllById(java.util.List.of("e-later", "e-sooner"))).thenReturn(java.util.List.of(later, sooner));
+        when(startupRepository.findById("s1")).thenReturn(java.util.Optional.of(
+                com.nukkad.startup.entity.Startup.builder().id("s1").name("Ledgerly").build()));
 
-        var result = service().getEventsForStartup("s1");
+        var result = service().getEventsForStartup("s1", "member1");
 
         assertThat(result).extracting("id").containsExactly("e-sooner", "e-later");
+    }
+
+    @Test
+    void theEventsOfARemovedStartupAreNotListedForAnyone() {
+        com.nukkad.startup.entity.Startup removed = com.nukkad.startup.entity.Startup.builder().id("s1").name("Ledgerly").build();
+        removed.setRemovedByAdmin(true);
+        when(startupRepository.findById("s1")).thenReturn(java.util.Optional.of(removed));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service().getEventsForStartup("s1", "member1"))
+                .isInstanceOf(com.nukkad.common.exception.ResourceNotFoundException.class);
+    }
+
+    @Test
+    void theEventsOfARejectedStartupAreHiddenFromAStrangerButNotFromItsFounder() {
+        com.nukkad.startup.entity.Startup rejected = com.nukkad.startup.entity.Startup.builder().id("s1").name("Ledgerly").build();
+        rejected.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.REJECTED);
+        when(startupRepository.findById("s1")).thenReturn(java.util.Optional.of(rejected));
+        when(startupTeamMemberRepository.findByStartupIdAndUserId("s1", "stranger1")).thenReturn(java.util.Optional.empty());
+        when(startupTeamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(java.util.Optional.of(
+                com.nukkad.startup.entity.StartupTeamMember.builder().startupId("s1").userId("founder1")
+                        .teamRole(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER)
+                        .status(com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE).build()));
+        when(eventStartupRepository.findByStartupId("s1")).thenReturn(java.util.List.of());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service().getEventsForStartup("s1", "stranger1"))
+                .isInstanceOf(com.nukkad.common.exception.ResourceNotFoundException.class);
+        assertThat(service().getEventsForStartup("s1", "founder1")).isEmpty();
+    }
+
+    @Test
+    void anEventPageOnlyNamesTheStartupsTheViewerMayRead() {
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        Event event = Event.builder().id("e1").title("Demo night").startAt(start).endAt(start.plus(2, ChronoUnit.HOURS)).build();
+        when(eventRepository.findById("e1")).thenReturn(java.util.Optional.of(event));
+        com.nukkad.startup.entity.Startup live = com.nukkad.startup.entity.Startup.builder().id("s-live").name("Live Co").build();
+        com.nukkad.startup.entity.Startup removed = com.nukkad.startup.entity.Startup.builder().id("s-removed").name("Removed Co").build();
+        removed.setRemovedByAdmin(true);
+        com.nukkad.startup.entity.Startup rejected = com.nukkad.startup.entity.Startup.builder().id("s-rejected").name("Rejected Co").build();
+        rejected.setModerationStatus(com.nukkad.common.moderation.ModerationStatus.REJECTED);
+        when(eventStartupRepository.findByEventId("e1")).thenReturn(java.util.List.of(
+                com.nukkad.event.entity.EventStartup.builder().eventId("e1").startupId("s-live").build(),
+                com.nukkad.event.entity.EventStartup.builder().eventId("e1").startupId("s-removed").build(),
+                com.nukkad.event.entity.EventStartup.builder().eventId("e1").startupId("s-rejected").build()));
+        when(startupRepository.findAllById(java.util.List.of("s-live", "s-removed", "s-rejected")))
+                .thenReturn(java.util.List.of(live, removed, rejected));
+        when(startupTeamMemberRepository.findByStartupIdAndUserId("s-rejected", "member1")).thenReturn(java.util.Optional.empty());
+
+        EventDto dto = service().getEvent("e1", "member1");
+
+        assertThat(dto.startups()).extracting("id").containsExactly("s-live");
     }
 
     // ---- cover image upload -------------------------------------------------------------------------

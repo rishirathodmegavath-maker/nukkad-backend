@@ -16,6 +16,7 @@ import com.nukkad.startup.dto.StartupDto;
 import com.nukkad.startup.dto.StartupJoinRequestDto;
 import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
+import com.nukkad.startup.dto.StartupSectorDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
 import com.nukkad.startup.dto.UpdateStartupRequest;
@@ -31,6 +32,8 @@ import com.nukkad.startup.entity.StartupTeamMember;
 import com.nukkad.startup.entity.StartupUpdate;
 import com.nukkad.startup.entity.StartupVisibility;
 import com.nukkad.startup.mapper.StartupMapper;
+import com.nukkad.idea.repository.IdeaRepository;
+import com.nukkad.opportunity.repository.OpportunityRepository;
 import com.nukkad.startup.repository.StartupFollowRepository;
 import com.nukkad.startup.repository.StartupMaterialRepository;
 import com.nukkad.startup.repository.StartupProfileViewRepository;
@@ -57,7 +60,9 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -75,11 +80,14 @@ public class StartupService {
     private final StartupMaterialRepository materialRepository;
     private final StartupProfileViewRepository profileViewRepository;
     private final UserRepository userRepository;
+    private final OpportunityRepository opportunityRepository;
+    private final IdeaRepository ideaRepository;
     private final UserService userService;
     private final StartupMapper startupMapper;
     private final NotificationService notificationService;
     private final FileStorageService fileStorageService;
     private final AuditService auditService;
+    private final StartupAccessPolicy accessPolicy;
 
     public StartupService(StartupRepository startupRepository,
                            StartupTeamMemberRepository teamMemberRepository,
@@ -89,11 +97,14 @@ public class StartupService {
                            StartupMaterialRepository materialRepository,
                            StartupProfileViewRepository profileViewRepository,
                            UserRepository userRepository,
+                           OpportunityRepository opportunityRepository,
+                           IdeaRepository ideaRepository,
                            UserService userService,
                            StartupMapper startupMapper,
                            NotificationService notificationService,
                            FileStorageService fileStorageService,
-                           AuditService auditService) {
+                           AuditService auditService,
+                           StartupAccessPolicy accessPolicy) {
         this.startupRepository = startupRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.updateRepository = updateRepository;
@@ -102,11 +113,14 @@ public class StartupService {
         this.materialRepository = materialRepository;
         this.profileViewRepository = profileViewRepository;
         this.userRepository = userRepository;
+        this.opportunityRepository = opportunityRepository;
+        this.ideaRepository = ideaRepository;
         this.userService = userService;
         this.startupMapper = startupMapper;
         this.notificationService = notificationService;
         this.fileStorageService = fileStorageService;
         this.auditService = auditService;
+        this.accessPolicy = accessPolicy;
     }
 
     public Startup getEntityOrThrow(String id) {
@@ -116,21 +130,13 @@ public class StartupService {
 
     @Transactional(readOnly = true)
     public StartupDto getStartup(String id, String viewerId) {
-        Startup startup = getEntityOrThrow(id);
-        requireVisible(startup, viewerId);
-        if (startup.isRemovedByAdmin()) {
-            throw new ResourceNotFoundException("Startup not found: " + id);
-        }
-        // Pre-publish gate: a PENDING/REJECTED startup is only visible to a founder/admin of its
-        // own team (so they can see their own submission's review status) or a platform admin
-        // (via getStartupForAdmin below).
-        if (startup.getModerationStatus() != ModerationStatus.APPROVED && !canManageStartup(viewerId, id)) {
-            throw new ResourceNotFoundException("Startup not found: " + id);
-        }
+        // The same gate every sub-resource read below goes through (removed / member-only / not approved).
+        Startup startup = accessPolicy.requireReadable(id, viewerId);
         return startupMapper.toDto(startup,
                 viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, id),
                 canManageStartup(viewerId, id),
-                canViewFundraising(startup, viewerId));
+                canViewFundraising(startup, viewerId),
+                followRepository.countByStartupId(id));
     }
 
     // Admin-only: bypasses both the visibility and removed-by-admin checks above so a hidden or
@@ -138,7 +144,7 @@ public class StartupService {
     @Transactional(readOnly = true)
     public StartupDto getStartupForAdmin(String id) {
         Startup startup = getEntityOrThrow(id);
-        return startupMapper.toDto(startup, false, true, true);
+        return manageDto(startup);
     }
 
     /** Runs as its own transaction so a view never fails (or blocks) the read it's attached to.
@@ -163,19 +169,17 @@ public class StartupService {
                 StartupSpecifications.search(q),
                 StartupSpecifications.sector(sector),
                 StartupSpecifications.stage(stage),
-                StartupSpecifications.isRaising(isRaising),
+                // "Raising" as this viewer may see it: a startup with hidden fundraising must not be revealed by the filter.
+                StartupSpecifications.isRaisingAsSeenBy(isRaising, viewerId),
                 StartupSpecifications.chapterId(chapterId),
                 StartupSpecifications.memberId(memberId),
                 StartupSpecifications.visibleTo(viewerId != null),
                 StartupSpecifications.notRemoved(),
                 ownContent ? null : StartupSpecifications.approved()
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return startupRepository.findAll(spec, pageable)
-                .map(s -> startupMapper.toDto(s,
-                        viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
-                        canManageStartup(viewerId, s.getId()),
-                        canViewFundraising(s, viewerId)));
+        // Newest first; the id breaks ties (timestamps are whole seconds), so a startup can't repeat or vanish between pages.
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.asc("id")));
+        return toDtoPage(startupRepository.findAll(spec, pageable), viewerId);
     }
 
     // ADMIN-ONLY — never applies the approved() gate; an admin must see PENDING/REJECTED startups
@@ -196,11 +200,7 @@ public class StartupService {
                 StartupSpecifications.moderationStatus(moderationStatus)
         );
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return startupRepository.findAll(spec, pageable)
-                .map(s -> startupMapper.toDto(s,
-                        viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
-                        canManageStartup(viewerId, s.getId()),
-                        canViewFundraising(s, viewerId)));
+        return toDtoPage(startupRepository.findAll(spec, pageable), viewerId);
     }
 
     // See IdeaService.setRemovedByAdmin for the shared rationale behind this moderation model.
@@ -217,15 +217,69 @@ public class StartupService {
         auditService.log(adminId, removed ? AuditAction.ADMIN_CONTENT_REMOVED : AuditAction.ADMIN_CONTENT_RESTORED,
                 "Startup", startupId, ip, details);
 
-        return startupMapper.toDto(startup, false, true, true);
+        return manageDto(startup);
     }
 
     @Transactional(readOnly = true)
     public List<StartupDto> listMyFoundedStartups(String userId) {
         List<String> startupIds = teamMemberRepository.findByUserIdAndTeamRoleInAndStatus(userId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)
                 .stream().map(StartupTeamMember::getStartupId).toList();
-        return startupRepository.findAllById(startupIds).stream()
-                .map(s -> startupMapper.toDto(s, false, true, true))
+        List<Startup> startups = startupRepository.findAllById(startupIds);
+        Map<String, Long> followers = followerCounts(startups.stream().map(Startup::getId).toList());
+        return startups.stream()
+                .map(s -> startupMapper.toDto(s, false, true, true, followers.getOrDefault(s.getId(), 0L)))
+                .toList();
+    }
+
+    /** A page of startups as the viewer sees them; follower counts come from one query for the whole page. */
+    private Page<StartupDto> toDtoPage(Page<Startup> page, String viewerId) {
+        Map<String, Long> followers = followerCounts(page.getContent().stream().map(Startup::getId).toList());
+        return page.map(s -> startupMapper.toDto(s,
+                viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
+                canManageStartup(viewerId, s.getId()),
+                canViewFundraising(s, viewerId),
+                followers.getOrDefault(s.getId(), 0L)));
+    }
+
+    /** The startup as its managers (and admins) see it, with its real follower count. */
+    private StartupDto manageDto(Startup startup) {
+        return startupMapper.toDto(startup, false, true, true, followRepository.countByStartupId(startup.getId()));
+    }
+
+    private Map<String, Long> followerCounts(List<String> startupIds) {
+        Map<String, Long> counts = new HashMap<>();
+        if (startupIds.isEmpty()) return counts;
+        for (Object[] row : followRepository.countByStartupIds(startupIds)) {
+            counts.put((String) row[0], (Long) row[1]);
+        }
+        return counts;
+    }
+
+    /**
+     * The sectors that discovery can actually filter by: only sectors some visible startup has, most startups first. Case
+     * variants ("AI", "ai") are folded into one entry that shows the spelling most startups use, and the sector filter
+     * matches them case-insensitively, so the count and the results agree.
+     */
+    @Transactional(readOnly = true)
+    public List<StartupSectorDto> listSectors(String viewerId) {
+        Map<String, Long> totals = new HashMap<>();
+        Map<String, String> spelling = new HashMap<>();
+        Map<String, Long> spellingCount = new HashMap<>();
+        for (Object[] row : startupRepository.countBySector(viewerId != null)) {
+            String raw = ((String) row[0]).trim();
+            long count = (Long) row[1];
+            String key = raw.toLowerCase(java.util.Locale.ROOT);
+            totals.merge(key, count, Long::sum);
+            if (count > spellingCount.getOrDefault(key, 0L)) {
+                spellingCount.put(key, count);
+                spelling.put(key, raw);
+            }
+        }
+        return totals.entrySet().stream()
+                .map(e -> new StartupSectorDto(spelling.get(e.getKey()), e.getValue()))
+                .sorted(java.util.Comparator.comparingLong(StartupSectorDto::count).reversed()
+                        .thenComparing(d -> d.sector().toLowerCase(java.util.Locale.ROOT)))
+                .limit(50)
                 .toList();
     }
 
@@ -241,6 +295,19 @@ public class StartupService {
                 .stage(request.stage() == null || request.stage().isBlank() ? StartupStage.IDEA : StartupStage.fromLabel(request.stage()))
                 .needs(request.needs() == null ? new java.util.HashSet<>() : new java.util.HashSet<>(request.needs()))
                 .chapterId(request.chapterId())
+                // The profile fields go through the same normalisation as when they are edited later.
+                .location(blankToNull(request.location()))
+                .website(normalizeAndValidateUrl(request.website(), "Website"))
+                .targetCustomer(blankToNull(request.targetCustomer()))
+                .businessModel(blankToNull(request.businessModel()))
+                .whatBuilding(blankToNull(request.whatBuilding()))
+                .revenue(blankToNull(request.revenue()))
+                .customers(blankToNull(request.customers()))
+                .users(blankToNull(request.users()))
+                .growth(blankToNull(request.growth()))
+                .otherTraction(blankToNull(request.otherTraction()))
+                .visibility(request.visibility() == null || request.visibility().isBlank() ? StartupVisibility.PUBLIC : parseVisibility(request.visibility()))
+                .fundraisingVisible(request.fundraisingVisible() == null || request.fundraisingVisible())
                 .build();
         startup = startupRepository.saveAndFlush(startup);
 
@@ -251,7 +318,7 @@ public class StartupService {
                 .status(StartupTeamMember.Status.ACTIVE)
                 .build());
 
-        return startupMapper.toDto(startup, false, true, true);
+        return manageDto(startup);
     }
 
     /**
@@ -308,26 +375,34 @@ public class StartupService {
         if (request.growth() != null) startup.setGrowth(blankToNull(request.growth()));
         if (request.otherTraction() != null) startup.setOtherTraction(blankToNull(request.otherTraction()));
         if (request.keywords() != null) startup.setKeywords(normalizeKeywords(request.keywords()));
-        if (request.visibility() != null) {
-            try {
-                startup.setVisibility(StartupVisibility.fromLabel(request.visibility()));
-            } catch (IllegalArgumentException e) {
-                throw new BadRequestException("Unknown visibility: " + request.visibility());
-            }
-        }
+        if (request.visibility() != null) startup.setVisibility(parseVisibility(request.visibility()));
         if (request.fundraisingVisible() != null) startup.setFundraisingVisible(request.fundraisingVisible());
         if (request.isRaising() != null) startup.setRaising(request.isRaising());
         if (request.stage() != null) startup.setStage(StartupStage.fromLabel(request.stage()));
         if (request.needs() != null) startup.setNeeds(new java.util.HashSet<>(request.needs()));
 
         Startup saved = startupRepository.saveAndFlush(startup);
-        return startupMapper.toDto(saved, false, true, true);
+        return manageDto(saved);
     }
 
+    /**
+     * Founder-only. The team, follows, updates, roles, materials, fundraise and event links go with the startup. Job
+     * postings made for it are people's own content that others may have applied to, so they are never deleted behind
+     * the founder's back: while any exist the delete is refused and says why. An idea that became this startup is
+     * released back to being a plain idea.
+     */
     @Transactional
     public void deleteStartup(String userId, String startupId) {
-        getEntityOrThrow(startupId);
+        Startup startup = getEntityOrThrow(startupId);
         requireFounder(userId, startupId);
+
+        long postings = opportunityRepository.countByStartupId(startupId);
+        if (postings > 0) {
+            throw new ConflictException("\"" + startup.getName() + "\" still has " + postings + (postings == 1 ? " opportunity" : " opportunities")
+                    + " posted for it. " + (postings == 1 ? "It has" : "They have") + " to be deleted by whoever posted "
+                    + (postings == 1 ? "it" : "them") + " (Opportunities > Posted by me) before the startup can be deleted.");
+        }
+        ideaRepository.detachFromStartup(startupId);
         startupRepository.deleteById(startupId);
     }
 
@@ -336,7 +411,7 @@ public class StartupService {
         Startup startup = getEntityOrThrow(startupId);
         requireManager(founderId, startupId);
         startup.setLogoUrl(fileStorageService.storeImage(file, "startup-logos"));
-        return startupMapper.toDto(startupRepository.save(startup), false, true, true);
+        return manageDto(startupRepository.save(startup));
     }
 
     @Transactional
@@ -344,20 +419,29 @@ public class StartupService {
         Startup startup = getEntityOrThrow(startupId);
         requireManager(founderId, startupId);
         startup.setLogoUrl(null);
-        return startupMapper.toDto(startupRepository.save(startup), false, true, true);
+        return manageDto(startupRepository.save(startup));
     }
 
     @Transactional(readOnly = true)
-    public List<StartupTeamMemberDto> getMembers(String startupId) {
-        getEntityOrThrow(startupId);
+    public List<StartupTeamMemberDto> getMembers(String startupId, String viewerId) {
+        accessPolicy.requireReadable(startupId, viewerId);
         return teamMemberRepository.findByStartupIdAndStatus(startupId, StartupTeamMember.Status.ACTIVE).stream()
-                .map(startupMapper::toDto)
+                .map(m -> startupMapper.toDto(m, memberProfile(m.getUserId(), viewerId)))
                 .toList();
+    }
+
+    /** A team member as the viewer may see them (privacy and blocks apply); null when they can't be shown, so the list still loads. */
+    private UserDto memberProfile(String userId, String viewerId) {
+        try {
+            return userService.getUser(userId, viewerId);
+        } catch (ResourceNotFoundException | ForbiddenException e) {
+            return null;
+        }
     }
 
     @Transactional(readOnly = true)
     public StartupTeamMemberDto getMyMembership(String userId, String startupId) {
-        getEntityOrThrow(startupId);
+        accessPolicy.requireReadable(startupId, userId);
         return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
                 .map(startupMapper::toDto)
                 .orElse(null);
@@ -392,7 +476,7 @@ public class StartupService {
 
     @Transactional
     public StartupTeamMemberDto requestToJoin(String userId, String startupId, String roleId, String message) {
-        Startup startup = getEntityOrThrow(startupId);
+        Startup startup = accessPolicy.requireReadable(startupId, userId);
         userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
         if (roleId != null && !roleRepository.findById(roleId).map(r -> r.getStartupId().equals(startupId)).orElse(false)) {
@@ -583,7 +667,7 @@ public class StartupService {
 
     @Transactional
     public FollowResult toggleFollow(String userId, String startupId) {
-        getEntityOrThrow(startupId);
+        accessPolicy.requireReadable(startupId, userId);
         if (followRepository.existsByUserIdAndStartupId(userId, startupId)) {
             followRepository.deleteByUserIdAndStartupId(userId, startupId);
             return new FollowResult(false);
@@ -602,16 +686,16 @@ public class StartupService {
     }
 
     @Transactional(readOnly = true)
-    public List<StartupUpdateDto> getUpdates(String startupId) {
-        getEntityOrThrow(startupId);
+    public List<StartupUpdateDto> getUpdates(String startupId, String viewerId) {
+        accessPolicy.requireReadable(startupId, viewerId);
         return updateRepository.findByStartupIdOrderByCreatedAtDesc(startupId, PageRequest.of(0, 100))
                 .map(startupMapper::toDto)
                 .getContent();
     }
 
     @Transactional(readOnly = true)
-    public List<StartupRoleDto> getRoles(String startupId) {
-        getEntityOrThrow(startupId);
+    public List<StartupRoleDto> getRoles(String startupId, String viewerId) {
+        accessPolicy.requireReadable(startupId, viewerId);
         return roleRepository.findByStartupId(startupId).stream().map(startupMapper::toDto).toList();
     }
 
@@ -633,7 +717,7 @@ public class StartupService {
 
     @Transactional(readOnly = true)
     public List<StartupMaterialDto> getMaterials(String startupId, String viewerId) {
-        getEntityOrThrow(startupId);
+        accessPolicy.requireReadable(startupId, viewerId);
         boolean canManage = canManageStartup(viewerId, startupId);
         return materialRepository.findByStartupIdOrderBySortOrderAscCreatedAtAsc(startupId).stream()
                 .map(m -> startupMapper.toDto(m, canManage))
@@ -741,7 +825,15 @@ public class StartupService {
 
     // ---- authorization / visibility helpers ----
 
+    /** An admin-removed startup looks nonexistent to everyone, so nobody (its own team included) can change it. */
+    private void requireNotRemoved(String startupId) {
+        if (startupRepository.findById(startupId).map(Startup::isRemovedByAdmin).orElse(false)) {
+            throw new ResourceNotFoundException("Startup not found: " + startupId);
+        }
+    }
+
     private void requireFounder(String userId, String startupId) {
+        requireNotRemoved(startupId);
         if (!isFounderMember(userId, startupId)) {
             throw new ForbiddenException("Only a founder of this startup can perform this action");
         }
@@ -756,6 +848,7 @@ public class StartupService {
 
     /** Founder or Admin — gates edit-startup/manage-team/post-jobs/edit-fundraising. Delete stays founder-only via requireFounder. */
     private void requireManager(String userId, String startupId) {
+        requireNotRemoved(startupId);
         if (!canManageStartup(userId, startupId)) {
             throw new ForbiddenException("Only a founder or admin of this startup can perform this action");
         }
@@ -769,6 +862,7 @@ public class StartupService {
     }
 
     private void requireTeamMember(String userId, String startupId) {
+        requireNotRemoved(startupId);
         boolean isMember = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
                 .map(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
                 .orElse(false);
@@ -782,18 +876,18 @@ public class StartupService {
                 .orElse(false);
     }
 
-    /** An anonymous caller may only ever reach a PUBLIC startup; never leaks that a member-only
-     *  startup exists by returning a different error for that case. */
-    private void requireVisible(Startup startup, String viewerId) {
-        if (viewerId == null && startup.getVisibility() == StartupVisibility.NUKKAD_MEMBERS) {
-            throw new ResourceNotFoundException("Startup not found: " + startup.getId());
-        }
-    }
-
     /** Fundraising data is visible to the founder/team of the startup regardless of the toggle,
      *  and to everyone else only when the founder has switched fundraising visibility on. */
     private boolean canViewFundraising(Startup startup, String viewerId) {
         return startup.isFundraisingVisible() || isActiveTeamMember(viewerId, startup.getId());
+    }
+
+    private StartupVisibility parseVisibility(String label) {
+        try {
+            return StartupVisibility.fromLabel(label);
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Unknown visibility: " + label);
+        }
     }
 
     private String blankToNull(String s) {

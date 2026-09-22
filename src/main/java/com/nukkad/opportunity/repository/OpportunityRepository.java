@@ -11,6 +11,7 @@ public interface OpportunityRepository extends JpaRepository<Opportunity, String
     Page<Opportunity> findByPostedByUserId(String postedByUserId, Pageable pageable);
     long countByChapterId(String chapterId);
     long countByClosedFalse();
+    long countByStartupId(String startupId);
     long countByModerationStatus(ModerationStatus moderationStatus);
 
     /** Feeds the chapter "recent activity" list — pageable's Sort (createdAt desc) determines order. */

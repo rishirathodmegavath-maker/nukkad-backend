@@ -5,6 +5,7 @@ import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
+import com.nukkad.user.dto.UserDto;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupMaterial;
 import com.nukkad.startup.entity.StartupRole;
@@ -18,17 +19,18 @@ import java.util.HashSet;
 public class StartupMapper {
 
     public StartupDto toDto(Startup startup) {
-        return toDto(startup, false, false, true);
+        return toDto(startup, false, false, true, 0);
     }
 
     /**
      * @param canManage          true for an active founder — drives edit/delete/manage-material affordances.
+     * @param followerCount      how many members follow the startup: the real number, counted by the caller.
      * @param canViewFundraising true if this viewer may see real fundraising data: either the startup's
      *                           fundraising visibility is on, or the viewer is a founder/team member of
      *                           their own startup. When false, {@code isRaising} is also suppressed since
      *                           that status alone reveals the startup is fundraising.
      */
-    public StartupDto toDto(Startup startup, boolean isFollowing, boolean canManage, boolean canViewFundraising) {
+    public StartupDto toDto(Startup startup, boolean isFollowing, boolean canManage, boolean canViewFundraising, long followerCount) {
         return new StartupDto(
                 startup.getId(),
                 startup.getName(),
@@ -57,6 +59,7 @@ public class StartupMapper {
                 canViewFundraising && startup.isRaising(),
                 new HashSet<>(startup.getNeeds()),
                 isFollowing,
+                followerCount,
                 canManage,
                 profileCompletionPercent(startup),
                 startup.isRemovedByAdmin(),
@@ -70,7 +73,7 @@ public class StartupMapper {
 
     /** Percentage of the optional rich-profile fields that have actually been filled in — never
      *  a fabricated number, always derived from what's really persisted. */
-    private int profileCompletionPercent(Startup startup) {
+    public int profileCompletionPercent(Startup startup) {
         String[] fields = {
                 startup.getLogoUrl(), startup.getLocation(), startup.getWebsite(), startup.getTagline(),
                 startup.getSector(), startup.getProblem(), startup.getSolution(), startup.getTargetCustomer(),
@@ -109,6 +112,10 @@ public class StartupMapper {
     }
 
     public StartupTeamMemberDto toDto(StartupTeamMember member) {
+        return toDto(member, null);
+    }
+
+    public StartupTeamMemberDto toDto(StartupTeamMember member, UserDto user) {
         return new StartupTeamMemberDto(
                 member.getId(),
                 member.getStartupId(),
@@ -121,7 +128,8 @@ public class StartupMapper {
                 member.getStatus().name(),
                 member.getRoleId(),
                 member.getCreatedAt(),
-                member.getReviewedAt()
+                member.getReviewedAt(),
+                user
         );
     }
 

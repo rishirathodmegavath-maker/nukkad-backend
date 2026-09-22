@@ -28,12 +28,14 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -53,12 +55,14 @@ class IntroRequestServiceTest {
     @Mock private AuditService auditService;
     @Mock private ConversationService conversationService;
     @Mock private ConversationRepository conversationRepository;
+    @Mock private com.nukkad.startup.repository.StartupTeamMemberRepository teamMemberRepository;
     private final InvestorMapper investorMapper = new InvestorMapper();
 
     private IntroRequestService service() {
         return new IntroRequestService(introRequestRepository, investorProfileRepository, startupRepository,
                 ideaRepository, userRepository, userService, investorMapper, notificationService, auditService,
-                conversationService, conversationRepository);
+                conversationService, conversationRepository,
+                new com.nukkad.startup.service.StartupAccessPolicy(startupRepository, teamMemberRepository));
     }
 
     private IntroRequest request(String id, String requesterId, String recipientId, IntroRequestStatus status) {
@@ -70,6 +74,36 @@ class IntroRequestServiceTest {
         return new CreateIntroRequestRequest(recipientId, "FOUNDER_TO_INVESTOR", null, null, "Why this investor is a fit");
     }
 
+    /** The users exist: the row lock is taken on the investor, then the recipient is looked up. */
+    private void usersExist(String... ids) {
+        for (String id : ids) {
+            User user = User.builder().id(id).build();
+            lenient().when(userRepository.findByIdForUpdate(id)).thenReturn(Optional.of(user));
+            lenient().when(userRepository.findById(id)).thenReturn(Optional.of(user));
+        }
+    }
+
+    private com.nukkad.startup.entity.Startup liveStartup(String id) {
+        return com.nukkad.startup.entity.Startup.builder().id(id).name("Ledgerly")
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
+    }
+
+    private void userManages(String startupId, String userId) {
+        when(teamMemberRepository.findByStartupIdAndUserId(startupId, userId)).thenReturn(Optional.of(
+                com.nukkad.startup.entity.StartupTeamMember.builder().startupId(startupId).userId(userId)
+                        .teamRole(com.nukkad.startup.entity.StartupTeamMember.TeamRole.FOUNDER)
+                        .status(com.nukkad.startup.entity.StartupTeamMember.Status.ACTIVE).build()));
+    }
+
+    private IntroRequest requestAbout(String requesterId, String recipientId, IntroDirection direction, String startupId, IntroRequestStatus status) {
+        return IntroRequest.builder().id("existing").requesterId(requesterId).recipientId(recipientId)
+                .direction(direction).startupId(startupId).message("hi").status(status).build();
+    }
+
+    private CreateIntroRequestRequest aboutStartup(String recipientId, String startupId) {
+        return new CreateIntroRequestRequest(recipientId, "FOUNDER_TO_INVESTOR", startupId, null, "Why this investor is a fit");
+    }
+
     // ---- creation validation ----
 
     @Test
@@ -79,13 +113,13 @@ class IntroRequestServiceTest {
 
     @Test
     void requestingIntroductionToNonexistentUserIsRejected() {
-        when(userRepository.findById("ghost")).thenReturn(Optional.empty());
+        when(userRepository.findByIdForUpdate("ghost")).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service().create("u1", founderToInvestor("ghost"))).isInstanceOf(ResourceNotFoundException.class);
     }
 
     @Test
     void founderToInvestorRequiresRecipientToHaveAnInvestorProfile() {
-        when(userRepository.findById("u2")).thenReturn(Optional.of(User.builder().id("u2").build()));
+        usersExist("u2");
         when(investorProfileRepository.existsByUserId("u2")).thenReturn(false);
 
         assertThatThrownBy(() -> service().create("u1", founderToInvestor("u2"))).isInstanceOf(ResourceNotFoundException.class);
@@ -93,7 +127,7 @@ class IntroRequestServiceTest {
 
     @Test
     void investorToFounderRequiresRequesterToHaveAnInvestorProfile() {
-        when(userRepository.findById("founder1")).thenReturn(Optional.of(User.builder().id("founder1").build()));
+        usersExist("investor1", "founder1");
         when(investorProfileRepository.existsByUserId("investor1")).thenReturn(false);
 
         CreateIntroRequestRequest req = new CreateIntroRequestRequest("founder1", "INVESTOR_TO_FOUNDER", null, null, "I'd love to learn more");
@@ -103,9 +137,9 @@ class IntroRequestServiceTest {
 
     @Test
     void requestingAboutANonexistentStartupIsRejected() {
-        when(userRepository.findById("u2")).thenReturn(Optional.of(User.builder().id("u2").build()));
+        usersExist("u2");
         when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
-        when(startupRepository.existsById("ghost-startup")).thenReturn(false);
+        when(startupRepository.findById("ghost-startup")).thenReturn(Optional.empty());
 
         CreateIntroRequestRequest req = new CreateIntroRequestRequest("u2", "FOUNDER_TO_INVESTOR", "ghost-startup", null, "Context");
 
@@ -114,20 +148,134 @@ class IntroRequestServiceTest {
 
     @Test
     void duplicatePendingRequestIsRejected() {
-        when(userRepository.findById("u2")).thenReturn(Optional.of(User.builder().id("u2").build()));
+        usersExist("u2");
         when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
-        when(introRequestRepository.existsByRequesterIdAndRecipientIdAndStatus("u1", "u2", IntroRequestStatus.PENDING)).thenReturn(true);
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of(
+                requestAbout("u1", "u2", IntroDirection.FOUNDER_TO_INVESTOR, null, IntroRequestStatus.PENDING)));
 
-        assertThatThrownBy(() -> service().create("u1", founderToInvestor("u2"))).isInstanceOf(ConflictException.class);
+        assertThatThrownBy(() -> service().create("u1", founderToInvestor("u2")))
+                .isInstanceOf(ConflictException.class).hasMessageContaining("pending");
 
         verify(introRequestRepository, never()).saveAndFlush(any());
     }
 
     @Test
-    void validRequestPersistsAndNotifiesTheRecipient() {
-        when(userRepository.findById("u2")).thenReturn(Optional.of(User.builder().id("u2").build()));
+    void aSecondRequestIsRefusedOnceTheFirstWasAccepted() {
+        usersExist("u2");
         when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
-        when(introRequestRepository.existsByRequesterIdAndRecipientIdAndStatus("u1", "u2", IntroRequestStatus.PENDING)).thenReturn(false);
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of(
+                requestAbout("u1", "u2", IntroDirection.FOUNDER_TO_INVESTOR, null, IntroRequestStatus.ACCEPTED)));
+
+        assertThatThrownBy(() -> service().create("u1", founderToInvestor("u2")))
+                .isInstanceOf(ConflictException.class).hasMessageContaining("already been accepted");
+
+        verify(introRequestRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aRequestTheInvestorStartedCountsAgainstTheFounderAskingToo() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        // u2 is the investor and reached out to founder u1 first; u1 now asks u2 about nothing in particular.
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of(
+                requestAbout("u2", "u1", IntroDirection.INVESTOR_TO_FOUNDER, null, IntroRequestStatus.PENDING)));
+
+        assertThatThrownBy(() -> service().create("u1", founderToInvestor("u2"))).isInstanceOf(ConflictException.class);
+    }
+
+    @Test
+    void theSameStartupAndInvestorCannotHaveTwoLiveRequests() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(liveStartup("s1")));
+        userManages("s1", "u1");
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of(
+                requestAbout("u1", "u2", IntroDirection.FOUNDER_TO_INVESTOR, "s1", IntroRequestStatus.PENDING)));
+
+        assertThatThrownBy(() -> service().create("u1", aboutStartup("u2", "s1")))
+                .isInstanceOf(ConflictException.class).hasMessageContaining("for this startup");
+    }
+
+    @Test
+    void aDifferentStartupWithTheSameInvestorIsADifferentCombination() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        when(startupRepository.findById("s2")).thenReturn(Optional.of(liveStartup("s2")));
+        userManages("s2", "u1");
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of(
+                requestAbout("u1", "u2", IntroDirection.FOUNDER_TO_INVESTOR, "s1", IntroRequestStatus.ACCEPTED)));
+        when(introRequestRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        IntroRequestDto dto = service().create("u1", aboutStartup("u2", "s2"));
+
+        assertThat(dto.status()).isEqualTo("Pending");
+    }
+
+    @Test
+    void aRequestWithNoStartupIsNotBlockedByOneAboutAStartup() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of(
+                requestAbout("u1", "u2", IntroDirection.FOUNDER_TO_INVESTOR, "s1", IntroRequestStatus.PENDING)));
+        when(introRequestRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(service().create("u1", founderToInvestor("u2")).status()).isEqualTo("Pending");
+    }
+
+    @Test
+    void theInvestorRowIsLockedBeforeTheDuplicateCheckSoSimultaneousRequestsCannotBothPass() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of());
+        when(introRequestRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().create("u1", founderToInvestor("u2"));
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(userRepository, introRequestRepository);
+        order.verify(userRepository).findByIdForUpdate("u2");
+        order.verify(introRequestRepository).findActiveBetween("u1", "u2");
+    }
+
+    @Test
+    void aFounderCannotRequestAnIntroductionForAStartupTheyDoNotManage() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(liveStartup("s1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "u1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().create("u1", aboutStartup("u2", "s1"))).isInstanceOf(ForbiddenException.class);
+
+        verify(introRequestRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void anInvestorCannotCiteAStartupTheFounderTheyContactDoesNotManage() {
+        usersExist("investor1", "founder1");
+        when(investorProfileRepository.existsByUserId("investor1")).thenReturn(true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(liveStartup("s1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.empty());
+
+        CreateIntroRequestRequest req = new CreateIntroRequestRequest("founder1", "INVESTOR_TO_FOUNDER", "s1", null, "Interested");
+
+        assertThatThrownBy(() -> service().create("investor1", req)).isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void aRemovedStartupCannotBeTheSubjectOfARequest() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        com.nukkad.startup.entity.Startup removed = liveStartup("s1");
+        removed.setRemovedByAdmin(true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(removed));
+
+        assertThatThrownBy(() -> service().create("u1", aboutStartup("u2", "s1"))).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void validRequestPersistsAndNotifiesTheRecipient() {
+        usersExist("u2");
+        when(investorProfileRepository.existsByUserId("u2")).thenReturn(true);
+        when(introRequestRepository.findActiveBetween("u1", "u2")).thenReturn(List.of());
         when(introRequestRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         IntroRequestDto dto = service().create("u1", founderToInvestor("u2"));

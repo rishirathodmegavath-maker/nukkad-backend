@@ -31,6 +31,7 @@ public record StartupDto(
         boolean isRaising,
         Set<String> needs,
         boolean isFollowing,
+        long followerCount,
         boolean canManage,
         int profileCompletionPercent,
         boolean removedByAdmin,
