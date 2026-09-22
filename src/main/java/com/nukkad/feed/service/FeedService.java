@@ -26,7 +26,12 @@ import com.nukkad.feed.repository.PostHashtagRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
+import com.nukkad.notification.entity.NotificationType;
+import com.nukkad.notification.service.NotificationService;
+import com.nukkad.user.entity.AccountStatus;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
+import com.nukkad.user.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -56,11 +61,14 @@ public class FeedService {
     private final AuditService auditService;
     private final ConnectionRepository connectionRepository;
     private final PostHashtagRepository postHashtagRepository;
+    private final UserRepository userRepository;
+    private final NotificationService notificationService;
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
                         PostCommentRepository postCommentRepository, PostSaveRepository postSaveRepository,
                         FileStorageService fileStorageService, AuditService auditService,
-                        ConnectionRepository connectionRepository, PostHashtagRepository postHashtagRepository) {
+                        ConnectionRepository connectionRepository, PostHashtagRepository postHashtagRepository,
+                        UserRepository userRepository, NotificationService notificationService) {
         this.postRepository = postRepository;
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
@@ -69,6 +77,8 @@ public class FeedService {
         this.auditService = auditService;
         this.connectionRepository = connectionRepository;
         this.postHashtagRepository = postHashtagRepository;
+        this.userRepository = userRepository;
+        this.notificationService = notificationService;
     }
 
     @Transactional(readOnly = true)
@@ -174,6 +184,36 @@ public class FeedService {
         Post saved = postRepository.save(post);
         saveHashtags(saved);
         return toDto(saved, false, false);
+    }
+
+    /**
+     * An admin publishing a post from the admin panel. With {@code authorEmail}, that member becomes the
+     * author (and is told, since it now appears as theirs); without it the admin's own account is the author.
+     * Reuses {@link #create} exactly as a member's own post would — no separate moderation gate exists for
+     * Feed posts to bypass.
+     */
+    @Transactional
+    public PostDto createAsAdmin(String adminId, CreatePostRequest request, String authorEmail, String ip) {
+        String authorId = resolveAuthorId(adminId, authorEmail);
+        PostDto created = create(authorId, request);
+
+        auditService.log(adminId, AuditAction.ADMIN_POST_CREATED, "Post", created.id(), ip, Map.of());
+
+        if (!authorId.equals(adminId)) {
+            notificationService.notify(authorId, NotificationType.post, "A post was added for you",
+                    "A post was added to BuildAdda for you.", created.id(), adminId);
+        }
+        return created;
+    }
+
+    private String resolveAuthorId(String adminId, String authorEmail) {
+        if (authorEmail == null || authorEmail.isBlank()) return adminId;
+        User author = userRepository.findByEmail(authorEmail.toLowerCase().trim())
+                .orElseThrow(() -> new BadRequestException("No member has that email address"));
+        if (author.getStatus() != AccountStatus.ACTIVE) {
+            throw new BadRequestException("That member's account is not active");
+        }
+        return author.getId();
     }
 
     @Transactional

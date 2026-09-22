@@ -502,6 +502,62 @@ class OpportunityServiceTest {
         verify(opportunityRepository, never()).saveAndFlush(any());
     }
 
+    // ---- 14. An admin publishing an opportunity from the admin panel ----
+
+    @Test
+    void anAdminCanPostAnOpportunityUnderTheirOwnAccountEvenManagingNoStartup() {
+        // No startupTeamMemberRepository stub at all: unlike postOpportunity, this path must never
+        // even ask whether the poster manages a startup.
+        when(userRepository.findById("admin1")).thenReturn(Optional.of(user("admin1", "Admin")));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().postOpportunityAsAdmin("admin1", postRequest(), "  ", "1.2.3.4");
+
+        ArgumentCaptor<Opportunity> saved = ArgumentCaptor.forClass(Opportunity.class);
+        verify(opportunityRepository).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getPostedByUserId()).isEqualTo("admin1");
+        assertThat(saved.getValue().getModerationStatus()).isEqualTo(com.nukkad.common.moderation.ModerationStatus.APPROVED);
+        verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_OPPORTUNITY_CREATED), eq("Opportunity"), any(), eq("1.2.3.4"), any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+        verify(startupTeamMemberRepository, never()).existsByUserIdAndTeamRoleInAndStatus(any(), any(), any());
+    }
+
+    @Test
+    void anAdminCanAttributeAnOpportunityToAMemberByEmailAndTheMemberIsTold() {
+        when(userRepository.findByEmail("poster@example.com"))
+                .thenReturn(Optional.of(User.builder().id("poster-9").email("poster@example.com").status(com.nukkad.user.entity.AccountStatus.ACTIVE).build()));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().postOpportunityAsAdmin("admin1", postRequest(), "  Poster@Example.com ", "1.2.3.4");
+
+        ArgumentCaptor<Opportunity> saved = ArgumentCaptor.forClass(Opportunity.class);
+        verify(opportunityRepository).saveAndFlush(saved.capture());
+        assertThat(saved.getValue().getPostedByUserId()).isEqualTo("poster-9");
+        verify(notificationService).notify(eq("poster-9"), any(), anyString(), anyString(), any(), eq("admin1"));
+    }
+
+    @Test
+    void anUnknownPosterEmailIsRejectedAndNothingIsCreated() {
+        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequest(), "nobody@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
+        verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aSuspendedMemberCannotBeMadeThePoster() {
+        when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
+                User.builder().id("sus-1").email("sus@example.com").status(com.nukkad.user.entity.AccountStatus.SUSPENDED).build()));
+
+        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequest(), "sus@example.com", "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
+    }
+
     // ---- 14. Closed opportunities reject new applications and interest ----
 
     @Test

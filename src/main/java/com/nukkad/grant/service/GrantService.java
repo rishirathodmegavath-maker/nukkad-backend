@@ -18,6 +18,9 @@ import com.nukkad.grant.repository.GrantSpecifications;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.startup.entity.StartupStage;
+import com.nukkad.user.entity.AccountStatus;
+import com.nukkad.user.entity.User;
+import com.nukkad.user.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -41,13 +44,16 @@ public class GrantService {
     private final GrantMapper grantMapper;
     private final NotificationService notificationService;
     private final AuditService auditService;
+    private final UserRepository userRepository;
 
     public GrantService(GrantRepository grantRepository, GrantMapper grantMapper,
-                         NotificationService notificationService, AuditService auditService) {
+                         NotificationService notificationService, AuditService auditService,
+                         UserRepository userRepository) {
         this.grantRepository = grantRepository;
         this.grantMapper = grantMapper;
         this.notificationService = notificationService;
         this.auditService = auditService;
+        this.userRepository = userRepository;
     }
 
     public Grant getEntityOrThrow(String id) {
@@ -164,7 +170,43 @@ public class GrantService {
 
     @Transactional
     public GrantDto createGrant(String userId, CreateGrantRequest request) {
-        Grant grant = Grant.builder()
+        Grant grant = grantRepository.saveAndFlush(buildGrant(userId, request, ModerationStatus.PENDING));
+        return grantMapper.toDto(grant, true);
+    }
+
+    /**
+     * An admin publishing a grant listing from the admin panel. With {@code createdByEmail}, that member is
+     * attributed as its creator (and is told, since it now appears as theirs); without it the admin's own
+     * account is. Unlike a member's own submission, this is live immediately rather than entering the
+     * pending-moderation queue.
+     */
+    @Transactional
+    public GrantDto createGrantAsAdmin(String adminId, CreateGrantRequest request, String createdByEmail, String ip) {
+        String creatorId = resolveCreator(adminId, createdByEmail);
+
+        Grant grant = grantRepository.saveAndFlush(buildGrant(creatorId, request, ModerationStatus.APPROVED));
+
+        auditService.log(adminId, AuditAction.ADMIN_GRANT_CREATED, "Grant", grant.getId(), ip, Map.of());
+
+        if (!creatorId.equals(adminId)) {
+            notificationService.notify(creatorId, NotificationType.grant, "A grant listing was posted for you",
+                    "\"" + grant.getName() + "\" was posted to BuildAdda for you.", grant.getId(), adminId);
+        }
+        return grantMapper.toDto(grant, true);
+    }
+
+    private String resolveCreator(String adminId, String createdByEmail) {
+        if (createdByEmail == null || createdByEmail.isBlank()) return adminId;
+        User creator = userRepository.findByEmail(createdByEmail.toLowerCase().trim())
+                .orElseThrow(() -> new BadRequestException("No member has that email address"));
+        if (creator.getStatus() != AccountStatus.ACTIVE) {
+            throw new BadRequestException("That member's account is not active");
+        }
+        return creator.getId();
+    }
+
+    private Grant buildGrant(String createdByUserId, CreateGrantRequest request, ModerationStatus status) {
+        return Grant.builder()
                 .name(request.name().trim())
                 .provider(request.provider().trim())
                 .providerType(parseProviderType(request.providerType()))
@@ -175,11 +217,9 @@ public class GrantService {
                 .eligibleStages(parseStages(request.eligibleStages()))
                 .deadline(request.deadline())
                 .applicationUrl(normalizeUrl(request.applicationUrl()))
-                .createdByUserId(userId)
+                .createdByUserId(createdByUserId)
+                .moderationStatus(status)
                 .build();
-
-        grant = grantRepository.saveAndFlush(grant);
-        return grantMapper.toDto(grant, true);
     }
 
     @Transactional

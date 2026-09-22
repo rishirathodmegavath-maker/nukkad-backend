@@ -30,6 +30,7 @@ import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import com.nukkad.user.dto.ExperienceDto;
 import com.nukkad.user.dto.ProjectDto;
 import com.nukkad.user.dto.UserDto;
+import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.Availability;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.entity.UserExperience;
@@ -275,7 +276,51 @@ public class OpportunityService {
             throw new ForbiddenException("You can only attribute an opportunity to a startup you manage");
         }
 
-        Opportunity opportunity = Opportunity.builder()
+        Opportunity opportunity = opportunityRepository.saveAndFlush(
+                buildOpportunity(userId, poster.getChapterId(), request, ModerationStatus.PENDING));
+        auditService.log(userId, AuditAction.CREATE_OPPORTUNITY, "Opportunity", opportunity.getId(), null);
+        return opportunityMapper.toDto(opportunity);
+    }
+
+    /**
+     * An admin publishing an opportunity from the admin panel. With {@code postedByEmail}, that member is
+     * attributed as the poster (and is told, since it now appears as theirs); without it the admin's own
+     * account is. Unlike a member's own posting: skips the "must manage a startup on BuildAdda" gate
+     * entirely (an admin-authored posting is never gated by that self-service rule), is never attributed to
+     * a specific BuildAdda startup — {@code request.startupId()} is ignored — and is live immediately
+     * rather than entering the pending-moderation queue.
+     */
+    @Transactional
+    public OpportunityDto postOpportunityAsAdmin(String adminId, PostOpportunityRequest request, String postedByEmail, String ip) {
+        User poster = resolvePoster(adminId, postedByEmail);
+
+        Opportunity opportunity = opportunityRepository.saveAndFlush(
+                buildOpportunity(poster.getId(), poster.getChapterId(), request, ModerationStatus.APPROVED));
+
+        auditService.log(adminId, AuditAction.ADMIN_OPPORTUNITY_CREATED, "Opportunity", opportunity.getId(), ip, java.util.Map.of());
+
+        if (!poster.getId().equals(adminId)) {
+            notificationService.notify(poster.getId(), NotificationType.opportunity, "An opportunity was posted for you",
+                    "\"" + opportunity.getTitle() + "\" was posted to BuildAdda for you.", opportunity.getId(), adminId);
+        }
+        return opportunityMapper.toDto(opportunity);
+    }
+
+    private User resolvePoster(String adminId, String postedByEmail) {
+        if (postedByEmail == null || postedByEmail.isBlank()) {
+            return userRepository.findById(adminId)
+                    .orElseThrow(() -> new ResourceNotFoundException("User not found: " + adminId));
+        }
+        User poster = userRepository.findByEmail(postedByEmail.toLowerCase().trim())
+                .orElseThrow(() -> new BadRequestException("No member has that email address"));
+        if (poster.getStatus() != AccountStatus.ACTIVE) {
+            throw new BadRequestException("That member's account is not active");
+        }
+        return poster;
+    }
+
+    private Opportunity buildOpportunity(String postedByUserId, String chapterId, PostOpportunityRequest request, ModerationStatus status) {
+        return Opportunity.builder()
                 .title(request.title().trim())
                 .type(OpportunityType.fromLabel(request.type()))
                 .startupId(request.startupId())
@@ -288,15 +333,12 @@ public class OpportunityService {
                 .equity(request.equity())
                 .experienceLevel(request.experienceLevel())
                 .applicationDeadline(request.applicationDeadline())
-                .postedByUserId(userId)
-                .chapterId(poster.getChapterId())
+                .postedByUserId(postedByUserId)
+                .chapterId(chapterId)
                 .requirements(request.requirements() == null ? new ArrayList<>() : new ArrayList<>(request.requirements()))
                 .requiredSkills(request.requiredSkills() == null ? new ArrayList<>() : new ArrayList<>(request.requiredSkills()))
+                .moderationStatus(status)
                 .build();
-
-        opportunity = opportunityRepository.saveAndFlush(opportunity);
-        auditService.log(userId, AuditAction.CREATE_OPPORTUNITY, "Opportunity", opportunity.getId(), null);
-        return opportunityMapper.toDto(opportunity);
     }
 
     @Transactional
