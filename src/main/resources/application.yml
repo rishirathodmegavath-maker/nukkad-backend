@@ -151,7 +151,7 @@ nukkad:
     # sensible off-peak default when unset.
     enabled: ${GRANT_DISCOVERY_ENABLED:false}
     api-key: ${GEMINI_API_KEY:}
-    model: ${GEMINI_MODEL:gemini-2.5-flash}
+    model: ${GEMINI_MODEL:gemini-3.6-flash}
     max-new-grants-per-run: ${GRANT_DISCOVERY_MAX_NEW_PER_RUN:10}
     governments: ${GRANT_DISCOVERY_GOVERNMENTS:Central Government,Maharashtra,Karnataka,Delhi,Telangana,Gujarat,Tamil Nadu,Uttar Pradesh}
     topics: ${GRANT_DISCOVERY_TOPICS:General startup funding (all sectors),Women-led startups,Technology / Deep-tech / AI,Agritech / Rural enterprise,Manufacturing / MSME}
