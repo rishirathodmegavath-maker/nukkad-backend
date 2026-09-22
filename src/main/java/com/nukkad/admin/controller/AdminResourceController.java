@@ -125,6 +125,16 @@ public class AdminResourceController {
         return ApiResponse.ok(null);
     }
 
+    /** All-or-nothing: if any id doesn't exist, none of them are deleted — see
+     *  {@link ResourceService#bulkDeleteResources}. */
+    @DeleteMapping
+    public ApiResponse<Void> bulkDelete(@AuthenticationPrincipal AuthenticatedUser principal,
+                                         @RequestParam List<String> ids,
+                                         HttpServletRequest httpRequest) {
+        resourceService.bulkDeleteResources(principal.id(), ids, httpRequest.getRemoteAddr());
+        return ApiResponse.ok(null);
+    }
+
     private Set<String> parseTags(String tags) {
         if (tags == null || tags.isBlank()) return Set.of();
         return Arrays.stream(tags.split(","))

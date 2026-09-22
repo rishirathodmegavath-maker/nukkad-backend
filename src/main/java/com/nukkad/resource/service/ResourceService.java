@@ -31,6 +31,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -253,7 +254,30 @@ public class ResourceService {
 
     @Transactional
     public void deleteResource(String adminId, String resourceId, String ip) {
-        Resource resource = getEntityOrThrow(resourceId);
+        deleteOne(adminId, getEntityOrThrow(resourceId), ip);
+    }
+
+    /** Deletes every one of the given resources, or none of them. Every id must exist first — if any is
+     *  missing, nothing is deleted and a {@link ResourceNotFoundException} is thrown; there's no partial
+     *  bulk delete. One {@code ADMIN_RESOURCE_DELETED} audit-log row is still written per resource, exactly
+     *  like the single-item {@link #deleteResource}. */
+    @Transactional
+    public void bulkDeleteResources(String adminId, List<String> ids, String ip) {
+        if (ids == null || ids.isEmpty()) {
+            throw new BadRequestException("No resources specified");
+        }
+        Set<String> uniqueIds = new LinkedHashSet<>(ids);
+        List<Resource> resources = resourceRepository.findAllById(uniqueIds);
+        if (resources.size() != uniqueIds.size()) {
+            throw new ResourceNotFoundException("One or more resources were not found");
+        }
+        for (Resource resource : resources) {
+            deleteOne(adminId, resource, ip);
+        }
+    }
+
+    private void deleteOne(String adminId, Resource resource, String ip) {
+        String resourceId = resource.getId();
         String title = resource.getTitle();
         String url = resource.getUrl();
         String thumbnailUrl = resource.getThumbnailUrl();
