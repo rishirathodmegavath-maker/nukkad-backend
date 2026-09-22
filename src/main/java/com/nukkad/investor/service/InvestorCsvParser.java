@@ -5,7 +5,20 @@ import com.nukkad.investor.entity.InvestorType;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
+import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
+import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.ss.usermodel.DataFormatter;
+import org.apache.poi.ss.util.CellReference;
+import org.apache.poi.util.XMLHelper;
+import org.apache.poi.xssf.eventusermodel.XSSFReader;
+import org.apache.poi.xssf.eventusermodel.XSSFSheetXMLHandler;
+import org.apache.poi.xssf.model.SharedStrings;
+import org.apache.poi.xssf.model.StylesTable;
+import org.apache.poi.xssf.usermodel.XSSFComment;
 import org.springframework.stereotype.Component;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
+import org.xml.sax.XMLReader;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -22,11 +35,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Turns an admin-uploaded investor CSV into {@link InvestorCsvRow}s. Column headers are matched
- * case/punctuation-insensitively against the fixed source schema in the product spec (company_name,
- * investor_type, location, country, description, company_url, domain, industries, program,
- * number_of_investments, number_of_exits, key_people, facebook/instagram/linkedin/twitter, contact_email,
- * contact_email_verified?, 2nd_email_100%_verified, phone_number, id) — see {@link #ALIASES}.
+ * Turns an admin-uploaded investor file (CSV, or an Excel {@code .xlsx} workbook — see {@link #parseExcel})
+ * into {@link InvestorCsvRow}s. Column headers are matched case/punctuation-insensitively against the fixed
+ * source schema in the product spec (company_name, investor_type, location, country, description,
+ * company_url, domain, industries, program, number_of_investments, number_of_exits, key_people,
+ * facebook/instagram/linkedin/twitter, contact_email, contact_email_verified?, 2nd_email_100%_verified,
+ * phone_number, id) — see {@link #ALIASES}.
  * <p>
  * Deliberately NOT mapped: {@code employees_people_database}. It's in the source schema but absent from the
  * product's explicit field mapping, and its meaning isn't well-defined enough to invent a target field for —
@@ -89,8 +103,10 @@ public class InvestorCsvParser {
     }
 
     /** Real-world synonyms seen in investor datasets (including the ones in the OpenVC reference screenshot:
-     *  "Solo angel", "VC firm", "Family office") — resolved on top of {@link InvestorType#fromLabel}'s exact
-     *  match, never invented beyond what the six existing catalog types already mean. */
+     *  "Solo angel", "VC firm", "Family office", and the frequent ones found auditing the actual ~115k-row
+     *  production dataset this pipeline is built for: "Individual/Angel", "Angel Group", "Micro VC",
+     *  "Venture capital company") — resolved on top of {@link InvestorType#fromLabel}'s exact match, never
+     *  invented beyond what the six existing catalog types already mean and what the label itself says. */
     private static final Map<String, InvestorType> TYPE_SYNONYMS = buildTypeSynonyms();
 
     private static Map<String, InvestorType> buildTypeSynonyms() {
@@ -98,11 +114,16 @@ public class InvestorCsvParser {
         m.put("angel", InvestorType.ANGEL);
         m.put("soloangel", InvestorType.ANGEL);
         m.put("angelinvestor", InvestorType.ANGEL);
+        m.put("individualangel", InvestorType.ANGEL);
+        m.put("angelgroup", InvestorType.ANGEL);
         m.put("vc", InvestorType.VC);
         m.put("vcfirm", InvestorType.VC);
         m.put("venturecapital", InvestorType.VC);
         m.put("venturecapitalfirm", InvestorType.VC);
+        m.put("venturecapitalcompany", InvestorType.VC);
+        m.put("microvc", InvestorType.VC);
         m.put("familyoffice", InvestorType.FAMILY_OFFICE);
+        m.put("familyinvestmentoffice", InvestorType.FAMILY_OFFICE);
         m.put("corporatevc", InvestorType.CORPORATE_VC);
         m.put("cvc", InvestorType.CORPORATE_VC);
         m.put("corporateventurecapital", InvestorType.CORPORATE_VC);
@@ -110,6 +131,13 @@ public class InvestorCsvParser {
         m.put("incubator", InvestorType.ACCELERATOR);
         m.put("acceleratorincubator", InvestorType.ACCELERATOR);
         return m;
+    }
+
+    /** Looks up one field's raw string value in a single row, whatever the underlying file format is —
+     *  {@link #parse} wraps a {@link CSVRecord}, {@link #parseExcel} wraps a streamed Excel row. Every bit
+     *  of field-mapping/validation logic below is written once, against this, and shared by both formats. */
+    private interface RowSource {
+        String get(String header);
     }
 
     public InvestorCsvParseResult parse(InputStream rawInput) {
@@ -128,92 +156,237 @@ public class InvestorCsvParser {
             if (headers.isEmpty()) {
                 throw new BadRequestException("This file has no header row — the first line must name the columns");
             }
-
-            Map<Field, String> fieldToHeader = new EnumMap<>(Field.class);
-            List<String> unrecognized = new ArrayList<>();
-            for (String header : headers) {
-                if (header == null || header.isBlank()) continue;
-                Field field = ALIASES.get(normalize(header));
-                if (field != null) fieldToHeader.put(field, header);
-                else unrecognized.add(header);
-            }
-
-            boolean hasNameColumn = fieldToHeader.containsKey(Field.NAME);
-            if (!hasNameColumn) {
-                throw new BadRequestException(
-                        "No company/investor name column found (expected a header like \"company_name\") — cannot import without it");
-            }
+            Map<Field, String> fieldToHeader = mapHeaders(headers);
+            List<String> unrecognized = unrecognizedOf(headers);
 
             List<InvestorCsvRow> rows = new ArrayList<>();
             int rowNumber = 0;
             for (CSVRecord record : parser) {
                 rowNumber++;
-                rows.add(parseRow(rowNumber, record, fieldToHeader));
+                RowSource src = header -> {
+                    try {
+                        return record.isSet(header) ? record.get(header) : null;
+                    } catch (IllegalArgumentException e) {
+                        return null;
+                    }
+                };
+                rows.add(parseRow(rowNumber, src, fieldToHeader));
             }
 
-            return new InvestorCsvParseResult(headers, unrecognized, true, fieldToHeader.containsKey(Field.ID), rows);
+            return new InvestorCsvParseResult(headers, unrecognized, true, fieldToHeader.containsKey(Field.ID), rows, null);
         } catch (IOException e) {
             throw new BadRequestException("Could not read this file as CSV: " + e.getMessage());
         }
     }
 
-    private InvestorCsvRow parseRow(int rowNumber, CSVRecord record, Map<Field, String> fieldToHeader) {
-        List<String> warnings = new ArrayList<>();
+    /** Same pipeline for an Excel upload — but read via POI's SAX streaming API
+     *  ({@link XSSFReader}/{@link XSSFSheetXMLHandler}), never {@code XSSFWorkbook}. A real investor-list
+     *  export is exactly the case this pipeline promises to scale to (100k+ rows), and {@code XSSFWorkbook}
+     *  parses the entire sheet into an in-memory DOM first — a ~100k-row sheet's XML alone is ~100MB
+     *  uncompressed, which reliably OOMs. Streaming processes one row at a time and holds nothing but the
+     *  parsed {@link InvestorCsvRow}s.
+     *  <p>
+     *  Reads only the workbook's first sheet — a second sheet in the same file is a real possibility with
+     *  these datasets (e.g. a separate "investors not yet assigned an id" batch with a different column set
+     *  entirely) and silently merging it in would mean guessing at a mapping the admin never confirmed, so
+     *  it's left out and named in {@link InvestorCsvParseResult#note} instead of being imported — and,
+     *  streaming, its content is never even read off disk. */
+    public InvestorCsvParseResult parseExcel(InputStream rawInput) {
+        try (OPCPackage pkg = OPCPackage.open(rawInput)) {
+            XSSFReader reader = new XSSFReader(pkg);
+            SharedStrings strings = reader.getSharedStringsTable();
+            StylesTable styles = reader.getStylesTable();
 
-        String name = blankToNull(get(record, fieldToHeader, Field.NAME));
-        String hardError = (name == null) ? "No company/investor name in this row" : null;
+            XSSFReader.SheetIterator sheetIterator = (XSSFReader.SheetIterator) reader.getSheetsData();
+            if (!sheetIterator.hasNext()) {
+                throw new BadRequestException("This workbook has no sheets");
+            }
 
-        String rawType = blankToNull(get(record, fieldToHeader, Field.INVESTOR_TYPE));
-        InvestorType resolvedType = resolveInvestorType(rawType);
-        if (rawType != null && resolvedType == null) {
-            warnings.add("Unrecognized investor type \"" + rawType + "\" — defaulted to Other");
+            SheetToRowsHandler handler = new SheetToRowsHandler();
+            String firstSheetName;
+            try (InputStream firstSheet = sheetIterator.next()) {
+                firstSheetName = sheetIterator.getSheetName();
+                XMLReader xmlReader = XMLHelper.newXMLReader();
+                xmlReader.setContentHandler(new XSSFSheetXMLHandler(styles, null, strings, handler, new DataFormatter(), false));
+                xmlReader.parse(new InputSource(firstSheet));
+            }
+
+            int extraSheets = 0;
+            while (sheetIterator.hasNext()) {
+                try (InputStream extra = sheetIterator.next()) {
+                    extraSheets++;
+                } // content deliberately never parsed — see the method javadoc.
+            }
+
+            if (handler.headers == null) {
+                throw new BadRequestException("This file has no header row — the first row must name the columns");
+            }
+            String note = extraSheets == 0 ? null
+                    : "This workbook has " + (1 + extraSheets) + " sheets — only the first (\"" + firstSheetName
+                      + "\") was imported; the rest were ignored";
+
+            return new InvestorCsvParseResult(handler.headers, handler.unrecognized, true,
+                    handler.fieldToHeader.containsKey(Field.ID), handler.rows, note);
+        } catch (IOException | OpenXML4JException | SAXException | javax.xml.parsers.ParserConfigurationException e) {
+            throw new BadRequestException("Could not read this file as an Excel workbook: " + e.getMessage());
+        } catch (RuntimeException e) {
+            // POI throws its own unchecked exceptions (e.g. NotOfficeXmlFileException) for a corrupt/non-xlsx upload.
+            throw new BadRequestException("Could not read this file as an Excel workbook: " + e.getMessage());
+        }
+    }
+
+    /** Feeds {@link #parseExcel}'s SAX pass — one row buffered at a time, never the whole sheet. The first
+     *  row seen becomes the header row (mirrors {@code setSkipHeaderRecord(true)} on the CSV side); every
+     *  row after that is validated through the exact same {@link #parseRow}/{@link #mapHeaders} the CSV path
+     *  uses. A non-static inner class so it can call those instance methods directly. */
+    private final class SheetToRowsHandler implements XSSFSheetXMLHandler.SheetContentsHandler {
+        private final Map<Integer, String> currentRow = new HashMap<>();
+        private boolean headerRowSeen = false;
+        List<String> headers;
+        Map<String, Integer> headerColumns;
+        Map<Field, String> fieldToHeader;
+        List<String> unrecognized;
+        final List<InvestorCsvRow> rows = new ArrayList<>();
+        int rowNumber = 0;
+
+        @Override
+        public void startRow(int rowNum) {
+            currentRow.clear();
         }
 
-        Integer investmentCount = parseIntOrWarn(get(record, fieldToHeader, Field.INVESTMENT_COUNT), "number_of_investments", warnings);
-        Integer exitCount = parseIntOrWarn(get(record, fieldToHeader, Field.EXIT_COUNT), "number_of_exits", warnings);
-        Boolean contactEmailVerified = parseBooleanOrWarn(get(record, fieldToHeader, Field.CONTACT_EMAIL_VERIFIED), warnings);
+        @Override
+        public void endRow(int rowNum) {
+            if (!headerRowSeen) {
+                headerRowSeen = true;
+                List<String> hs = new ArrayList<>();
+                Map<String, Integer> cols = new HashMap<>();
+                currentRow.entrySet().stream().sorted(Map.Entry.comparingByKey()).forEach(e -> {
+                    String header = blankToNull(e.getValue());
+                    if (header == null) return;
+                    hs.add(header);
+                    cols.put(header, e.getKey());
+                });
+                if (hs.isEmpty()) return; // headers stays null — caller reports "no header row"
+                headers = hs;
+                headerColumns = cols;
+                fieldToHeader = mapHeaders(headers);
+                unrecognized = unrecognizedOf(headers);
+                return;
+            }
+            if (currentRow.values().stream().allMatch(v -> blankToNull(v) == null)) return; // blank row, skip
+            rowNumber++;
+            Map<Integer, String> snapshot = Map.copyOf(currentRow);
+            RowSource src = header -> {
+                Integer col = headerColumns.get(header);
+                return col == null ? null : blankToNull(snapshot.get(col));
+            };
+            rows.add(parseRow(rowNumber, src, fieldToHeader));
+        }
+
+        @Override
+        public void cell(String cellReference, String formattedValue, XSSFComment comment) {
+            if (cellReference == null || cellReference.isBlank()) return;
+            currentRow.put((int) new CellReference(cellReference).getCol(), formattedValue);
+        }
+
+        @Override
+        public void headerFooter(String text, boolean isHeader, String tagName) {
+            // Not a data row — nothing to do.
+        }
+    }
+
+    private Map<Field, String> mapHeaders(List<String> headers) {
+        Map<Field, String> fieldToHeader = new EnumMap<>(Field.class);
+        for (String header : headers) {
+            if (header == null || header.isBlank()) continue;
+            Field field = ALIASES.get(normalize(header));
+            if (field != null) fieldToHeader.put(field, header);
+        }
+        if (!fieldToHeader.containsKey(Field.NAME)) {
+            throw new BadRequestException(
+                    "No company/investor name column found (expected a header like \"company_name\") — cannot import without it");
+        }
+        return fieldToHeader;
+    }
+
+    private List<String> unrecognizedOf(List<String> headers) {
+        List<String> unrecognized = new ArrayList<>();
+        for (String header : headers) {
+            if (header == null || header.isBlank()) continue;
+            if (!ALIASES.containsKey(normalize(header))) unrecognized.add(header);
+        }
+        return unrecognized;
+    }
+
+    private InvestorCsvRow parseRow(int rowNumber, RowSource src, Map<Field, String> fieldToHeader) {
+        List<String> warnings = new ArrayList<>();
+
+        String name = blankToNull(get(src, fieldToHeader, Field.NAME));
+        String hardError = (name == null) ? "No company/investor name in this row" : null;
+
+        String rawType = blankToNull(get(src, fieldToHeader, Field.INVESTOR_TYPE));
+        InvestorType resolvedType = rawType == null ? null : resolveOneInvestorType(rawType);
+        boolean resolvedViaSplit = false;
+        if (rawType != null && resolvedType == null) {
+            // Some real sources cram more than one category into this field ("Individual/Angel, Venture
+            // Capital") — our catalog only has one type per investor, so try each comma/semicolon/pipe-
+            // separated part and use the first that resolves. This only runs when the *whole* raw value
+            // didn't already match on its own — "Accelerator, Incubator" resolves directly (it's one of the
+            // synonyms below), so it's never treated as "multiple types listed".
+            for (String part : rawType.split("[;|,]")) {
+                resolvedType = resolveOneInvestorType(part.trim());
+                if (resolvedType != null) {
+                    resolvedViaSplit = true;
+                    break;
+                }
+            }
+        }
+        if (rawType != null && resolvedType == null) {
+            warnings.add("Unrecognized investor type \"" + rawType + "\" — defaulted to Other");
+        } else if (resolvedViaSplit) {
+            warnings.add("Multiple investor types listed (\"" + rawType + "\") — used the first recognized one: " + resolvedType.getLabel());
+        }
+
+        Integer investmentCount = parseIntOrWarn(get(src, fieldToHeader, Field.INVESTMENT_COUNT), "number_of_investments", warnings);
+        Integer exitCount = parseIntOrWarn(get(src, fieldToHeader, Field.EXIT_COUNT), "number_of_exits", warnings);
+        Boolean contactEmailVerified = parseBooleanOrWarn(get(src, fieldToHeader, Field.CONTACT_EMAIL_VERIFIED), warnings);
 
         return new InvestorCsvRow(
                 rowNumber,
-                blankToNull(get(record, fieldToHeader, Field.ID)),
+                blankToNull(get(src, fieldToHeader, Field.ID)),
                 name,
                 rawType,
                 resolvedType,
-                blankToNull(get(record, fieldToHeader, Field.DESCRIPTION)),
-                blankToNull(get(record, fieldToHeader, Field.LOCATION)),
-                blankToNull(get(record, fieldToHeader, Field.COUNTRY)),
-                normalizeUrl(get(record, fieldToHeader, Field.WEBSITE)),
-                normalizeDomain(get(record, fieldToHeader, Field.DOMAIN)),
-                splitList(get(record, fieldToHeader, Field.INDUSTRIES)),
-                splitList(get(record, fieldToHeader, Field.PROGRAM)),
+                blankToNull(get(src, fieldToHeader, Field.DESCRIPTION)),
+                blankToNull(get(src, fieldToHeader, Field.LOCATION)),
+                blankToNull(get(src, fieldToHeader, Field.COUNTRY)),
+                normalizeUrl(get(src, fieldToHeader, Field.WEBSITE)),
+                normalizeDomain(get(src, fieldToHeader, Field.DOMAIN)),
+                splitList(get(src, fieldToHeader, Field.INDUSTRIES)),
+                splitList(get(src, fieldToHeader, Field.PROGRAM)),
                 investmentCount,
                 exitCount,
-                splitList(get(record, fieldToHeader, Field.KEY_PEOPLE)),
-                normalizeUrl(get(record, fieldToHeader, Field.FACEBOOK)),
-                normalizeUrl(get(record, fieldToHeader, Field.INSTAGRAM)),
-                normalizeUrl(get(record, fieldToHeader, Field.LINKEDIN)),
-                normalizeUrl(get(record, fieldToHeader, Field.TWITTER)),
-                blankToNull(get(record, fieldToHeader, Field.CONTACT_EMAIL)),
+                splitList(get(src, fieldToHeader, Field.KEY_PEOPLE)),
+                normalizeUrl(get(src, fieldToHeader, Field.FACEBOOK)),
+                normalizeUrl(get(src, fieldToHeader, Field.INSTAGRAM)),
+                normalizeUrl(get(src, fieldToHeader, Field.LINKEDIN)),
+                normalizeUrl(get(src, fieldToHeader, Field.TWITTER)),
+                blankToNull(get(src, fieldToHeader, Field.CONTACT_EMAIL)),
                 contactEmailVerified,
-                blankToNull(get(record, fieldToHeader, Field.SECONDARY_EMAIL)),
-                blankToNull(get(record, fieldToHeader, Field.PHONE_NUMBER)),
+                blankToNull(get(src, fieldToHeader, Field.SECONDARY_EMAIL)),
+                blankToNull(get(src, fieldToHeader, Field.PHONE_NUMBER)),
                 warnings,
                 hardError
         );
     }
 
-    private static String get(CSVRecord record, Map<Field, String> fieldToHeader, Field field) {
+    private static String get(RowSource src, Map<Field, String> fieldToHeader, Field field) {
         String header = fieldToHeader.get(field);
-        if (header == null) return null;
-        try {
-            return record.isSet(header) ? record.get(header) : null;
-        } catch (IllegalArgumentException e) {
-            return null;
-        }
+        return header == null ? null : src.get(header);
     }
 
-    private InvestorType resolveInvestorType(String raw) {
-        if (raw == null) return null;
+    private InvestorType resolveOneInvestorType(String raw) {
+        if (raw == null || raw.isBlank()) return null;
         try {
             return InvestorType.fromLabel(raw);
         } catch (IllegalArgumentException ignored) {

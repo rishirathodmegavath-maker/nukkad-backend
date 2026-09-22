@@ -70,12 +70,15 @@ public class Investor {
     @Column(length = 100)
     private String country;
 
-    @Column(length = 300)
+    // Real-world exports occasionally carry a share-widget URL with an entire encoded page glued onto the
+    // query string (see V92) instead of a plain link — 2048 is the conventional "URL max length" ceiling,
+    // comfortably clear of anything realistic without resorting to an unbounded TEXT column.
+    @Column(length = 2048)
     private String website;
 
     /** The bare domain (e.g. "peak.vc"), separate from {@link #website} — used to derive a best-effort logo
      *  fallback when no admin-uploaded one exists (see the frontend's investor-logo helper). */
-    @Column(length = 255)
+    @Column(length = 2048)
     private String domain;
 
     /** A hosted image (uploaded by an admin); null falls back to a domain-derived logo, then an initials avatar. */
@@ -134,16 +137,18 @@ public class Investor {
     @Column(name = "phone_number", length = 50)
     private String phoneNumber;
 
-    @Column(name = "facebook_url", length = 300)
+    // See the comment on `website` above — the same real-world "share URL with an encoded page in the query
+    // string" problem applies to every social link column, not just Twitter's (see V92).
+    @Column(name = "facebook_url", length = 2048)
     private String facebookUrl;
 
-    @Column(name = "instagram_url", length = 300)
+    @Column(name = "instagram_url", length = 2048)
     private String instagramUrl;
 
-    @Column(name = "linkedin_url", length = 300)
+    @Column(name = "linkedin_url", length = 2048)
     private String linkedinUrl;
 
-    @Column(name = "twitter_url", length = 300)
+    @Column(name = "twitter_url", length = 2048)
     private String twitterUrl;
 
     /** Which import batch last created/updated the CSV-sourced fields on this row — null for a hand-created

@@ -69,7 +69,7 @@ public class InvestorImportService {
                         row.warnings(),
                         row.hardError()))
                 .toList();
-        return new InvestorImportPreviewDto(result.rows().size(), result.headers(), result.unrecognizedHeaders(), result.hasIdColumn(), sample);
+        return new InvestorImportPreviewDto(result.rows().size(), result.headers(), result.unrecognizedHeaders(), result.hasIdColumn(), result.note(), sample);
     }
 
     /** Parses the file again (the browser re-sends it — see the controller), stores it for audit/re-download,
@@ -131,10 +131,20 @@ public class InvestorImportService {
             throw new BadRequestException("No file was uploaded");
         }
         try {
-            return investorCsvParser.parse(file.getInputStream());
+            return isExcel(file) ? investorCsvParser.parseExcel(file.getInputStream()) : investorCsvParser.parse(file.getInputStream());
         } catch (IOException e) {
             throw new BadRequestException("Could not read the uploaded file");
         }
+    }
+
+    /** Excel workbooks are binary (a zip container) — routed to {@link InvestorCsvParser#parseExcel} instead
+     *  of the CSV text parser, which would otherwise just fail on the raw bytes. Checked by extension first
+     *  since browsers are inconsistent about the content-type they attach to a file input. */
+    private static boolean isExcel(MultipartFile file) {
+        String name = file.getOriginalFilename();
+        if (name != null && name.toLowerCase().endsWith(".xlsx")) return true;
+        String contentType = file.getContentType();
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".equals(contentType);
     }
 
     private InvestorImportBatchDto toDto(InvestorImportBatch b) {
