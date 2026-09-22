@@ -1,5 +1,7 @@
 package com.nukkad.startup.dto;
 
+import com.nukkad.user.dto.UserDto;
+
 import java.time.Instant;
 
 public record StartupTeamMemberDto(
@@ -14,6 +16,8 @@ public record StartupTeamMemberDto(
         String status,
         String roleId,
         Instant createdAt,
-        Instant reviewedAt
+        Instant reviewedAt,
+        /** Who this is, as the viewer may see them. Filled in on the team list; null on single-row answers (join, role change). */
+        UserDto user
 ) {
 }

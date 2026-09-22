@@ -12,6 +12,7 @@ import com.nukkad.startup.dto.StartupDto;
 import com.nukkad.startup.dto.StartupJoinRequestDto;
 import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.StartupRoleDto;
+import com.nukkad.startup.dto.StartupSectorDto;
 import com.nukkad.startup.dto.StartupTeamMemberDto;
 import com.nukkad.startup.dto.StartupUpdateDto;
 import com.nukkad.startup.dto.UpdateMemberRoleRequest;
@@ -68,6 +69,12 @@ public class StartupController {
                 startupService.listStartups(q, sector, stage, isRaising, chapterId, memberId, viewerId, page, size)));
     }
 
+    /** The sectors discovery can filter by, from real startups only. Public, like the list itself: an anonymous caller only counts public startups. */
+    @GetMapping("/sectors")
+    public ApiResponse<List<StartupSectorDto>> sectors(@AuthenticationPrincipal AuthenticatedUser principal) {
+        return ApiResponse.ok(startupService.listSectors(principal == null ? null : principal.id()));
+    }
+
     @GetMapping("/{id}")
     public ApiResponse<StartupDto> get(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         String viewerId = principal == null ? null : principal.id();
@@ -114,8 +121,8 @@ public class StartupController {
     }
 
     @GetMapping("/{id}/members")
-    public ApiResponse<List<StartupTeamMemberDto>> members(@PathVariable String id) {
-        return ApiResponse.ok(startupService.getMembers(id));
+    public ApiResponse<List<StartupTeamMemberDto>> members(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(startupService.getMembers(id, principal.id()));
     }
 
     @GetMapping("/{id}/my-membership")
@@ -204,13 +211,13 @@ public class StartupController {
     }
 
     @GetMapping("/{id}/updates")
-    public ApiResponse<List<StartupUpdateDto>> updates(@PathVariable String id) {
-        return ApiResponse.ok(startupService.getUpdates(id));
+    public ApiResponse<List<StartupUpdateDto>> updates(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(startupService.getUpdates(id, principal.id()));
     }
 
     @GetMapping("/{id}/roles")
-    public ApiResponse<List<StartupRoleDto>> roles(@PathVariable String id) {
-        return ApiResponse.ok(startupService.getRoles(id));
+    public ApiResponse<List<StartupRoleDto>> roles(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(startupService.getRoles(id, principal.id()));
     }
 
     @GetMapping("/{id}/materials")

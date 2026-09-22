@@ -23,6 +23,7 @@ import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.repository.StartupRepository;
+import com.nukkad.startup.service.StartupAccessPolicy;
 import com.nukkad.user.dto.UserDto;
 import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.service.UserService;
@@ -31,6 +32,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 
 @Service
 public class IntroRequestService {
@@ -46,6 +48,7 @@ public class IntroRequestService {
     private final AuditService auditService;
     private final ConversationService conversationService;
     private final ConversationRepository conversationRepository;
+    private final StartupAccessPolicy startupAccessPolicy;
 
     public IntroRequestService(IntroRequestRepository introRequestRepository,
                                 InvestorProfileRepository investorProfileRepository,
@@ -57,7 +60,8 @@ public class IntroRequestService {
                                 NotificationService notificationService,
                                 AuditService auditService,
                                 ConversationService conversationService,
-                                ConversationRepository conversationRepository) {
+                                ConversationRepository conversationRepository,
+                                StartupAccessPolicy startupAccessPolicy) {
         this.introRequestRepository = introRequestRepository;
         this.investorProfileRepository = investorProfileRepository;
         this.startupRepository = startupRepository;
@@ -69,6 +73,7 @@ public class IntroRequestService {
         this.auditService = auditService;
         this.conversationService = conversationService;
         this.conversationRepository = conversationRepository;
+        this.startupAccessPolicy = startupAccessPolicy;
     }
 
     public IntroRequest getEntityOrThrow(String id) {
@@ -81,15 +86,22 @@ public class IntroRequestService {
         if (requesterId.equals(request.recipientId())) {
             throw new BadRequestException("You cannot request an introduction to yourself");
         }
-        userRepository.findById(request.recipientId())
-                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + request.recipientId()));
-
         IntroDirection direction;
         try {
             direction = IntroDirection.valueOf(request.direction());
         } catch (IllegalArgumentException e) {
             throw new BadRequestException("Unknown direction: " + request.direction());
         }
+        boolean founderRequests = direction == IntroDirection.FOUNDER_TO_INVESTOR;
+        String founderId = founderRequests ? requesterId : request.recipientId();
+        String investorId = founderRequests ? request.recipientId() : requesterId;
+
+        // Lock the investor's row first, so two simultaneous requests for the same founder/startup/investor
+        // cannot both get past the duplicate check below. It must come before any other read in this transaction.
+        userRepository.findByIdForUpdate(investorId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + investorId));
+        userRepository.findById(request.recipientId())
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + request.recipientId()));
 
         if (direction == IntroDirection.FOUNDER_TO_INVESTOR) {
             if (!investorProfileRepository.existsByUserId(request.recipientId())) {
@@ -103,16 +115,22 @@ public class IntroRequestService {
 
         String startupId = blankToNull(request.startupId());
         String ideaId = blankToNull(request.ideaId());
-        if (startupId != null && !startupRepository.existsById(startupId)) {
-            throw new ResourceNotFoundException("Startup not found: " + startupId);
+        if (startupId != null) {
+            // The startup must exist and be readable by the requester (a removed or rejected one is a plain 404)...
+            startupAccessPolicy.requireReadable(startupId, requesterId);
+            // ...and the founder side of the request must actually run it, or anyone could cite someone else's startup.
+            if (!startupAccessPolicy.canManage(startupId, founderId)) {
+                if (founderRequests) {
+                    throw new ForbiddenException("You can only request an introduction on behalf of a startup you manage");
+                }
+                throw new BadRequestException("That founder does not manage this startup");
+            }
         }
         if (ideaId != null && !ideaRepository.existsById(ideaId)) {
             throw new ResourceNotFoundException("Idea not found: " + ideaId);
         }
 
-        if (introRequestRepository.existsByRequesterIdAndRecipientIdAndStatus(requesterId, request.recipientId(), IntroRequestStatus.PENDING)) {
-            throw new ConflictException("You already have a pending introduction request with this user");
-        }
+        rejectDuplicate(founderId, investorId, startupId, ideaId);
 
         IntroRequest entity = IntroRequest.builder()
                 .requesterId(requesterId)
@@ -129,6 +147,24 @@ public class IntroRequestService {
                 "New introduction request", "Someone requested an introduction", entity.getId(), requesterId);
 
         return toDto(entity, requesterId);
+    }
+
+    /**
+     * One live request per founder + startup (or idea) + investor combination, whichever of the two started it: while one
+     * is pending or accepted, another for the same combination is refused. A declined or withdrawn request no longer counts,
+     * so the founder can ask again. A different startup with the same investor is a different combination.
+     */
+    private void rejectDuplicate(String founderId, String investorId, String startupId, String ideaId) {
+        for (IntroRequest existing : introRequestRepository.findActiveBetween(founderId, investorId)) {
+            if (!Objects.equals(existing.getStartupId(), startupId) || !Objects.equals(existing.getIdeaId(), ideaId)) {
+                continue;
+            }
+            String about = startupId != null ? " for this startup" : ideaId != null ? " for this idea" : "";
+            if (existing.getStatus() == IntroRequestStatus.ACCEPTED) {
+                throw new ConflictException("An introduction" + about + " has already been accepted. Continue the conversation in Messages.");
+            }
+            throw new ConflictException("There is already a pending introduction request" + about + " between you and this investor");
+        }
     }
 
     @Transactional(readOnly = true)

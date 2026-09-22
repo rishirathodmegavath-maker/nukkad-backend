@@ -52,7 +52,7 @@ public final class StartupSpecifications {
 
     public static Specification<Startup> sector(String sector) {
         if (sector == null || sector.isBlank()) return null;
-        return (root, query, cb) -> cb.equal(cb.lower(root.get("sector")), sector.trim().toLowerCase());
+        return (root, query, cb) -> cb.equal(cb.lower(cb.trim(root.get("sector"))), sector.trim().toLowerCase());
     }
 
     public static Specification<Startup> stage(String stageLabel) {
@@ -61,9 +61,35 @@ public final class StartupSpecifications {
         return (root, query, cb) -> cb.equal(root.get("stage"), stage);
     }
 
+    /** The raw stored flag. Only for callers that may see every startup as it really is (the admin listing). */
     public static Specification<Startup> isRaising(Boolean isRaising) {
         if (isRaising == null) return null;
         return (root, query, cb) -> cb.equal(root.get("isRaising"), isRaising);
+    }
+
+    /**
+     * "Raising" as this viewer is allowed to see it. A startup only shows as raising to a viewer who may see its
+     * fundraising: everyone while the founders keep fundraising visible, otherwise only its active team members
+     * (the same rule StartupService applies when it builds the DTO's {@code isRaising}). So a startup with hidden
+     * fundraising is never returned by {@code isRaising=true} to anyone else, and {@code isRaising=false} keeps
+     * returning it, which means neither answer reveals that it is raising. {@code viewerId} is null for an anonymous caller.
+     */
+    public static Specification<Startup> isRaisingAsSeenBy(Boolean isRaising, String viewerId) {
+        if (isRaising == null) return null;
+        return (root, query, cb) -> {
+            Predicate canSeeFundraising = cb.isTrue(root.get("fundraisingVisible"));
+            if (viewerId != null) {
+                var teams = query.subquery(String.class);
+                var member = teams.from(StartupTeamMember.class);
+                teams.select(member.get("startupId")).where(cb.and(
+                        cb.equal(member.get("userId"), viewerId),
+                        cb.equal(member.get("status"), StartupTeamMember.Status.ACTIVE)
+                ));
+                canSeeFundraising = cb.or(canSeeFundraising, root.get("id").in(teams));
+            }
+            Predicate shownAsRaising = cb.and(cb.isTrue(root.get("isRaising")), canSeeFundraising);
+            return isRaising ? shownAsRaising : cb.not(shownAsRaising);
+        };
     }
 
     public static Specification<Startup> chapterId(String chapterId) {

@@ -29,6 +29,11 @@ public interface OpportunityApplicantRepository extends JpaRepository<Opportunit
             + "and ((a.userId = :userA and o.postedByUserId = :userB) or (a.userId = :userB and o.postedByUserId = :userA))")
     boolean existsAcceptedApplicationBetween(@Param("userA") String userA, @Param("userB") String userB);
 
+    /** Applications received (not counting ones the applicant withdrew) on the opportunities attributed to a startup. */
+    @Query("select count(a) from OpportunityApplicant a join Opportunity o on o.id = a.opportunityId "
+            + "where o.startupId = :startupId and a.status <> com.nukkad.opportunity.entity.ApplicationStatus.WITHDRAWN")
+    long countByStartupId(@Param("startupId") String startupId);
+
     /** Total applications received across every opportunity this user has posted — for the Founder Dashboard. */
     @Query("select count(a) from OpportunityApplicant a join Opportunity o on o.id = a.opportunityId "
             + "where o.postedByUserId = :userId")

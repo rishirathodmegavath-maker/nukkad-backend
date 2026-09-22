@@ -2,10 +2,13 @@ package com.nukkad.startup.service;
 
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.idea.repository.IdeaRepository;
 import com.nukkad.notification.service.NotificationService;
+import com.nukkad.opportunity.repository.OpportunityRepository;
 import com.nukkad.startup.dto.StartupDto;
 import com.nukkad.startup.dto.StartupMaterialDto;
 import com.nukkad.startup.dto.UpdateStartupRequest;
@@ -40,6 +43,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -57,6 +61,8 @@ class StartupServiceTest {
     @Mock private StartupMaterialRepository materialRepository;
     @Mock private StartupProfileViewRepository profileViewRepository;
     @Mock private UserRepository userRepository;
+    @Mock private OpportunityRepository opportunityRepository;
+    @Mock private IdeaRepository ideaRepository;
     @Mock private UserService userService;
     @Mock private NotificationService notificationService;
     @Mock private FileStorageService fileStorageService;
@@ -66,8 +72,9 @@ class StartupServiceTest {
 
     private StartupService service() {
         return new StartupService(startupRepository, teamMemberRepository, updateRepository, roleRepository,
-                followRepository, materialRepository, profileViewRepository, userRepository, userService, startupMapper,
-                notificationService, fileStorageService, auditService);
+                followRepository, materialRepository, profileViewRepository, userRepository, opportunityRepository, ideaRepository, userService, startupMapper,
+                notificationService, fileStorageService, auditService,
+                new StartupAccessPolicy(startupRepository, teamMemberRepository));
     }
 
     private Startup startup(String id, StartupVisibility visibility, boolean isRaising, boolean fundraisingVisible) {
@@ -209,6 +216,85 @@ class StartupServiceTest {
         assertThat(member.getValue().getTeamRole()).isEqualTo(StartupTeamMember.TeamRole.FOUNDER);
     }
 
+    // ---- create-startup flow: the whole profile arrives in one call ----
+
+    private com.nukkad.startup.dto.CreateStartupRequest completeRequest(String website, String visibility, Boolean fundraisingVisible) {
+        return new com.nukkad.startup.dto.CreateStartupRequest("  Rocket Labs  ", null, "Rockets for everyone", "Aerospace", "Launches are costly",
+                "Reusable boosters", "MVP", java.util.Set.of("Engineers", "Funding"), null,
+                "Pune, India", website, "Small satellite makers", "Per-launch fee", "A reusable booster",
+                "0", "12 paying", "", "8% MoM", "Two pilot launches booked", visibility, fundraisingVisible);
+    }
+
+    private Startup savedByCreate(com.nukkad.startup.dto.CreateStartupRequest request) {
+        saveWithId();
+        service().createStartup("creator1", request);
+        org.mockito.ArgumentCaptor<Startup> saved = org.mockito.ArgumentCaptor.forClass(Startup.class);
+        verify(startupRepository).saveAndFlush(saved.capture());
+        return saved.getValue();
+    }
+
+    @Test
+    void aStartupIsCreatedCompleteWithProfileTractionAndVisibilityInOneCall() {
+        Startup saved = savedByCreate(completeRequest("rocketlabs.example", "Nukkad Members", false));
+
+        assertThat(saved.getName()).isEqualTo("Rocket Labs");
+        assertThat(saved.getLocation()).isEqualTo("Pune, India");
+        assertThat(saved.getWebsite()).isEqualTo("https://rocketlabs.example");
+        assertThat(saved.getTargetCustomer()).isEqualTo("Small satellite makers");
+        assertThat(saved.getBusinessModel()).isEqualTo("Per-launch fee");
+        assertThat(saved.getWhatBuilding()).isEqualTo("A reusable booster");
+        assertThat(saved.getStage()).isEqualTo(StartupStage.MVP);
+        assertThat(saved.getVisibility()).isEqualTo(StartupVisibility.NUKKAD_MEMBERS);
+        assertThat(saved.isFundraisingVisible()).isFalse();
+        assertThat(saved.getNeeds()).containsExactlyInAnyOrder("Engineers", "Funding");
+    }
+
+    @Test
+    void tractionFiguresAreKeptAsTypedZeroIsAValueAndBlankStaysBlank() {
+        Startup saved = savedByCreate(completeRequest(null, null, null));
+
+        assertThat(saved.getRevenue()).isEqualTo("0");
+        assertThat(saved.getCustomers()).isEqualTo("12 paying");
+        assertThat(saved.getUsers()).isNull();
+        assertThat(saved.getGrowth()).isEqualTo("8% MoM");
+        assertThat(saved.getOtherTraction()).isEqualTo("Two pilot launches booked");
+    }
+
+    @Test
+    void aStartupCreatedWithoutTheNewFieldsIsPublicWithFundraisingVisibleAndNothingElseFilledIn() {
+        Startup saved = savedByCreate(newStartupRequest());
+
+        assertThat(saved.getVisibility()).isEqualTo(StartupVisibility.PUBLIC);
+        assertThat(saved.isFundraisingVisible()).isTrue();
+        assertThat(saved.getWebsite()).isNull();
+        assertThat(saved.getLocation()).isNull();
+        assertThat(saved.getRevenue()).isNull();
+        assertThat(saved.getOtherTraction()).isNull();
+        assertThat(saved.getStage()).isEqualTo(StartupStage.IDEA);
+    }
+
+    @Test
+    void anInvalidWebsiteIsRefusedOnCreateAndNothingIsSaved() {
+        assertThatThrownBy(() -> service().createStartup("creator1", completeRequest("not a url", null, null)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("Website is not a valid URL");
+
+        verify(startupRepository, never()).saveAndFlush(any(Startup.class));
+        verify(teamMemberRepository, never()).save(any(StartupTeamMember.class));
+    }
+
+    @Test
+    void anUnknownVisibilityOrStageIsRefusedOnCreateAndNothingIsSaved() {
+        assertThatThrownBy(() -> service().createStartup("creator1", completeRequest(null, "Everyone", null)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("Unknown visibility: Everyone");
+        assertThatThrownBy(() -> service().createStartup("creator1", new com.nukkad.startup.dto.CreateStartupRequest(
+                "Rocket Labs", null, null, null, null, null, "Unicorn", null, null)))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(startupRepository, never()).saveAndFlush(any(Startup.class));
+    }
+
     // ---- admin adds a startup ----
 
     private com.nukkad.startup.dto.CreateStartupRequest newStartupRequest() {
@@ -295,6 +381,112 @@ class StartupServiceTest {
         assertThat(dto.moderationStatus()).isEqualTo("REJECTED");
     }
 
+    // ---- sub-resources follow the startup's own visibility (one shared gate) ----
+
+    private Startup removedStartup() {
+        Startup startup = startup("s1", StartupVisibility.PUBLIC, false, true);
+        startup.setRemovedByAdmin(true);
+        return startup;
+    }
+
+    @Test
+    void aRemovedStartupExposesNoSubResourceToAnyone() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(removedStartup()));
+
+        for (String viewer : new String[] {"stranger1", "founder1"}) {
+            assertThatThrownBy(() -> service().getMembers("s1", viewer)).isInstanceOf(ResourceNotFoundException.class);
+            assertThatThrownBy(() -> service().getUpdates("s1", viewer)).isInstanceOf(ResourceNotFoundException.class);
+            assertThatThrownBy(() -> service().getRoles("s1", viewer)).isInstanceOf(ResourceNotFoundException.class);
+            assertThatThrownBy(() -> service().getMaterials("s1", viewer)).isInstanceOf(ResourceNotFoundException.class);
+            assertThatThrownBy(() -> service().getMyMembership(viewer, "s1")).isInstanceOf(ResourceNotFoundException.class);
+        }
+    }
+
+    @Test
+    void aRejectedStartupExposesNoSubResourceToAStranger() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(rejectedStartup()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "stranger1")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().getMembers("s1", "stranger1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().getUpdates("s1", "stranger1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().getRoles("s1", "stranger1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().getMaterials("s1", "stranger1")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void aRejectedStartupStillShowsItsTeamToItsOwnFounder() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(rejectedStartup()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "founder1")).thenReturn(Optional.of(founder("s1", "founder1")));
+        when(teamMemberRepository.findByStartupIdAndStatus("s1", StartupTeamMember.Status.ACTIVE)).thenReturn(java.util.List.of(founder("s1", "founder1")));
+
+        assertThat(service().getMembers("s1", "founder1")).hasSize(1);
+    }
+
+    @Test
+    void aLiveStartupShowsItsTeamToAnySignedInMember() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndStatus("s1", StartupTeamMember.Status.ACTIVE)).thenReturn(java.util.List.of(founder("s1", "founder1")));
+
+        assertThat(service().getMembers("s1", "anyMember")).hasSize(1);
+    }
+
+    @Test
+    void nobodyCanFollowOrAskToJoinAStartupTheyCannotSee() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(removedStartup()));
+
+        assertThatThrownBy(() -> service().toggleFollow("user1", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().requestToJoin("user1", "s1", null, null)).isInstanceOf(ResourceNotFoundException.class);
+        verify(followRepository, never()).save(any());
+    }
+
+    // ---- discovery: follower counts and the sectors filter ----
+
+    @Test
+    void aStartupPageShowsItsRealFollowerCount() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(followRepository.countByStartupId("s1")).thenReturn(12L);
+
+        assertThat(service().getStartup("s1", "viewer1").followerCount()).isEqualTo(12L);
+    }
+
+    @Test
+    void aListOfStartupsGetsFollowerCountsFromOneQueryAndAStartupNobodyFollowsIsZero() {
+        Startup a = startup("s1", StartupVisibility.PUBLIC, false, true);
+        Startup b = startup("s2", StartupVisibility.PUBLIC, false, true);
+        when(startupRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(a, b)));
+        when(followRepository.countByStartupIds(any())).thenReturn(java.util.Collections.singletonList(new Object[] {"s1", 3L}));
+
+        var page = service().listStartups(null, null, null, null, null, null, "viewer1", 0, 20);
+
+        assertThat(page.getContent()).extracting("id", "followerCount").containsExactly(
+                org.assertj.core.groups.Tuple.tuple("s1", 3L), org.assertj.core.groups.Tuple.tuple("s2", 0L));
+        verify(followRepository, org.mockito.Mockito.times(1)).countByStartupIds(any());
+    }
+
+    @Test
+    void sectorsAreFoldedByCaseTrimmedAndOrderedByHowManyStartupsHaveThem() {
+        when(startupRepository.countBySector(true)).thenReturn(java.util.List.of(
+                new Object[] {"AI", 3L}, new Object[] {"ai", 1L}, new Object[] {"Fintech", 2L}, new Object[] {"  Health ", 5L}));
+
+        var sectors = service().listSectors("viewer1");
+
+        assertThat(sectors).extracting("sector", "count").containsExactly(
+                org.assertj.core.groups.Tuple.tuple("Health", 5L),
+                org.assertj.core.groups.Tuple.tuple("AI", 4L),
+                org.assertj.core.groups.Tuple.tuple("Fintech", 2L));
+    }
+
+    @Test
+    void anAnonymousCallerOnlyCountsPublicStartupsAndNoStartupsMeansNoSectors() {
+        when(startupRepository.countBySector(false)).thenReturn(java.util.List.of());
+
+        assertThat(service().listSectors(null)).isEmpty();
+
+        verify(startupRepository).countBySector(false);
+        verify(startupRepository, never()).countBySector(true);
+    }
+
     // ---- fundraising status suppression ----
 
     @Test
@@ -328,6 +520,39 @@ class StartupServiceTest {
         StartupDto dto = service().getStartup("s1", "teammate");
 
         assertThat(dto.isRaising()).isTrue();
+    }
+
+    // ---- the "Raising Now" filter must not reveal hidden fundraising ----
+
+    /** The rule the public listing hands to the database for these arguments, read back as text (see CriteriaRecorder). */
+    @SuppressWarnings("unchecked")
+    private String listingRule(Boolean isRaising, String viewerId) {
+        when(startupRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of()));
+        service().listStartups(null, null, null, isRaising, null, null, viewerId, 0, 12);
+        org.mockito.ArgumentCaptor<org.springframework.data.jpa.domain.Specification<Startup>> spec =
+                org.mockito.ArgumentCaptor.forClass(org.springframework.data.jpa.domain.Specification.class);
+        verify(startupRepository).findAll(spec.capture(), any(org.springframework.data.domain.Pageable.class));
+        return new com.nukkad.startup.repository.CriteriaRecorder().render(spec.getValue());
+    }
+
+    @Test
+    void theRaisingNowFilterExcludesStartupsWithHiddenFundraisingUnlessTheViewerIsOnTheirTeam() {
+        String rule = listingRule(true, "viewer1");
+
+        assertThat(rule).contains("isTrue(isRaising)", "isTrue(fundraisingVisible)", "in(subquery(String))");
+    }
+
+    @Test
+    void theRaisingNowFilterForAnAnonymousCallerNeverMatchesHiddenFundraising() {
+        String rule = listingRule(true, null);
+
+        assertThat(rule).contains("isTrue(isRaising)", "isTrue(fundraisingVisible)").doesNotContain("subquery");
+    }
+
+    @Test
+    void listingWithoutTheRaisingFilterAddsNoFundraisingRuleAtAll() {
+        assertThat(listingRule(null, "viewer1")).doesNotContain("isRaising").doesNotContain("fundraisingVisible");
     }
 
     // ---- rich profile persistence & validation ----
@@ -507,13 +732,13 @@ class StartupServiceTest {
     void profileCompletionPercentReflectsWhatIsActuallyFilledIn() {
         Startup bare = Startup.builder().id("s1").name("Bare Startup").stage(StartupStage.IDEA)
                 .visibility(StartupVisibility.PUBLIC).needs(new java.util.HashSet<>()).build();
-        StartupDto bareDto = startupMapper.toDto(bare, false, false, true);
+        StartupDto bareDto = startupMapper.toDto(bare, false, false, true, 0);
 
         Startup fuller = Startup.builder().id("s2").name("Fuller Startup").stage(StartupStage.IDEA)
                 .visibility(StartupVisibility.PUBLIC).logoUrl("logo.png").location("Delhi").website("https://x.com")
                 .tagline("t").sector("Fintech").problem("p").solution("sol").targetCustomer("tc")
                 .businessModel("bm").whatBuilding("wb").revenue("₹1L").needs(java.util.Set.of("Funding")).build();
-        StartupDto fullerDto = startupMapper.toDto(fuller, false, false, true);
+        StartupDto fullerDto = startupMapper.toDto(fuller, false, false, true, 0);
 
         assertThat(bareDto.profileCompletionPercent()).isZero();
         assertThat(fullerDto.profileCompletionPercent()).isGreaterThan(bareDto.profileCompletionPercent());
@@ -565,6 +790,72 @@ class StartupServiceTest {
         service().deleteStartup("f1", "s1");
 
         verify(startupRepository).deleteById("s1");
+    }
+
+    @Test
+    void aStartupWithOpportunitiesPostedForItCannotBeDeletedAndTheMessageSaysWhy() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(opportunityRepository.countByStartupId("s1")).thenReturn(2L);
+
+        assertThatThrownBy(() -> service().deleteStartup("f1", "s1"))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("Rocket Labs")
+                .hasMessageContaining("2 opportunities")
+                .hasMessageContaining("posted");
+
+        verify(startupRepository, never()).deleteById(any());
+        verify(ideaRepository, never()).detachFromStartup(any());
+    }
+
+    @Test
+    void theRefusalToDeleteNamesASingleOpportunityInTheSingular() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(opportunityRepository.countByStartupId("s1")).thenReturn(1L);
+
+        assertThatThrownBy(() -> service().deleteStartup("f1", "s1"))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("1 opportunity ");
+    }
+
+    @Test
+    void deletingAStartupThatCameFromAnIdeaReleasesTheIdeaFirst() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(opportunityRepository.countByStartupId("s1")).thenReturn(0L);
+
+        service().deleteStartup("f1", "s1");
+
+        var order = inOrder(ideaRepository, startupRepository);
+        order.verify(ideaRepository).detachFromStartup("s1");
+        order.verify(startupRepository).deleteById("s1");
+    }
+
+    @Test
+    void anAdminIsRefusedTheDeleteBeforeAnythingIsCheckedOrTouched() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+
+        assertThatThrownBy(() -> service().deleteStartup("a1", "s1")).isInstanceOf(ForbiddenException.class);
+
+        verify(opportunityRepository, never()).countByStartupId(any());
+        verify(ideaRepository, never()).detachFromStartup(any());
+        verify(startupRepository, never()).deleteById(any());
+    }
+
+    @Test
+    void anAdminMembershipThatIsNotActiveCannotEditTheStartup() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        StartupTeamMember pendingAdmin = admin("s1", "a1");
+        pendingAdmin.setStatus(StartupTeamMember.Status.PENDING);
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(pendingAdmin));
+
+        UpdateBuilder u = new UpdateBuilder();
+        u.tagline = "Nope";
+
+        assertThatThrownBy(() -> service().updateStartup("a1", "s1", u.build())).isInstanceOf(ForbiddenException.class);
+        verify(startupRepository, never()).saveAndFlush(any());
     }
 
     @Test
@@ -695,5 +986,85 @@ class StartupServiceTest {
 
         assertThatThrownBy(() -> service().updateMemberRole("f1", "s1", "m1", "FOUNDER"))
                 .isInstanceOf(BadRequestException.class);
+    }
+
+    // ---- an admin-removed startup is frozen for its own team ----
+
+    private void removedStartupWithFounder() {
+        Startup removed = startup("s1", StartupVisibility.PUBLIC, false, true);
+        removed.setRemovedByAdmin(true);
+        // No team lookup is stubbed: a removed startup is refused before anyone's role is even consulted.
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(removed));
+    }
+
+    @Test
+    void theFounderOfARemovedStartupCannotEditItOrChangeItsLogo() {
+        removedStartupWithFounder();
+        UpdateBuilder u = new UpdateBuilder();
+        u.tagline = "Sneaky";
+
+        assertThatThrownBy(() -> service().updateStartup("f1", "s1", u.build())).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().removeLogo("f1", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        verify(startupRepository, never()).saveAndFlush(any());
+        verify(startupRepository, never()).save(any());
+    }
+
+    @Test
+    void theFounderOfARemovedStartupCannotDeleteItOrManageItsTeam() {
+        removedStartupWithFounder();
+
+        assertThatThrownBy(() -> service().deleteStartup("f1", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().addMember("f1", "s1", "someone", null, null)).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().removeMember("f1", "s1", "someone")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().updateMemberRole("f1", "s1", "someone", "ADMIN")).isInstanceOf(ResourceNotFoundException.class);
+        verify(startupRepository, never()).deleteById(any());
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+        verify(teamMemberRepository, never()).delete(any());
+    }
+
+    @Test
+    void theTeamOfARemovedStartupCannotPostUpdatesRolesOrMaterials() {
+        removedStartupWithFounder();
+
+        assertThatThrownBy(() -> service().postUpdate("m1", "s1", "hello")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().createRole("f1", "s1", new com.nukkad.startup.dto.CreateStartupRoleRequest("Dev", "Job", null, true)))
+                .isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().addMaterial("f1", "s1", "Website", null, "https://a.com", null)).isInstanceOf(ResourceNotFoundException.class);
+        verify(updateRepository, never()).saveAndFlush(any());
+        verify(roleRepository, never()).saveAndFlush(any());
+        verify(materialRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aLiveStartupIsStillEditableByItsFounder() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(startupRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        UpdateBuilder u = new UpdateBuilder();
+        u.tagline = "Fine";
+
+        assertThat(service().updateStartup("f1", "s1", u.build()).tagline()).isEqualTo("Fine");
+    }
+
+    // ---- the team list carries each person, so the profile needs no request per member ----
+
+    @Test
+    void theTeamListIncludesEachMembersProfileAsTheViewerMaySeeIt() {
+        com.nukkad.user.dto.UserDto alice = org.mockito.Mockito.mock(com.nukkad.user.dto.UserDto.class);
+        accessibleStartup();
+        when(teamMemberRepository.findByStartupIdAndStatus("s1", StartupTeamMember.Status.ACTIVE))
+                .thenReturn(java.util.List.of(founder("s1", "f1"), member("s1", "m1")));
+        when(userService.getUser("f1", "viewer")).thenReturn(alice);
+        when(userService.getUser("m1", "viewer")).thenThrow(new ResourceNotFoundException("blocked"));
+
+        var members = service().getMembers("s1", "viewer");
+
+        assertThat(members).hasSize(2);
+        assertThat(members.get(0).user()).isSameAs(alice);
+        assertThat(members.get(1).user()).isNull();
+    }
+
+    private void accessibleStartup() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
     }
 }

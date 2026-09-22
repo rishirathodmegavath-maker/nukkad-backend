@@ -61,12 +61,17 @@ public class FundraiseController {
     @PutMapping("/{id}")
     public ApiResponse<FundraiseDto> update(@AuthenticationPrincipal AuthenticatedUser principal,
                                               @PathVariable String id,
-                                              @RequestBody UpdateFundraiseRequest request) {
+                                              @Valid @RequestBody UpdateFundraiseRequest request) {
         return ApiResponse.ok(fundraiseService.update(principal.id(), id, request));
     }
 
     @PostMapping("/{id}/close")
     public ApiResponse<FundraiseDto> close(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         return ApiResponse.ok(fundraiseService.close(principal.id(), id));
+    }
+
+    @PostMapping("/{id}/reopen")
+    public ApiResponse<FundraiseDto> reopen(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        return ApiResponse.ok(fundraiseService.reopen(principal.id(), id));
     }
 }

@@ -63,8 +63,8 @@ public class EventController {
 
     /** Events a given startup is tagged on — powers the startup profile's "Events" card. */
     @GetMapping("/by-startup/{startupId}")
-    public ApiResponse<List<StartupEventSummaryDto>> byStartup(@PathVariable String startupId) {
-        return ApiResponse.ok(eventService.getEventsForStartup(startupId));
+    public ApiResponse<List<StartupEventSummaryDto>> byStartup(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String startupId) {
+        return ApiResponse.ok(eventService.getEventsForStartup(startupId, principal.id()));
     }
 
     @PostMapping
@@ -95,6 +95,21 @@ public class EventController {
     @DeleteMapping("/{id}")
     public ApiResponse<Void> delete(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
         eventService.deleteEvent(principal.id(), id);
+        return ApiResponse.ok(null);
+    }
+
+    /** Puts a startup on an event. The caller must run the event and manage the startup. */
+    @PostMapping("/{id}/startups/{startupId}")
+    public ApiResponse<EventDto> linkStartup(@AuthenticationPrincipal AuthenticatedUser principal,
+                                              @PathVariable String id, @PathVariable String startupId) {
+        return ApiResponse.ok(eventService.linkStartup(principal.id(), id, startupId));
+    }
+
+    /** Takes a startup off an event. The event's organizer or the startup's founder/admin may. */
+    @DeleteMapping("/{id}/startups/{startupId}")
+    public ApiResponse<Void> unlinkStartup(@AuthenticationPrincipal AuthenticatedUser principal,
+                                            @PathVariable String id, @PathVariable String startupId) {
+        eventService.unlinkStartup(principal.id(), id, startupId);
         return ApiResponse.ok(null);
     }
 

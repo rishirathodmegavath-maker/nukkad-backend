@@ -36,8 +36,9 @@ public final class FundraiseSpecifications {
     }
 
     /** Excludes fundraises belonging to a startup that has switched fundraising visibility off,
-     *  unless the viewer is an active team member of that same startup. Applied unconditionally
-     *  in list() so a hidden fundraise's existence is never revealed by browsing all fundraises. */
+     *  unless the viewer is an active team member of that same startup, and always excludes those of a startup an admin
+     *  removed (the list-query twin of StartupAccessPolicy). Applied unconditionally in list() so a hidden fundraise's
+     *  existence is never revealed by browsing all fundraises. */
     public static Specification<Fundraise> visibleTo(String viewerId) {
         return (root, query, cb) -> {
             var startupSub = query.subquery(String.class);
@@ -45,11 +46,20 @@ public final class FundraiseSpecifications {
             startupSub.select(startup.get("id")).where(cb.and(
                     cb.equal(startup.get("id"), root.get("startupId")),
                     cb.isTrue(startup.get("fundraisingVisible")),
+                    cb.isFalse(startup.get("removedByAdmin")),
                     cb.equal(startup.get("moderationStatus"), ModerationStatus.APPROVED)
             ));
             var visibleByFlag = cb.exists(startupSub);
 
             if (viewerId == null) return visibleByFlag;
+
+            var notRemovedSub = query.subquery(String.class);
+            var liveStartup = notRemovedSub.from(Startup.class);
+            notRemovedSub.select(liveStartup.get("id")).where(cb.and(
+                    cb.equal(liveStartup.get("id"), root.get("startupId")),
+                    cb.isFalse(liveStartup.get("removedByAdmin"))
+            ));
+            var notRemoved = cb.exists(notRemovedSub);
 
             var teamSub = query.subquery(String.class);
             var member = teamSub.from(StartupTeamMember.class);
@@ -60,7 +70,7 @@ public final class FundraiseSpecifications {
             ));
             var isTeamMember = cb.exists(teamSub);
 
-            return cb.or(visibleByFlag, isTeamMember);
+            return cb.or(visibleByFlag, cb.and(isTeamMember, notRemoved));
         };
     }
 }
