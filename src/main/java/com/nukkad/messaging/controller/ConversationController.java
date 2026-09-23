@@ -3,6 +3,7 @@ package com.nukkad.messaging.controller;
 import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.messaging.dto.AddGroupMembersRequest;
+import com.nukkad.messaging.dto.ConversationAttachmentRef;
 import com.nukkad.messaging.dto.ConversationDto;
 import com.nukkad.messaging.dto.CreateGroupRequest;
 import com.nukkad.messaging.dto.MessageDto;
@@ -78,7 +79,7 @@ public class ConversationController {
         while (true) {
             try {
                 return ApiResponse.ok(conversationService.sendMessage(id, principal.id(), request.content(),
-                        request.sharedPostId(), request.replyToMessageId()));
+                        request.sharedPostId(), request.replyToMessageId(), request.attachment()));
             } catch (PessimisticLockingFailureException ex) {
                 if (++attempts >= 5) throw ex;
                 try {
@@ -89,6 +90,15 @@ public class ConversationController {
                 }
             }
         }
+    }
+
+    /** Uploads a chat attachment and returns a ref — a separate step from {@link #sendMessage}, so the
+     * client can show a "select → preview → send" flow instead of sending the moment a file is picked. */
+    @PostMapping("/{id}/attachments")
+    public ApiResponse<ConversationAttachmentRef> uploadAttachment(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                         @PathVariable String id,
+                                                         @RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(conversationService.uploadAttachment(id, principal.id(), file));
     }
 
     @PatchMapping("/{id}/read")

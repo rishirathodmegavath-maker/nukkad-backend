@@ -49,11 +49,16 @@ services:
     # anyone enumerate every stored object key (avatars, startup materials, resources...), not just
     # fetch a key they already know. None of the 4 built-in presets (none/download/upload/public)
     # is "read objects but don't list them", so this writes a custom policy with GetObject only.
+    #
+    # messages/* is carved out via NotResource (everything else keeps its existing public-read
+    # behavior, unchanged) -- chat attachments are private, reachable only through a short-lived
+    # presigned URL the backend generates per-request (see FileStorageService#presignGet), never
+    # through a permanent public link the way every other prefix here still works.
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
       (mc mb -p local/${S3_BUCKET} || true) &&
-      printf '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"Resource\":[\"arn:aws:s3:::%s/*\"]}]}' ${S3_BUCKET} > /tmp/anon-policy.json &&
+      printf '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"NotResource\":[\"arn:aws:s3:::%s/messages/*\"]}]}' ${S3_BUCKET} > /tmp/anon-policy.json &&
       mc anonymous set-json /tmp/anon-policy.json local/${S3_BUCKET}
       "
     networks:

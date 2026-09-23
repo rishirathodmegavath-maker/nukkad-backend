@@ -25,7 +25,7 @@ import java.time.Instant;
 @Builder
 public class Message {
 
-    public enum Type { TEXT, SHARED_POST }
+    public enum Type { TEXT, SHARED_POST, IMAGE, VIDEO, PDF, FILE }
 
     @Id
     @UuidGenerator
@@ -48,6 +48,21 @@ public class Message {
 
     @Column(name = "shared_post_id", columnDefinition = "CHAR(36)")
     private String sharedPostId;
+
+    /** Private S3/MinIO object key from {@link com.nukkad.common.storage.FileStorageService#storeConversationAttachment}
+     * — unlike a feed post's attachment, this is never a permanent public URL. A fresh, short-lived
+     * presigned URL is generated from this key on every read (see ConversationService#toMessageDto).
+     * Null unless messageType is IMAGE/VIDEO/PDF/FILE. */
+    @Column(name = "attachment_key", length = 500)
+    private String attachmentKey;
+
+    /** IMAGE / VIDEO / PDF / FILE — mirrors {@code messageType} when an attachment is present; kept as its
+     * own column (rather than re-deriving from messageType) so a future message type never has to guess. */
+    @Column(name = "attachment_kind", length = 20)
+    private String attachmentKind;
+
+    @Column(name = "attachment_file_name")
+    private String attachmentFileName;
 
     /** AES-256-GCM ciphertext, base64-encoded (IV || ciphertext). Never plaintext at rest. */
     @Column(name = "content_ciphertext", nullable = false, columnDefinition = "TEXT")

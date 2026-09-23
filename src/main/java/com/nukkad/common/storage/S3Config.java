@@ -5,6 +5,8 @@ import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 
 import java.net.URI;
 import java.time.Duration;
@@ -31,5 +33,28 @@ public class S3Config {
             builder.endpointOverride(URI.create(properties.endpointOverride()));
         }
         return builder.build();
+    }
+
+    /**
+     * A presigned URL must be signed for the endpoint the browser will actually reach — the public one —
+     * not {@code endpointOverride}, which is the internal Docker-network address {@link #s3Client} talks
+     * to and which a browser can't reach at all. Derived from {@code publicBaseUrl} (already always
+     * "scheme://host[:port]/bucket" under the path-style convention this app uses everywhere) by
+     * stripping the trailing "/bucket" segment, rather than requiring a second, separately-configured
+     * endpoint property. Credentials/region/path-style come from the same properties {@link #s3Client}
+     * uses — presigning needs no network reachability to the signing endpoint itself, only a matching
+     * signature scope, so the internal-vs-public split only matters for what the resulting URL points at.
+     */
+    @Bean
+    public S3Presigner s3Presigner(StorageProperties properties) {
+        URI publicBase = URI.create(properties.publicBaseUrl());
+        URI publicEndpoint = URI.create(publicBase.getScheme() + "://" + publicBase.getAuthority());
+        return S3Presigner.builder()
+                .region(Region.of(properties.region()))
+                .endpointOverride(publicEndpoint)
+                .serviceConfiguration(S3Configuration.builder()
+                        .pathStyleAccessEnabled(properties.forcePathStyle())
+                        .build())
+                .build();
     }
 }

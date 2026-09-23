@@ -3,12 +3,15 @@ package com.nukkad.messaging.service;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.feed.dto.PostDto;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.investor.repository.IntroRequestRepository;
+import com.nukkad.messaging.dto.ConversationAttachmentRef;
 import com.nukkad.messaging.dto.ConversationDto;
 import com.nukkad.messaging.dto.GroupInfoDto;
 import com.nukkad.messaging.dto.GroupParticipantDto;
+import com.nukkad.messaging.dto.MessageAttachmentDto;
 import com.nukkad.messaging.dto.MessageDto;
 import com.nukkad.messaging.dto.RepliedMessagePreviewDto;
 import com.nukkad.messaging.entity.Conversation;
@@ -33,7 +36,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -42,6 +47,11 @@ import java.util.Set;
 
 @Service
 public class ConversationService {
+
+    /** How long a chat attachment's presigned URL stays valid — long enough that a normal open-tab chat
+     * session never sees a broken image, short enough that a leaked URL (screenshot, proxy log) isn't a
+     * standing door. Reopening a conversation (or any refetch) mints a fresh one regardless. */
+    private static final Duration ATTACHMENT_URL_TTL = Duration.ofHours(6);
 
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
@@ -56,6 +66,7 @@ public class ConversationService {
     private final IntroRequestRepository introRequestRepository;
     private final UserPrivacySettingsService privacySettingsService;
     private final FeedService feedService;
+    private final FileStorageService fileStorageService;
 
     public ConversationService(ConversationRepository conversationRepository,
                                 ConversationParticipantRepository participantRepository,
@@ -69,7 +80,8 @@ public class ConversationService {
                                 StartupTeamMemberRepository startupTeamMemberRepository,
                                 IntroRequestRepository introRequestRepository,
                                 UserPrivacySettingsService privacySettingsService,
-                                FeedService feedService) {
+                                FeedService feedService,
+                                FileStorageService fileStorageService) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.messageRepository = messageRepository;
@@ -83,6 +95,19 @@ public class ConversationService {
         this.introRequestRepository = introRequestRepository;
         this.privacySettingsService = privacySettingsService;
         this.feedService = feedService;
+        this.fileStorageService = fileStorageService;
+    }
+
+    /** Uploads a chat attachment for {@code conversationId} — a participant-only action, exactly like
+     * sending a message itself. Returns a ref (the private object key, not a URL) the caller then passes
+     * to {@link #sendMessage} to actually create the message; uploading alone never creates one. Unlike a
+     * feed post's attachment, this is stored privately and its declared type is cross-checked against its
+     * actual bytes (see {@link FileStorageService#storeConversationAttachment}). */
+    @Transactional(readOnly = true)
+    public ConversationAttachmentRef uploadAttachment(String conversationId, String userId, MultipartFile file) {
+        getConversationForParticipant(conversationId, userId);
+        var stored = fileStorageService.storeConversationAttachment(file, "messages");
+        return new ConversationAttachmentRef(stored.key(), stored.kind().name(), file.getOriginalFilename());
     }
 
     @Transactional
@@ -158,6 +183,12 @@ public class ConversationService {
 
     @Transactional
     public MessageDto sendMessage(String conversationId, String senderId, String content, String sharedPostId, String replyToMessageId) {
+        return sendMessage(conversationId, senderId, content, sharedPostId, replyToMessageId, null);
+    }
+
+    @Transactional
+    public MessageDto sendMessage(String conversationId, String senderId, String content, String sharedPostId,
+                                   String replyToMessageId, ConversationAttachmentRef attachment) {
         Conversation conversation = getConversationForParticipant(conversationId, senderId);
         boolean isGroup = conversation.getConversationType() == Conversation.Type.GROUP;
 
@@ -182,8 +213,8 @@ public class ConversationService {
 
         String trimmedContent = content == null ? "" : content.trim();
         String normalizedPostId = (sharedPostId == null || sharedPostId.isBlank()) ? null : sharedPostId;
-        if (trimmedContent.isEmpty() && normalizedPostId == null) {
-            throw new BadRequestException("Message must have content or a shared post");
+        if (trimmedContent.isEmpty() && normalizedPostId == null && attachment == null) {
+            throw new BadRequestException("Message must have content, an attachment, or a shared post");
         }
         if (normalizedPostId != null) {
             // Fail fast (404) if the post doesn't exist rather than persisting a dangling reference.
@@ -196,13 +227,29 @@ public class ConversationService {
                     .orElseThrow(() -> new ResourceNotFoundException("Message not found: " + normalizedReplyToId));
         }
 
+        Message.Type messageType;
+        if (normalizedPostId != null) {
+            messageType = Message.Type.SHARED_POST;
+        } else if (attachment != null) {
+            try {
+                messageType = Message.Type.valueOf(attachment.kind());
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException("Unsupported attachment type: " + attachment.kind());
+            }
+        } else {
+            messageType = Message.Type.TEXT;
+        }
+
         Message message = Message.builder()
                 .conversationId(conversation.getId())
                 .senderId(senderId)
                 .replyToMessageId(normalizedReplyToId)
                 .contentCiphertext(encryptionService.encrypt(trimmedContent))
-                .messageType(normalizedPostId != null ? Message.Type.SHARED_POST : Message.Type.TEXT)
+                .messageType(messageType)
                 .sharedPostId(normalizedPostId)
+                .attachmentKey(attachment != null ? attachment.key() : null)
+                .attachmentKind(attachment != null ? attachment.kind() : null)
+                .attachmentFileName(attachment != null ? attachment.fileName() : null)
                 .build();
         message = messageRepository.saveAndFlush(message);
 
@@ -255,9 +302,10 @@ public class ConversationService {
 
     /**
      * Edit: only the sender may ever call this (enforced here, never trusted from the client) and
-     * only for a TEXT message — a SHARED_POST's attachment/link is never editable, and there's no
-     * separate caption field on it to edit instead. Unchanged content (after trim) is a deliberate
-     * no-op: nothing is persisted or broadcast, matching "don't make an unnecessary API request".
+     * only for a TEXT message — a SHARED_POST's, or an IMAGE/VIDEO/PDF/FILE message's, attachment/caption
+     * is never editable this way (there's no separate caption-only edit path for an attachment message).
+     * Unchanged content (after trim) is a deliberate no-op: nothing is persisted or broadcast, matching
+     * "don't make an unnecessary API request".
      */
     @Transactional
     public MessageDto editMessage(String conversationId, String userId, String messageId, String content) {
@@ -298,7 +346,10 @@ public class ConversationService {
      * The row is kept (not hard-deleted) so reply references, ordering and pagination stay intact;
      * the ciphertext is wiped too so the original text is actually gone from storage, and
      * {@link #toMessageDto} returns empty content/no attachment for it from this point on for both
-     * sides. Calling this twice on an already-unsent message is a harmless no-op.
+     * sides. Any attachment is actually deleted from object storage too (not just unlinked) — this is
+     * the one place that happens, since "delete for me" only ever hides the row for one viewer and must
+     * never remove a file the other participant can still see. Calling this twice on an already-unsent
+     * message is a harmless no-op.
      */
     @Transactional
     public MessageDto unsendMessage(String conversationId, String userId, String messageId) {
@@ -310,8 +361,14 @@ public class ConversationService {
             throw new ForbiddenException("You can only unsend your own messages");
         }
         if (message.getUnsentAt() == null) {
+            if (message.getAttachmentKey() != null) {
+                fileStorageService.deleteByKey(message.getAttachmentKey());
+            }
             message.setUnsentAt(Instant.now());
             message.setContentCiphertext(encryptionService.encrypt(""));
+            message.setAttachmentKey(null);
+            message.setAttachmentKind(null);
+            message.setAttachmentFileName(null);
             messageRepository.save(message);
         }
 
@@ -470,7 +527,7 @@ public class ConversationService {
         // resolve, and no reply-to preview on the tombstone itself (there's nothing left to quote).
         if (message.getUnsentAt() != null) {
             return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
-                    message.getMessageType().name(), "", null, null, message.getReplyToMessageId(), null,
+                    message.getMessageType().name(), "", null, null, null, message.getReplyToMessageId(), null,
                     message.isRead(), message.getReadAt(), message.getEditedAt(), message.getUnsentAt(), message.getCreatedAt());
         }
 
@@ -494,6 +551,9 @@ public class ConversationService {
                             snippet = "This message was unsent";
                         } else if (original.getMessageType() == Message.Type.SHARED_POST) {
                             snippet = "Shared a post";
+                        } else if (isAttachmentType(original.getMessageType())) {
+                            String caption = encryptionService.decrypt(original.getContentCiphertext());
+                            snippet = !caption.isBlank() ? truncate(caption, 120) : attachmentTypeLabel(original);
                         } else {
                             snippet = truncate(encryptionService.decrypt(original.getContentCiphertext()), 120);
                         }
@@ -502,10 +562,33 @@ public class ConversationService {
                     })
                     .orElse(null); // Original was hard-deleted; frontend just omits the quoted preview.
         }
+        // Presigned fresh on every DTO build — REST page fetch and WebSocket broadcast both go through
+        // this same method, so both always carry a currently-valid URL regardless of how long the
+        // underlying message has existed. Presigning is a local signature computation (no request to
+        // storage), so doing this per-message on every read is cheap.
+        MessageAttachmentDto attachment = message.getAttachmentKey() != null
+                ? new MessageAttachmentDto(fileStorageService.presignGet(message.getAttachmentKey(), ATTACHMENT_URL_TTL),
+                        message.getAttachmentKind(), message.getAttachmentFileName())
+                : null;
         return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
                 message.getMessageType().name(), encryptionService.decrypt(message.getContentCiphertext()),
-                message.getSharedPostId(), sharedPost, message.getReplyToMessageId(), replyTo,
+                message.getSharedPostId(), sharedPost, attachment, message.getReplyToMessageId(), replyTo,
                 message.isRead(), message.getReadAt(), message.getEditedAt(), message.getUnsentAt(), message.getCreatedAt());
+    }
+
+    private static boolean isAttachmentType(Message.Type type) {
+        return type == Message.Type.IMAGE || type == Message.Type.VIDEO || type == Message.Type.PDF || type == Message.Type.FILE;
+    }
+
+    /** A caption-less attachment message still needs something to show as its reply-quote/list-preview
+     * text — "Photo", "Video", or the stored file name for a document. */
+    private static String attachmentTypeLabel(Message message) {
+        return switch (message.getMessageType()) {
+            case IMAGE -> "Photo";
+            case VIDEO -> "Video";
+            case PDF, FILE -> message.getAttachmentFileName() != null ? message.getAttachmentFileName() : "File";
+            default -> "";
+        };
     }
 
     private String truncate(String value, int maxLength) {

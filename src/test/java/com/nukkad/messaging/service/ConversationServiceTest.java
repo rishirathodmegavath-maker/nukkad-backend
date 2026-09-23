@@ -3,8 +3,10 @@ package com.nukkad.messaging.service;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.investor.repository.IntroRequestRepository;
+import com.nukkad.messaging.dto.ConversationAttachmentRef;
 import com.nukkad.messaging.dto.MessageDto;
 import com.nukkad.messaging.entity.Conversation;
 import com.nukkad.messaging.entity.ConversationParticipant;
@@ -27,6 +29,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.List;
@@ -39,6 +42,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -66,12 +70,13 @@ class ConversationServiceTest {
     @Mock private IntroRequestRepository introRequestRepository;
     @Mock private UserPrivacySettingsService privacySettingsService;
     @Mock private FeedService feedService;
+    @Mock private FileStorageService fileStorageService;
 
     private ConversationService service() {
         return new ConversationService(conversationRepository, participantRepository, messageRepository, messageDeletionRepository,
                 encryptionService, messagingTemplate, userBlockRepository, connectionRepository,
                 opportunityApplicantRepository, startupTeamMemberRepository, introRequestRepository,
-                privacySettingsService, feedService);
+                privacySettingsService, feedService, fileStorageService);
     }
 
     private Conversation conversation(String senderId, String recipientId) {
@@ -752,5 +757,139 @@ class ConversationServiceTest {
 
         assertThat(dto.replyTo()).isNotNull();
         assertThat(dto.replyTo().contentSnippet()).isEqualTo("This message was unsent");
+    }
+
+    // ---- Attachments: upload is participant-gated, sendMessage stores/derives type, unsend deletes from storage ----
+
+    @Test
+    void uploadingAnAttachmentRequiresBeingAParticipant() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        MultipartFile file = mock(MultipartFile.class);
+
+        assertThatThrownBy(() -> service().uploadAttachment("conv1", "mallory", file))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(fileStorageService, never()).storeConversationAttachment(any(), anyString());
+    }
+
+    @Test
+    void uploadingAnAttachmentStoresItPrivatelyAndReturnsAKeyNotAUrl() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        MultipartFile file = mock(MultipartFile.class);
+        when(file.getOriginalFilename()).thenReturn("photo.png");
+        when(fileStorageService.storeConversationAttachment(file, "messages"))
+                .thenReturn(new FileStorageService.StoredPrivateMedia("messages/x.png", FileStorageService.AttachmentKind.IMAGE));
+
+        ConversationAttachmentRef ref = service().uploadAttachment("conv1", "alice", file);
+
+        assertThat(ref.key()).isEqualTo("messages/x.png");
+        assertThat(ref.kind()).isEqualTo("IMAGE");
+        assertThat(ref.fileName()).isEqualTo("photo.png");
+    }
+
+    @Test
+    void sendingAMessageWithOnlyAnAttachmentAndNoCaptionDerivesTheMessageTypeFromIt() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("bob", "alice");
+        when(fileStorageService.presignGet(eq("messages/x.png"), any(java.time.Duration.class)))
+                .thenReturn("https://cdn.example.com/messages/x.png?X-Amz-Signature=abc");
+        ConversationAttachmentRef attachment = new ConversationAttachmentRef("messages/x.png", "IMAGE", "photo.png");
+
+        MessageDto dto = service().sendMessage("conv1", "alice", "", null, null, attachment);
+
+        assertThat(dto.type()).isEqualTo("IMAGE");
+        assertThat(dto.attachment()).isNotNull();
+        // The DTO carries a presigned URL, never the raw key — that never leaves the backend.
+        assertThat(dto.attachment().url()).isEqualTo("https://cdn.example.com/messages/x.png?X-Amz-Signature=abc");
+        assertThat(dto.attachment().fileName()).isEqualTo("photo.png");
+
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(messageRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getMessageType()).isEqualTo(Message.Type.IMAGE);
+        assertThat(captor.getValue().getAttachmentKey()).isEqualTo("messages/x.png");
+    }
+
+    @Test
+    void aRestMessageListFetchAndAWebSocketBroadcastBothGetFreshlyPresignedUrlsFromTheSameCode() {
+        // toMessageDto is the one place both the REST list path (getMessages) and the WS broadcast in
+        // sendMessage build a MessageDto — this pins that down so a future refactor can't split them.
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findVisibleForViewer(eq("conv1"), eq("alice"), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(
+                        Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                                .messageType(Message.Type.IMAGE).attachmentKey("messages/x.png").attachmentKind("IMAGE")
+                                .contentCiphertext("ciphertext").build())));
+        when(encryptionService.decrypt("ciphertext")).thenReturn("");
+        when(fileStorageService.presignGet(eq("messages/x.png"), any(java.time.Duration.class)))
+                .thenReturn("https://cdn.example.com/messages/x.png?X-Amz-Signature=fresh");
+
+        var page = service().getMessages("conv1", "alice", 0, 20);
+
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(page.getContent().get(0).attachment().url()).isEqualTo("https://cdn.example.com/messages/x.png?X-Amz-Signature=fresh");
+        verify(fileStorageService).presignGet("messages/x.png", java.time.Duration.ofHours(6));
+    }
+
+    @Test
+    void sendingAMessageWithNoContentNoAttachmentAndNoSharedPostIsStillRejected() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+
+        assertThatThrownBy(() -> service().sendMessage("conv1", "alice", "   ", null, null, null))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(messageRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void unsendingAMessageWithAnAttachmentDeletesItFromStorageAndClearsTheAttachmentFields() {
+        Conversation conv = conversation("alice", "bob");
+        Message msg = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
+                .messageType(Message.Type.IMAGE).attachmentKey("messages/x.png")
+                .attachmentKind("IMAGE").attachmentFileName("photo.png").contentCiphertext("ciphertext").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
+        when(encryptionService.encrypt("")).thenReturn("empty-ciphertext");
+
+        MessageDto dto = service().unsendMessage("conv1", "alice", "msg1");
+
+        assertThat(dto.attachment()).isNull();
+        assertThat(msg.getAttachmentKey()).isNull();
+        assertThat(msg.getAttachmentKind()).isNull();
+        assertThat(msg.getAttachmentFileName()).isNull();
+        verify(fileStorageService).deleteByKey("messages/x.png");
+        verify(fileStorageService, never()).deleteIfHosted(any());
+    }
+
+    @Test
+    void replyPreviewToACaptionlessPhotoShowsAPhotoLabelInsteadOfABlankSnippet() {
+        Conversation conv = conversation("alice", "bob");
+        Message original = Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey("messages/x.png")
+                .attachmentKind("IMAGE").contentCiphertext("empty-ciphertext").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(original));
+        stubMessagePersistenceAndEncryption();
+        when(encryptionService.decrypt("empty-ciphertext")).thenReturn("");
+        stubConversationDtoLookups("bob", "alice");
+
+        MessageDto dto = service().sendMessage("conv1", "alice", "Nice!", null, "msg1");
+
+        assertThat(dto.replyTo()).isNotNull();
+        assertThat(dto.replyTo().contentSnippet()).isEqualTo("Photo");
     }
 }
