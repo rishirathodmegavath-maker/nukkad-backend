@@ -9,12 +9,17 @@ import com.nukkad.common.response.ApiResponse;
 import com.nukkad.common.response.PageResponse;
 import com.nukkad.grant.dto.CreateGrantRequest;
 import com.nukkad.grant.dto.GrantDto;
+import com.nukkad.grant.dto.GrantImportBatchDto;
+import com.nukkad.grant.dto.GrantImportIssueDto;
+import com.nukkad.grant.dto.GrantImportPreviewDto;
+import com.nukkad.grant.service.GrantImportService;
 import com.nukkad.grant.service.GrantService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -25,19 +30,24 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 /** Mirrors AdminIdeaController exactly — reuses GrantService with no Grants business logic
  *  duplicated here. Also lets an admin publish a grant listing directly (see
- *  GrantService#createGrantAsAdmin). */
+ *  GrantService#createGrantAsAdmin), or bulk-import many at once from a spreadsheet (see
+ *  GrantImportService) — the manual, zero-API-cost replacement for the disabled Gemini discovery
+ *  pipeline. */
 @RestController
 @RequestMapping("/api/admin/grants")
 @SecurityRequirement(name = "bearerAuth")
 public class AdminGrantController {
 
     private final GrantService grantService;
+    private final GrantImportService grantImportService;
 
-    public AdminGrantController(GrantService grantService) {
+    public AdminGrantController(GrantService grantService, GrantImportService grantImportService) {
         this.grantService = grantService;
+        this.grantImportService = grantImportService;
     }
 
     @PostMapping
@@ -88,6 +98,40 @@ public class AdminGrantController {
                                          HttpServletRequest httpRequest) {
         return ApiResponse.ok(grantService.reviewModeration(
                 principal.id(), id, request.approved(), request.reason(), httpRequest.getRemoteAddr()));
+    }
+
+    // ---- Bulk spreadsheet import — see GrantImportService ----
+
+    @PostMapping(value = "/import/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<GrantImportPreviewDto> previewImport(@RequestParam MultipartFile file) {
+        return ApiResponse.ok(grantImportService.preview(file));
+    }
+
+    /** Re-parses the same file (the browser re-sends it, having already previewed it) and starts an
+     *  async import; the admin UI polls GET .../import/{id} for progress and the final report. */
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public ApiResponse<GrantImportBatchDto> startImport(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                          @RequestParam MultipartFile file) {
+        return ApiResponse.ok(grantImportService.startImport(principal.id(), file));
+    }
+
+    @GetMapping("/import")
+    public ApiResponse<PageResponse<GrantImportBatchDto>> listImports(@RequestParam(defaultValue = "0") int page,
+                                                                         @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(PageResponse.from(grantImportService.listBatches(page, AdminPaging.clampSize(size))));
+    }
+
+    @GetMapping("/import/{id}")
+    public ApiResponse<GrantImportBatchDto> getImport(@PathVariable String id) {
+        return ApiResponse.ok(grantImportService.getBatch(id));
+    }
+
+    @GetMapping("/import/{id}/issues")
+    public ApiResponse<PageResponse<GrantImportIssueDto>> listImportIssues(@PathVariable String id,
+                                                                              @RequestParam(defaultValue = "0") int page,
+                                                                              @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.ok(PageResponse.from(grantImportService.listIssues(id, page, AdminPaging.clampSize(size))));
     }
 
     private ModerationStatus parseModerationStatus(String status) {
