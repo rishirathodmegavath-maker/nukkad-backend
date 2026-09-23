@@ -15,9 +15,12 @@ import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -35,6 +38,11 @@ public class FileStorageService {
     public enum AttachmentKind { IMAGE, VIDEO, PDF, FILE }
 
     public record StoredMedia(String url, AttachmentKind kind) {}
+
+    /** Unlike {@link StoredMedia}, this carries the private object key, not a URL — chat attachments
+     * (see {@link #storeConversationAttachment}) are never publicly readable, so there's no URL to hand
+     * back at store time; the caller presigns one on demand via {@link #presignGet}. */
+    public record StoredPrivateMedia(String key, AttachmentKind kind) {}
 
     private static final Map<String, AttachmentKind> ALLOWED_MEDIA_CONTENT_TYPES = Map.ofEntries(
             Map.entry("image/png", AttachmentKind.IMAGE),
@@ -94,10 +102,12 @@ public class FileStorageService {
     public record StoredObject(InputStream stream, String contentType, long contentLength) {}
 
     private final S3Client s3Client;
+    private final S3Presigner s3Presigner;
     private final StorageProperties properties;
 
-    public FileStorageService(S3Client s3Client, StorageProperties properties) {
+    public FileStorageService(S3Client s3Client, S3Presigner s3Presigner, StorageProperties properties) {
         this.s3Client = s3Client;
+        this.s3Presigner = s3Presigner;
         this.properties = properties;
     }
 
@@ -161,6 +171,98 @@ public class FileStorageService {
             throw new BadRequestException("Attach an image, a video (mp4/webm/mov), a PDF, or a Word, PowerPoint or Excel file");
         }
         return new StoredMedia(uploadToS3(file, subDir, extension, documentType), AttachmentKind.FILE);
+    }
+
+    /**
+     * A chat attachment: same allowed types as {@link #storeFeedAttachment} (images, video, PDF, Word/
+     * PowerPoint/Excel documents) and the same global size ceiling — but two things are different from
+     * every other {@code store*} method here. First, the declared content-type/extension is cross-checked
+     * against the file's actual leading bytes ({@link AttachmentContentValidator}) before it's stored, since
+     * a chat attachment is more attractive to mislabel than a public feed image. Second, this returns the
+     * object KEY, not a URL: chat attachments are private (see {@link #presignGet}), unlike everything else
+     * this service writes, which is why this is a separate method rather than a flag on storeFeedAttachment.
+     */
+    public StoredPrivateMedia storeConversationAttachment(MultipartFile file, String subDir) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("No file was uploaded");
+        }
+        AttachmentKind kind;
+        String extension;
+        String contentType = file.getContentType();
+        if (contentType != null && ALLOWED_MEDIA_CONTENT_TYPES.containsKey(contentType.toLowerCase())) {
+            kind = ALLOWED_MEDIA_CONTENT_TYPES.get(contentType.toLowerCase());
+            String original = file.getOriginalFilename() != null ? file.getOriginalFilename() : "";
+            extension = original.contains(".") ? original.substring(original.lastIndexOf('.') + 1).toLowerCase() : "";
+            if (!ALLOWED_MEDIA_EXTENSIONS.contains(extension)) {
+                extension = contentType.substring(contentType.lastIndexOf('/') + 1);
+            }
+        } else {
+            String original = file.getOriginalFilename() != null ? file.getOriginalFilename() : "";
+            extension = original.contains(".") ? original.substring(original.lastIndexOf('.') + 1).toLowerCase() : "";
+            String documentType = FEED_FILE_CONTENT_TYPES.get(extension);
+            if (documentType == null) {
+                throw new BadRequestException("Attach an image, a video (mp4/webm/mov), a PDF, or a Word, PowerPoint or Excel file");
+            }
+            kind = AttachmentKind.FILE;
+            contentType = documentType;
+        }
+
+        byte[] header = readHeader(file);
+        if (!AttachmentContentValidator.matches(header, header.length, kind)) {
+            throw new BadRequestException("This file's contents don't match its declared type — try re-exporting or re-saving it");
+        }
+
+        String key = subDir + "/" + UUID.randomUUID() + "." + extension;
+        try {
+            PutObjectRequest request = PutObjectRequest.builder()
+                    .bucket(properties.bucket())
+                    .key(key)
+                    .contentType(contentType)
+                    .build();
+            s3Client.putObject(request, RequestBody.fromInputStream(file.getInputStream(), file.getSize()));
+        } catch (IOException | S3Exception e) {
+            throw new RuntimeException("Failed to store uploaded file", e);
+        }
+        return new StoredPrivateMedia(key, kind);
+    }
+
+    /** The first {@link AttachmentContentValidator#HEADER_BYTES} bytes of the upload, for content-sniffing —
+     * a fresh {@link MultipartFile#getInputStream()} call, entirely separate from the one used to actually
+     * store the file below, since Spring's multipart file already has its bytes fully received/buffered
+     * before this method runs (each call opens its own stream over the same underlying data). */
+    private byte[] readHeader(MultipartFile file) {
+        try (InputStream in = file.getInputStream()) {
+            byte[] buffer = new byte[AttachmentContentValidator.HEADER_BYTES];
+            int read = in.readNBytes(buffer, 0, buffer.length);
+            return read == buffer.length ? buffer : java.util.Arrays.copyOf(buffer, read);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read uploaded file", e);
+        }
+    }
+
+    /** A short-lived, temporary-credential URL for a private object (see {@link #storeConversationAttachment}) —
+     * the only way to read one back, since it's never given a permanent public URL. Presigning is a local
+     * signature computation (no network round-trip to storage), so calling this once per attachment on every
+     * message read (REST page or WebSocket broadcast) is cheap. */
+    public String presignGet(String key, Duration ttl) {
+        GetObjectRequest getRequest = GetObjectRequest.builder().bucket(properties.bucket()).key(key).build();
+        GetObjectPresignRequest presignRequest = GetObjectPresignRequest.builder()
+                .signatureDuration(ttl)
+                .getObjectRequest(getRequest)
+                .build();
+        return s3Presigner.presignGetObject(presignRequest).url().toString();
+    }
+
+    /** Deletes a private object by its key directly (no URL to parse, unlike {@link #deleteIfHosted}).
+     * Best-effort, like deleteIfHosted: a storage hiccup is logged, not thrown, since the caller (unsend)
+     * has already committed to the message being gone and must not resurrect it over a delete failure. */
+    public void deleteByKey(String key) {
+        if (key == null) return;
+        try {
+            s3Client.deleteObject(DeleteObjectRequest.builder().bucket(properties.bucket()).key(key).build());
+        } catch (RuntimeException e) {
+            log.warn("Could not delete stored file {}: {}", key, e.getMessage());
+        }
     }
 
     /**

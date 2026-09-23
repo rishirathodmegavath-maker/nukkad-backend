@@ -20,8 +20,13 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.presigner.S3Presigner;
+import software.amazon.awssdk.services.s3.presigner.model.GetObjectPresignRequest;
+import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 
 import java.io.ByteArrayInputStream;
+import java.net.URL;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -36,14 +41,30 @@ class FileStorageServiceTest {
     @Mock
     private S3Client s3Client;
 
+    @Mock
+    private S3Presigner s3Presigner;
+
     private FileStorageService fileStorageService;
 
     @BeforeEach
     void setUp() {
         StorageProperties properties = new StorageProperties(
                 "test-bucket", "auto", "https://r2.example.com", true, "https://cdn.example.com");
-        fileStorageService = new FileStorageService(s3Client, properties);
+        fileStorageService = new FileStorageService(s3Client, s3Presigner, properties);
     }
+
+    // Real leading bytes for each format storeConversationAttachment's content-sniffing checks against —
+    // "content".getBytes() (what every other test in this file still uses, unchanged) would never pass it.
+    private static final byte[] PNG_HEADER = {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0};
+    private static final byte[] JPEG_HEADER = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0, 0, 0, 0, 0, 0, 0};
+    private static final byte[] GIF_HEADER = "GIF89a-----".getBytes();
+    private static final byte[] WEBP_HEADER = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'};
+    private static final byte[] MP4_HEADER = {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'};
+    private static final byte[] WEBM_HEADER = {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0, 0, 0, 0, 0, 0, 0, 0};
+    private static final byte[] PDF_HEADER = "%PDF-1.4\n\n\n\n".getBytes();
+    private static final byte[] OLE2_HEADER = {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1, 0, 0, 0, 0};
+    private static final byte[] ZIP_HEADER = {0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0};
+    private static final byte[] EXE_HEADER = {'M', 'Z', (byte) 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0};
 
     @Test
     void storingAValidImageUploadsItAndReturnsAPublicUrl() {
@@ -340,5 +361,143 @@ class FileStorageServiceTest {
         when(s3Client.deleteObject(any(DeleteObjectRequest.class))).thenThrow(S3Exception.builder().message("boom").build());
 
         fileStorageService.deleteIfHosted("https://cdn.example.com/resources/a.pdf"); // must not throw
+    }
+
+    // ---- chat attachments: private (returns a key, not a URL) and content-validated against real bytes ----
+
+    @Test
+    void aConversationAttachmentWithMatchingContentIsStoredAndReturnsAKeyNotAUrl() {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+        MockMultipartFile file = new MockMultipartFile("file", "photo.png", "image/png", PNG_HEADER);
+
+        FileStorageService.StoredPrivateMedia stored = fileStorageService.storeConversationAttachment(file, "messages");
+
+        assertThat(stored.key()).startsWith("messages/").endsWith(".png");
+        assertThat(stored.kind()).isEqualTo(FileStorageService.AttachmentKind.IMAGE);
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(software.amazon.awssdk.core.sync.RequestBody.class));
+        assertThat(captor.getValue().key()).isEqualTo(stored.key());
+    }
+
+    @Test
+    void everyAllowedTypeIsAcceptedWhenItsRealBytesMatchItsClaimedType() {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+        record Case(String name, String contentType, byte[] header, FileStorageService.AttachmentKind kind) {}
+        Case[] cases = {
+                new Case("a.png", "image/png", PNG_HEADER, FileStorageService.AttachmentKind.IMAGE),
+                new Case("a.jpg", "image/jpeg", JPEG_HEADER, FileStorageService.AttachmentKind.IMAGE),
+                new Case("a.gif", "image/gif", GIF_HEADER, FileStorageService.AttachmentKind.IMAGE),
+                new Case("a.webp", "image/webp", WEBP_HEADER, FileStorageService.AttachmentKind.IMAGE),
+                new Case("a.mp4", "video/mp4", MP4_HEADER, FileStorageService.AttachmentKind.VIDEO),
+                new Case("a.webm", "video/webm", WEBM_HEADER, FileStorageService.AttachmentKind.VIDEO),
+                new Case("a.pdf", "application/pdf", PDF_HEADER, FileStorageService.AttachmentKind.PDF),
+                new Case("a.doc", "application/octet-stream", OLE2_HEADER, FileStorageService.AttachmentKind.FILE),
+                new Case("a.docx", "application/octet-stream", ZIP_HEADER, FileStorageService.AttachmentKind.FILE),
+        };
+        for (Case c : cases) {
+            MockMultipartFile file = new MockMultipartFile("file", c.name(), c.contentType(), c.header());
+            FileStorageService.StoredPrivateMedia stored = fileStorageService.storeConversationAttachment(file, "messages");
+            assertThat(stored.kind()).as(c.name()).isEqualTo(c.kind());
+        }
+    }
+
+    @Test
+    void aFileWhoseBytesDontMatchItsClaimedImageTypeIsRejected() {
+        // A renamed executable claiming to be a PNG (right Content-Type header and extension, wrong bytes).
+        MockMultipartFile file = new MockMultipartFile("file", "totally-a-photo.png", "image/png", EXE_HEADER);
+
+        assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("don't match its declared type");
+        verify(s3Client, never()).putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class));
+    }
+
+    @Test
+    void aFileWhoseBytesDontMatchItsClaimedDocumentTypeIsRejected() {
+        // Claims to be a .docx (by extension) but is actually an executable, not a real zip/OOXML container.
+        MockMultipartFile file = new MockMultipartFile("file", "resume.docx", "application/octet-stream", EXE_HEADER);
+
+        assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("don't match its declared type");
+    }
+
+    @Test
+    void aFileClaimingAVideoTypeButContainingAPdfIsRejected() {
+        MockMultipartFile file = new MockMultipartFile("file", "movie.mp4", "video/mp4", PDF_HEADER);
+
+        assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("don't match its declared type");
+    }
+
+    @Test
+    void aDisallowedContentTypeForAConversationAttachmentIsStillRejectedBeforeAnyByteSniffing() {
+        MockMultipartFile file = new MockMultipartFile("file", "archive.zip", "application/zip", ZIP_HEADER);
+
+        assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("Word, PowerPoint or Excel");
+    }
+
+    @Test
+    void anEmptyConversationAttachmentIsRejected() {
+        MockMultipartFile file = new MockMultipartFile("file", "empty.png", "image/png", new byte[0]);
+
+        assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("No file was uploaded");
+    }
+
+    // ---- presigned URLs: the only way to read a private (chat) object back ----
+
+    @Test
+    void presignGetBuildsARequestForTheConfiguredBucketAndKeyWithTheGivenTtl() throws Exception {
+        PresignedGetObjectRequest presigned = mockPresignedRequest("https://cdn.example.com/messages/abc.png?X-Amz-Signature=xyz");
+        when(s3Presigner.presignGetObject(any(GetObjectPresignRequest.class))).thenReturn(presigned);
+
+        String url = fileStorageService.presignGet("messages/abc.png", Duration.ofHours(6));
+
+        assertThat(url).isEqualTo("https://cdn.example.com/messages/abc.png?X-Amz-Signature=xyz");
+        ArgumentCaptor<GetObjectPresignRequest> captor = ArgumentCaptor.forClass(GetObjectPresignRequest.class);
+        verify(s3Presigner).presignGetObject(captor.capture());
+        assertThat(captor.getValue().signatureDuration()).isEqualTo(Duration.ofHours(6));
+        assertThat(captor.getValue().getObjectRequest().bucket()).isEqualTo("test-bucket");
+        assertThat(captor.getValue().getObjectRequest().key()).isEqualTo("messages/abc.png");
+    }
+
+    private static PresignedGetObjectRequest mockPresignedRequest(String url) throws Exception {
+        PresignedGetObjectRequest presigned = org.mockito.Mockito.mock(PresignedGetObjectRequest.class);
+        when(presigned.url()).thenReturn(new URL(url));
+        return presigned;
+    }
+
+    // ---- deleting a private object by key (unsend) ----
+
+    @Test
+    void deletingByKeyRemovesTheExactObject() {
+        when(s3Client.deleteObject(any(DeleteObjectRequest.class))).thenReturn(DeleteObjectResponse.builder().build());
+
+        fileStorageService.deleteByKey("messages/abc.png");
+
+        ArgumentCaptor<DeleteObjectRequest> captor = ArgumentCaptor.forClass(DeleteObjectRequest.class);
+        verify(s3Client).deleteObject(captor.capture());
+        assertThat(captor.getValue().bucket()).isEqualTo("test-bucket");
+        assertThat(captor.getValue().key()).isEqualTo("messages/abc.png");
+    }
+
+    @Test
+    void deletingByANullKeyIsANoOp() {
+        fileStorageService.deleteByKey(null);
+        verify(s3Client, never()).deleteObject(any(DeleteObjectRequest.class));
+    }
+
+    @Test
+    void aStorageFailureWhileDeletingByKeyIsSwallowed() {
+        when(s3Client.deleteObject(any(DeleteObjectRequest.class))).thenThrow(S3Exception.builder().message("boom").build());
+
+        fileStorageService.deleteByKey("messages/abc.png"); // must not throw
     }
 }
