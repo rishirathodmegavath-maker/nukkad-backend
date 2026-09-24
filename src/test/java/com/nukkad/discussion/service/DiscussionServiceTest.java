@@ -60,7 +60,7 @@ class DiscussionServiceTest {
 
     private PostDto baseDto(Post post) {
         return new PostDto(post.getId(), post.getAuthorId(), "discussion", post.getContent(), null,
-                0, 0, false, false, false, false, post.getCreatedAt(), List.of(), null, false, null, "PUBLIC", null);
+                0, 0, false, false, false, false, post.getCreatedAt(), List.of(), null, false, null, "PUBLIC", null, false);
     }
 
     // ---- voting ----

@@ -151,6 +151,11 @@ public class FeedService {
 
     @Transactional
     public PostDto create(String authorId, CreatePostRequest request) {
+        return create(authorId, request, false);
+    }
+
+    @Transactional
+    public PostDto create(String authorId, CreatePostRequest request, boolean postedAsPlatform) {
         String content = request.content() == null ? "" : request.content().trim();
         List<AttachmentRef> attachmentRefs = request.attachments() == null ? List.of() : request.attachments();
         String linkUrl = cleanLink(request.linkUrl());
@@ -163,6 +168,7 @@ public class FeedService {
 
         Post post = Post.builder()
                 .authorId(authorId)
+                .postedAsPlatform(postedAsPlatform)
                 .type(type)
                 .content(content)
                 .relatedId(request.relatedId())
@@ -195,7 +201,8 @@ public class FeedService {
     @Transactional
     public PostDto createAsAdmin(String adminId, CreatePostRequest request, String authorEmail, String ip) {
         String authorId = resolveAuthorId(adminId, authorEmail);
-        PostDto created = create(authorId, request);
+        boolean postedAsPlatform = authorId.equals(adminId);
+        PostDto created = create(authorId, request, postedAsPlatform);
 
         auditService.log(adminId, AuditAction.ADMIN_POST_CREATED, "Post", created.id(), ip, Map.of());
 
@@ -558,7 +565,7 @@ public class FeedService {
         return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
                 post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason(),
-                post.getVisibility().name(), post.getLinkUrl());
+                post.getVisibility().name(), post.getLinkUrl(), post.isPostedAsPlatform());
     }
 
     private CommentDto toCommentDto(PostComment comment, int replyCount) {
