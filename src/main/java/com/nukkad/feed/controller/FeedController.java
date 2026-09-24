@@ -131,6 +131,16 @@ public class FeedController {
         }
     }
 
+    /** "Hide this post" — the personalized feed's strong-negative signal; see FeedService#toggleHide. */
+    @PostMapping("/{id}/hide")
+    public ApiResponse<PostDto> toggleHide(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        try {
+            return ApiResponse.ok(feedService.toggleHide(principal.id(), id));
+        } catch (DataIntegrityViolationException | CannotAcquireLockException e) {
+            return ApiResponse.ok(feedService.get(principal.id(), id));
+        }
+    }
+
     @GetMapping("/{id}/comments")
     public ApiResponse<PageResponse<CommentDto>> listComments(@AuthenticationPrincipal AuthenticatedUser principal,
                                                                 @PathVariable String id,
