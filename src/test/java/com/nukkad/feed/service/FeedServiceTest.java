@@ -7,7 +7,9 @@ import com.nukkad.feed.dto.PostDto;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.feed.dto.AttachmentRef;
 import com.nukkad.feed.dto.CreateCommentRequest;
+import com.nukkad.feed.entity.PostAttachment;
 import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.entity.PostComment;
 import com.nukkad.feed.entity.PostLike;
@@ -513,6 +515,100 @@ class FeedServiceTest {
 
     private CreatePostRequest request(String content, String type, String visibility, String linkUrl) {
         return new CreatePostRequest(content, type, null, null, visibility, linkUrl);
+    }
+
+    // ---- an attachment must be a key this server itself minted, not an arbitrary client string ----
+
+    @Test
+    void anAttachmentRefNotUnderTheFeedPrefixIsRejected() {
+        CreatePostRequest req = new CreatePostRequest("hi", "text", null,
+                List.of(new AttachmentRef("javascript:alert(1)", "IMAGE", "x")), null, null);
+
+        assertThatThrownBy(() -> service().create("author-1", req)).isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void anAttachmentRefFromAnUnrelatedPrivatePrefixIsRejected() {
+        // Not just "must be one of ours": specifically the feed/ prefix, so a client can't smuggle in
+        // the key of a file from a more sensitive private prefix (e.g. a chat attachment under
+        // messages/) and have it presigned and embedded into a public post.
+        CreatePostRequest req = new CreatePostRequest("hi", "text", null,
+                List.of(new AttachmentRef("messages/someone-elses-file.png", "IMAGE", "x")), null, null);
+
+        assertThatThrownBy(() -> service().create("author-1", req)).isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void anAttachmentRefUnderTheFeedPrefixIsAcceptedAndPresignedOnRead() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(fileStorageService.isHostedUrl("feed/x.png")).thenReturn(false);
+        when(fileStorageService.presignGet(eq("feed/x.png"), any())).thenReturn("https://storage.example/feed/x.png?sig=abc");
+        CreatePostRequest req = new CreatePostRequest("hi", "text", null,
+                List.of(new AttachmentRef("feed/x.png", "IMAGE", "x")), null, null);
+
+        PostDto dto = service().create("author-1", req);
+
+        assertThat(dto.attachments()).hasSize(1);
+        assertThat(dto.attachments().get(0).url()).isEqualTo("https://storage.example/feed/x.png?sig=abc");
+    }
+
+    // ---- reading a post presigns each private attachment key; a legacy full URL passes through as-is ----
+
+    @Test
+    void aLegacyFullUrlAttachmentIsReturnedUnchanged() {
+        Post post = post("post-1");
+        post.getAttachments().add(PostAttachment.builder().url("https://storage.example/feed/legacy.png").kind(PostAttachment.Kind.IMAGE).build());
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(fileStorageService.isHostedUrl("https://storage.example/feed/legacy.png")).thenReturn(true);
+
+        PostDto dto = service().get("author-1", "post-1");
+
+        assertThat(dto.attachments().get(0).url()).isEqualTo("https://storage.example/feed/legacy.png");
+    }
+
+    @Test
+    void aPrivateKeyAttachmentIsPresignedOnRead() {
+        Post post = post("post-1");
+        post.getAttachments().add(PostAttachment.builder().url("feed/legacy.png").kind(PostAttachment.Kind.IMAGE).build());
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(fileStorageService.isHostedUrl("feed/legacy.png")).thenReturn(false);
+        when(fileStorageService.presignGet(eq("feed/legacy.png"), any())).thenReturn("https://storage.example/feed/legacy.png?sig=xyz");
+
+        PostDto dto = service().get("author-1", "post-1");
+
+        assertThat(dto.attachments().get(0).url()).isEqualTo("https://storage.example/feed/legacy.png?sig=xyz");
+    }
+
+    // ---- deleting a post also deletes its stored attachments, so they don't stay live forever ----
+
+    @Test
+    void deletingAPostDeletesALegacyHostedAttachmentByUrl() {
+        Post post = post("post-1");
+        post.getAttachments().add(PostAttachment.builder().url("https://storage.example/feed/a.png").kind(PostAttachment.Kind.IMAGE).build());
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(fileStorageService.isHostedUrl("https://storage.example/feed/a.png")).thenReturn(true);
+
+        service().delete("author-1", "post-1");
+
+        verify(fileStorageService).deleteIfHosted("https://storage.example/feed/a.png");
+        verify(fileStorageService, never()).deleteByKey(any());
+        verify(postRepository).delete(post);
+    }
+
+    @Test
+    void deletingAPostDeletesAPrivateKeyAttachmentByKey() {
+        Post post = post("post-1");
+        post.getAttachments().add(PostAttachment.builder().url("feed/b.png").kind(PostAttachment.Kind.IMAGE).build());
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(fileStorageService.isHostedUrl("feed/b.png")).thenReturn(false);
+
+        service().delete("author-1", "post-1");
+
+        verify(fileStorageService).deleteByKey("feed/b.png");
+        verify(fileStorageService, never()).deleteIfHosted(any());
+        verify(postRepository).delete(post);
     }
 
     private Post connectionsOnlyPost() {

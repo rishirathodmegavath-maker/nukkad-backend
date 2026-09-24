@@ -58,6 +58,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -726,13 +727,36 @@ public class StartupService {
 
     // ---- Startup materials ----
 
+    /** How long a minted material URL stays valid — same reasoning and value as FeedService's own
+     *  ATTACHMENT_URL_TTL (which mirrors ConversationService's, the original source of this pattern). */
+    private static final Duration MATERIAL_URL_TTL = Duration.ofHours(6);
+
     @Transactional(readOnly = true)
     public List<StartupMaterialDto> getMaterials(String startupId, String viewerId) {
         accessPolicy.requireReadable(startupId, viewerId);
         boolean canManage = canManageStartup(viewerId, startupId);
         return materialRepository.findByStartupIdOrderBySortOrderAscCreatedAtAsc(startupId).stream()
-                .map(m -> startupMapper.toDto(m, canManage))
+                .map(m -> resolveMaterialUrl(startupMapper.toDto(m, canManage)))
                 .toList();
+    }
+
+    /** {@code dto.url()} is either a real external link (materials whose type {@link
+     *  StartupMaterialType#isExternalLink()}, e.g. Website — never our storage, passed through as-is),
+     *  a legacy full public URL (from before uploaded materials were made private — left exactly as
+     *  stored, see FeedService#resolveAttachmentUrl for why), or the private key an upload since minted,
+     *  which needs a fresh presigned URL on every read. */
+    private StartupMaterialDto resolveMaterialUrl(StartupMaterialDto dto) {
+        if (fileStorageService.isHostedUrl(dto.url())) return dto;
+        boolean isExternalLink;
+        try {
+            isExternalLink = StartupMaterialType.fromLabel(dto.materialType()).isExternalLink();
+        } catch (IllegalArgumentException e) {
+            isExternalLink = false;
+        }
+        if (isExternalLink) return dto;
+        String presigned = fileStorageService.presignGet(dto.url(), MATERIAL_URL_TTL);
+        return new StartupMaterialDto(dto.id(), dto.startupId(), dto.materialType(), dto.title(), presigned,
+                dto.originalFileName(), dto.contentType(), dto.sortOrder(), dto.canManage(), dto.createdAt(), dto.updatedAt());
     }
 
     @Transactional
@@ -763,15 +787,15 @@ public class StartupService {
             if (file == null || file.isEmpty()) {
                 throw new BadRequestException(type.getLabel() + " requires a file to upload");
             }
-            FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "startup-materials");
+            FileStorageService.StoredPrivateMedia media = fileStorageService.storePrivateMedia(file, "startup-materials");
             requireExpectedKind(type, media.kind());
-            builder.url(media.url())
+            builder.url(media.key())
                     .originalFileName(file.getOriginalFilename())
                     .contentType(file.getContentType());
         }
 
         StartupMaterial saved = materialRepository.saveAndFlush(builder.build());
-        return startupMapper.toDto(saved, true);
+        return resolveMaterialUrl(startupMapper.toDto(saved, true));
     }
 
     @Transactional
@@ -788,14 +812,15 @@ public class StartupService {
                 material.setUrl(normalizeAndValidateUrl(url, material.getMaterialType().getLabel()));
             }
         } else if (file != null && !file.isEmpty()) {
-            FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "startup-materials");
+            FileStorageService.StoredPrivateMedia media = fileStorageService.storePrivateMedia(file, "startup-materials");
             requireExpectedKind(material.getMaterialType(), media.kind());
-            material.setUrl(media.url());
+            deleteStoredMaterialFile(material.getUrl());
+            material.setUrl(media.key());
             material.setOriginalFileName(file.getOriginalFilename());
             material.setContentType(file.getContentType());
         }
 
-        return startupMapper.toDto(materialRepository.saveAndFlush(material), true);
+        return resolveMaterialUrl(startupMapper.toDto(materialRepository.saveAndFlush(material), true));
     }
 
     @Transactional
@@ -803,7 +828,20 @@ public class StartupService {
         StartupMaterial material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material not found: " + materialId));
         requireManager(userId, material.getStartupId());
+        deleteStoredMaterialFile(material.getUrl());
         materialRepository.delete(material);
+    }
+
+    /** {@code stored} is null/blank for an external-link material (nothing of ours to delete), a
+     *  legacy full public URL (deleteIfHosted), or a private key from an upload since materials became
+     *  private (deleteByKey) — see resolveMaterialUrl for the same three-way distinction on read. */
+    private void deleteStoredMaterialFile(String stored) {
+        if (stored == null || stored.isBlank()) return;
+        if (fileStorageService.isHostedUrl(stored)) {
+            fileStorageService.deleteIfHosted(stored);
+        } else if (!stored.matches("(?i)^https?://.*")) {
+            fileStorageService.deleteByKey(stored);
+        }
     }
 
     private StartupMaterialType parseMaterialType(String label) {

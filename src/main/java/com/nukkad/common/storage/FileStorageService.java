@@ -212,6 +212,53 @@ public class FileStorageService {
             throw new BadRequestException("This file's contents don't match its declared type — try re-exporting or re-saving it");
         }
 
+        return new StoredPrivateMedia(putObjectPrivately(file, subDir, extension, contentType), kind);
+    }
+
+    /** Like {@link #storeMedia}, but private — same validation, no content-sniffing (that's specific to
+     *  chat, see {@link #storeConversationAttachment}'s own doc), object key returned instead of a URL.
+     *  For feed post attachments and startup materials: unlike an avatar or logo, these can carry a
+     *  post's or startup's own "connections only"/restricted visibility, so — unlike everything else
+     *  this service stores — they must never be reachable at a permanent public URL regardless of that
+     *  setting. The caller presigns a URL per request via {@link #presignGet}. */
+    public StoredPrivateMedia storePrivateMedia(MultipartFile file, String subDir) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("No file was uploaded");
+        }
+        String contentType = file.getContentType();
+        AttachmentKind kind = contentType == null ? null : ALLOWED_MEDIA_CONTENT_TYPES.get(contentType.toLowerCase());
+        if (kind == null) {
+            throw new BadRequestException("Only images, videos (mp4/webm/mov) or PDFs are allowed");
+        }
+
+        String original = file.getOriginalFilename() != null ? file.getOriginalFilename() : "";
+        String extension = original.contains(".") ? original.substring(original.lastIndexOf('.') + 1).toLowerCase() : "";
+        if (!ALLOWED_MEDIA_EXTENSIONS.contains(extension)) {
+            extension = contentType.substring(contentType.lastIndexOf('/') + 1);
+        }
+
+        return new StoredPrivateMedia(putObjectPrivately(file, subDir, extension, contentType), kind);
+    }
+
+    /** Like {@link #storeFeedAttachment}, but private — see {@link #storePrivateMedia}. */
+    public StoredPrivateMedia storePrivateFeedAttachment(MultipartFile file, String subDir) {
+        if (file == null || file.isEmpty()) {
+            throw new BadRequestException("No file was uploaded");
+        }
+        String contentType = file.getContentType();
+        if (contentType != null && ALLOWED_MEDIA_CONTENT_TYPES.containsKey(contentType.toLowerCase())) {
+            return storePrivateMedia(file, subDir);
+        }
+        String original = file.getOriginalFilename() != null ? file.getOriginalFilename() : "";
+        String extension = original.contains(".") ? original.substring(original.lastIndexOf('.') + 1).toLowerCase() : "";
+        String documentType = FEED_FILE_CONTENT_TYPES.get(extension);
+        if (documentType == null) {
+            throw new BadRequestException("Attach an image, a video (mp4/webm/mov), a PDF, or a Word, PowerPoint or Excel file");
+        }
+        return new StoredPrivateMedia(putObjectPrivately(file, subDir, extension, documentType), AttachmentKind.FILE);
+    }
+
+    private String putObjectPrivately(MultipartFile file, String subDir, String extension, String contentType) {
         String key = subDir + "/" + UUID.randomUUID() + "." + extension;
         try {
             PutObjectRequest request = PutObjectRequest.builder()
@@ -223,7 +270,7 @@ public class FileStorageService {
         } catch (IOException | S3Exception e) {
             throw new RuntimeException("Failed to store uploaded file", e);
         }
-        return new StoredPrivateMedia(key, kind);
+        return key;
     }
 
     /** The first {@link AttachmentContentValidator#HEADER_BYTES} bytes of the upload, for content-sniffing —
