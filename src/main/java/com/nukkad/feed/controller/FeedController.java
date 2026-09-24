@@ -6,10 +6,12 @@ import com.nukkad.feed.dto.AttachmentRef;
 import com.nukkad.feed.dto.CommentDto;
 import com.nukkad.feed.dto.CreateCommentRequest;
 import com.nukkad.feed.dto.CreatePostRequest;
+import com.nukkad.feed.dto.PersonalizedFeedResultDto;
 import com.nukkad.feed.dto.PostDto;
 import com.nukkad.feed.dto.PostLikeDto;
 import com.nukkad.feed.dto.TrendingTopicDto;
 import com.nukkad.feed.dto.UpdatePostRequest;
+import com.nukkad.feed.recommendation.PersonalizedFeedService;
 import com.nukkad.feed.service.FeedService;
 import com.nukkad.security.AuthenticatedUser;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -38,9 +40,11 @@ import java.util.List;
 public class FeedController {
 
     private final FeedService feedService;
+    private final PersonalizedFeedService personalizedFeedService;
 
-    public FeedController(FeedService feedService) {
+    public FeedController(FeedService feedService, PersonalizedFeedService personalizedFeedService) {
         this.feedService = feedService;
+        this.personalizedFeedService = personalizedFeedService;
     }
 
     @GetMapping
@@ -51,6 +55,26 @@ public class FeedController {
                                                      @RequestParam(defaultValue = "0") int page,
                                                      @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, type, tag, page, size)));
+    }
+
+    /**
+     * The canonical personalized feed — the same ranking service Home and the Feed page's main
+     * tab both call, so there is one recommendation engine, never two. Not a {@code PageResponse}:
+     * there's no stable "total" for a live-scored, dynamically-reranked feed. {@code excludeIds}
+     * is every post id the client has already been shown in this scroll session; the response's
+     * {@code hasMore} says whether another batch is worth fetching.
+     */
+    @GetMapping("/personalized")
+    public ApiResponse<PersonalizedFeedResultDto> personalized(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                                  @RequestParam(defaultValue = "10") int size,
+                                                                  @RequestParam(required = false) List<String> excludeIds) {
+        int boundedSize = Math.max(1, Math.min(size, 50));
+        // A defensively bounded scroll session: the candidate pool itself is capped at
+        // FeedRankingWeights.CANDIDATE_POOL_MAX_SIZE, so anything scrolled past further back than
+        // this has already fallen out of relevance — keep the most recent ids, not the oldest.
+        List<String> ids = excludeIds == null ? List.of()
+                : excludeIds.size() > 500 ? excludeIds.subList(excludeIds.size() - 500, excludeIds.size()) : excludeIds;
+        return ApiResponse.ok(personalizedFeedService.list(principal.id(), boundedSize, ids));
     }
 
     /** The hashtags most used lately in posts the caller may read, for the Home page's Trending Topics. */

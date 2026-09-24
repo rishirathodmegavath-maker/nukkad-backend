@@ -41,4 +41,64 @@ public final class FeedRankingWeights {
      *  scheduled job. 0.98/day ≈ a 34-day half-life — a month-old signal has faded to about half
      *  strength, recent behavior dominates, and nothing needs a cron sweep to stay meaningful. */
     public static final double AFFINITY_DECAY_FACTOR_PER_DAY = 0.98;
+
+    // ---- Ranking formula (PersonalizedFeedService) — six already-[0,1]-normalized sub-scores,
+    // combined as a weighted sum, same style as com.nukkad.matching.RecommendationWeights. Drops
+    // the pasted spec's separate "historical_like_similarity" (folded into topicAffinityMatch,
+    // which already IS the historical-like signal) and "engagement_prediction" (would need real
+    // ML — faking it would be dishonest, not "smallest safe version"). ----
+
+    public static final double WEIGHT_TOPIC_AFFINITY = 0.35;
+    public static final double WEIGHT_TRENDING = 0.20;
+    public static final double WEIGHT_FRESHNESS = 0.15;
+    public static final double WEIGHT_CREATOR_AFFINITY = 0.15;
+    public static final double WEIGHT_CONTENT_QUALITY = 0.10;
+    public static final double WEIGHT_EXPLORATION = 0.05;
+
+    /** How many days back the candidate pool looks for posts at all. */
+    public static final int CANDIDATE_WINDOW_DAYS = 30;
+
+    /** Hard ceiling on the in-memory candidate pool per request — bounded the same way
+     *  DiscussionService.trendingPage's TRENDING_POOL_SIZE is, so ranking is always O(pool), never
+     *  O(all posts). */
+    public static final int CANDIDATE_POOL_MAX_SIZE = 300;
+
+    /** Below this many candidates after the normal pool-gathering buckets, the pool is considered
+     *  too thin (a true cold-start user with no follows and a quiet trending window) and a final,
+     *  window-less fallback bucket tops it up — see PostCandidatePoolService. */
+    public static final int MIN_POOL_SIZE = 20;
+
+    /** How many of the viewer's top-scoring hashtags feed the affinity-matched candidate bucket. */
+    public static final int TOP_AFFINITY_TAG_COUNT = 10;
+
+    /** A raw (undecayed-cap) topic-affinity score is clamped to this before normalizing to [0,1] —
+     *  a handful of compounding likes/saves on one topic reaches "fully matched" without needing
+     *  an unbounded number of interactions first. */
+    public static final double TOPIC_AFFINITY_SCORE_CAP = 2.0;
+
+    /** Freshness half-life, in hours: a post this old is worth half of a brand-new one on this
+     *  factor alone (still just one of six weighted terms, not the whole score). */
+    public static final double FRESHNESS_HALF_LIFE_HOURS = 24.0;
+
+    /** Diminishing-returns cap for "how many times has the viewer positively engaged with this
+     *  author before" — same shape as RecommendationWeights' mutual-connections normalization. */
+    public static final double CREATOR_PAST_ENGAGEMENT_CAP = 5.0;
+
+    /** A candidate the viewer already liked/saved/opened within this window is demoted, not
+     *  excluded — the same specific post moving down/out of the immediate stack per the product
+     *  requirement, while liking it still raises the topic itself for everything else. */
+    public static final int RECENT_INTERACTION_WINDOW_DAYS = 3;
+
+    /** Multiplicative dampener applied to a recently-interacted-with candidate's final score. */
+    public static final double RECENT_INTERACTION_PENALTY = 0.3;
+
+    /** At most this many consecutive final-feed slots may share an author before diversification
+     *  defers the next same-author candidate — a soft cap, never dropping a post if nothing else
+     *  is available to fill the slot. */
+    public static final int MAX_CONSECUTIVE_SAME_AUTHOR = 2;
+
+    /** Roughly 1 in this many final slots is reserved for a "novel" candidate — one that doesn't
+     *  overlap the viewer's current top affinity topics at all — so the feed can discover new
+     *  interests instead of only ever narrowing toward existing ones. */
+    public static final int EXPLORATION_SLOT_RATIO = 10;
 }
