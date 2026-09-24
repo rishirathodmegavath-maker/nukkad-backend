@@ -4,6 +4,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.common.validation.LinkSanitizer;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.user.dto.AchievementDto;
@@ -223,11 +224,13 @@ public class UserService {
             java.util.Map<com.nukkad.user.entity.SocialPlatform, String> resolved = new java.util.HashMap<>();
             request.socialLinks().forEach((platform, url) -> {
                 if (url == null || url.isBlank()) return;
+                com.nukkad.user.entity.SocialPlatform parsed;
                 try {
-                    resolved.put(UserMapper.parsePlatform(platform), url.trim());
+                    parsed = UserMapper.parsePlatform(platform);
                 } catch (IllegalArgumentException e) {
                     throw new BadRequestException("Invalid social platform: " + platform);
                 }
+                resolved.put(parsed, LinkSanitizer.normalizeHttpUrl(url, "Social link"));
             });
             user.setSocialLinks(resolved);
         }
@@ -691,7 +694,8 @@ public class UserService {
         UserExperience saved = userExperienceRepository.save(UserExperience.builder()
                 .user(user).company(request.company()).role(request.role()).employmentType(request.employmentType())
                 .location(request.location()).startDate(request.startDate()).endDate(request.endDate())
-                .isCurrent(request.isCurrent()).description(request.description()).companyUrl(request.companyUrl())
+                .isCurrent(request.isCurrent()).description(request.description())
+                .companyUrl(LinkSanitizer.normalizeHttpUrl(request.companyUrl(), "Company website"))
                 .sortOrder(nextOrder).build());
         return userMapper.toDto(saved);
     }
@@ -709,7 +713,7 @@ public class UserService {
         e.setEndDate(request.endDate());
         e.setCurrent(request.isCurrent());
         e.setDescription(request.description());
-        e.setCompanyUrl(request.companyUrl());
+        e.setCompanyUrl(LinkSanitizer.normalizeHttpUrl(request.companyUrl(), "Company website"));
         return userMapper.toDto(userExperienceRepository.save(e));
     }
 
@@ -775,7 +779,9 @@ public class UserService {
         int nextOrder = userAchievementRepository.findByUser_IdOrderBySortOrderAsc(userId).size();
         UserAchievement saved = userAchievementRepository.save(UserAchievement.builder()
                 .user(user).title(request.title()).organization(request.organization()).achievedOn(request.achievedOn())
-                .description(request.description()).credentialUrl(request.credentialUrl()).sortOrder(nextOrder).build());
+                .description(request.description())
+                .credentialUrl(LinkSanitizer.normalizeHttpUrl(request.credentialUrl(), "Credential URL"))
+                .sortOrder(nextOrder).build());
         return userMapper.toDto(saved);
     }
 
@@ -788,7 +794,7 @@ public class UserService {
         a.setOrganization(request.organization());
         a.setAchievedOn(request.achievedOn());
         a.setDescription(request.description());
-        a.setCredentialUrl(request.credentialUrl());
+        a.setCredentialUrl(LinkSanitizer.normalizeHttpUrl(request.credentialUrl(), "Credential URL"));
         return userMapper.toDto(userAchievementRepository.save(a));
     }
 
@@ -813,7 +819,8 @@ public class UserService {
         int nextOrder = userCertificationRepository.findByUser_IdOrderBySortOrderAsc(userId).size();
         UserCertification saved = userCertificationRepository.save(UserCertification.builder()
                 .user(user).title(request.title()).issuingOrg(request.issuingOrg()).issueDate(request.issueDate())
-                .expiryDate(request.expiryDate()).credentialId(request.credentialId()).credentialUrl(request.credentialUrl())
+                .expiryDate(request.expiryDate()).credentialId(request.credentialId())
+                .credentialUrl(LinkSanitizer.normalizeHttpUrl(request.credentialUrl(), "Credential URL"))
                 .sortOrder(nextOrder).build());
         return userMapper.toDto(saved);
     }
@@ -828,7 +835,7 @@ public class UserService {
         c.setIssueDate(request.issueDate());
         c.setExpiryDate(request.expiryDate());
         c.setCredentialId(request.credentialId());
-        c.setCredentialUrl(request.credentialUrl());
+        c.setCredentialUrl(LinkSanitizer.normalizeHttpUrl(request.credentialUrl(), "Credential URL"));
         return userMapper.toDto(userCertificationRepository.save(c));
     }
 
@@ -853,7 +860,8 @@ public class UserService {
         int nextOrder = userPublicationRepository.findByUser_IdOrderBySortOrderAsc(userId).size();
         UserPublication saved = userPublicationRepository.save(UserPublication.builder()
                 .user(user).title(request.title()).publisher(request.publisher()).publishDate(request.publishDate())
-                .description(request.description()).url(request.url()).sortOrder(nextOrder).build());
+                .description(request.description()).url(LinkSanitizer.normalizeHttpUrl(request.url(), "Publication URL"))
+                .sortOrder(nextOrder).build());
         return userMapper.toDto(saved);
     }
 
@@ -866,7 +874,7 @@ public class UserService {
         p.setPublisher(request.publisher());
         p.setPublishDate(request.publishDate());
         p.setDescription(request.description());
-        p.setUrl(request.url());
+        p.setUrl(LinkSanitizer.normalizeHttpUrl(request.url(), "Publication URL"));
         return userMapper.toDto(userPublicationRepository.save(p));
     }
 
@@ -892,7 +900,9 @@ public class UserService {
         UserProject saved = userProjectRepository.save(UserProject.builder()
                 .user(user).title(request.title()).description(request.description())
                 .technologies(UserMapper.joinTechnologies(request.technologies()))
-                .imageUrl(request.imageUrl()).githubUrl(request.githubUrl()).liveUrl(request.liveUrl())
+                .imageUrl(request.imageUrl())
+                .githubUrl(LinkSanitizer.normalizeHttpUrl(request.githubUrl(), "GitHub URL"))
+                .liveUrl(LinkSanitizer.normalizeHttpUrl(request.liveUrl(), "Live project URL"))
                 .startDate(request.startDate()).endDate(request.endDate())
                 .projectType(parseProjectType(request.projectType()))
                 .sortOrder(nextOrder).build());
@@ -908,8 +918,8 @@ public class UserService {
         p.setDescription(request.description());
         p.setTechnologies(UserMapper.joinTechnologies(request.technologies()));
         p.setImageUrl(request.imageUrl());
-        p.setGithubUrl(request.githubUrl());
-        p.setLiveUrl(request.liveUrl());
+        p.setGithubUrl(LinkSanitizer.normalizeHttpUrl(request.githubUrl(), "GitHub URL"));
+        p.setLiveUrl(LinkSanitizer.normalizeHttpUrl(request.liveUrl(), "Live project URL"));
         p.setStartDate(request.startDate());
         p.setEndDate(request.endDate());
         p.setProjectType(parseProjectType(request.projectType()));
