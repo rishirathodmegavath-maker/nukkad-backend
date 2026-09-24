@@ -4,6 +4,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.validation.LinkSanitizer;
 import com.nukkad.investor.dto.CreateInvestorProfileRequest;
 import com.nukkad.investor.dto.InvestorProfileDto;
 import com.nukkad.investor.dto.UpdateInvestorProfileRequest;
@@ -102,7 +103,7 @@ public class InvestorProfileService {
                 .ticketMin(request.ticketMin())
                 .ticketMax(request.ticketMax())
                 .portfolioCount(request.portfolioCount() == null ? 0 : request.portfolioCount())
-                .website(request.website())
+                .website(LinkSanitizer.normalizeHttpUrl(request.website(), "Website"))
                 .build();
         profile = investorProfileRepository.saveAndFlush(profile);
 
@@ -127,7 +128,7 @@ public class InvestorProfileService {
         if (request.ticketMin() != null) profile.setTicketMin(request.ticketMin());
         if (request.ticketMax() != null) profile.setTicketMax(request.ticketMax());
         if (request.portfolioCount() != null) profile.setPortfolioCount(request.portfolioCount());
-        if (request.website() != null) profile.setWebsite(request.website());
+        if (request.website() != null) profile.setWebsite(LinkSanitizer.normalizeHttpUrl(request.website(), "Website"));
 
         return toDto(investorProfileRepository.saveAndFlush(profile), userId);
     }
