@@ -9,6 +9,8 @@ import com.nukkad.messaging.entity.ConversationParticipant;
 import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.user.repository.ConnectionRepository;
+import com.nukkad.user.repository.UserBlockRepository;
+import com.nukkad.user.service.UserPrivacySettingsService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -23,6 +25,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -36,13 +39,15 @@ class GroupConversationServiceTest {
     @Mock private ConversationRepository conversationRepository;
     @Mock private ConversationParticipantRepository participantRepository;
     @Mock private ConnectionRepository connectionRepository;
+    @Mock private UserBlockRepository userBlockRepository;
+    @Mock private UserPrivacySettingsService privacySettingsService;
     @Mock private FileStorageService fileStorageService;
     @Mock private SimpMessagingTemplate messagingTemplate;
     @Mock private ConversationService conversationService;
 
     private GroupConversationService service() {
         return new GroupConversationService(conversationRepository, participantRepository, connectionRepository,
-                fileStorageService, messagingTemplate, conversationService);
+                userBlockRepository, privacySettingsService, fileStorageService, messagingTemplate, conversationService);
     }
 
     private Conversation group() {
@@ -73,6 +78,10 @@ class GroupConversationServiceTest {
     void creatingAGroupMakesTheCreatorAnAdminAndEveryoneElseAMember() {
         when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
         when(connectionRepository.existsAcceptedBetween("alice", "carol")).thenReturn(true);
+        // bob and carol have no relationship with each other at all (unstubbed connectionRepository
+        // call between them defaults to false) — that's fine as long as neither has blocked/restricted
+        // the other, which is what this stub represents.
+        when(privacySettingsService.canMessage(anyString(), anyBoolean())).thenReturn(true);
         when(conversationRepository.saveAndFlush(any(Conversation.class))).thenAnswer(inv -> {
             Conversation c = inv.getArgument(0);
             c.setId("conv1");
@@ -202,6 +211,37 @@ class GroupConversationServiceTest {
         when(connectionRepository.existsAcceptedBetween("alice", "mallory")).thenReturn(false);
 
         assertThatThrownBy(() -> service().addMembers("alice", "conv1", List.of("mallory")))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(participantRepository, never()).save(any());
+    }
+
+    @Test
+    void creatingAGroupRejectsTwoNewMembersWhoHaveBlockedEachOther() {
+        // Both are accepted connections of the creator (so the existing per-member check passes),
+        // but bob and carol have blocked each other — a relationship the old code never looked at.
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(connectionRepository.existsAcceptedBetween("alice", "carol")).thenReturn(true);
+        when(userBlockRepository.existsBetween("bob", "carol")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().createGroup("alice", "Trip Planning", List.of("bob", "carol")))
+                .isInstanceOf(ForbiddenException.class);
+
+        verify(conversationRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void addingAMemberIsRejectedWhenAnExistingMemberHasBlockedThem() {
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group()));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice"))
+                .thenReturn(Optional.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        when(connectionRepository.existsAcceptedBetween("alice", "dave")).thenReturn(true);
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1")).thenReturn(List.of(
+                participant("alice", ConversationParticipant.Role.ADMIN, Instant.now()),
+                participant("bob", ConversationParticipant.Role.MEMBER, Instant.now())));
+        when(userBlockRepository.existsBetween("dave", "bob")).thenReturn(true);
+
+        assertThatThrownBy(() -> service().addMembers("alice", "conv1", List.of("dave")))
                 .isInstanceOf(ForbiddenException.class);
 
         verify(participantRepository, never()).save(any());
