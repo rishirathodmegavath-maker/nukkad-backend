@@ -75,6 +75,14 @@ public class Post {
     @Column(name = "author_id", nullable = false, columnDefinition = "CHAR(36)")
     private String authorId;
 
+    /** True only for a post an admin published from the admin panel without attributing it to a
+     *  member — {@code authorId} is then the admin's own account, but the public-facing author
+     *  shown for it is the BuildAdda platform identity, not that admin account's name. False for
+     *  every ordinary member post and for an admin-published post attributed to a real member. */
+    @Column(name = "posted_as_platform", nullable = false)
+    @Builder.Default
+    private boolean postedAsPlatform = false;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     @Builder.Default

@@ -451,6 +451,7 @@ class FeedServiceTest {
         PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null), "  ", "1.2.3.4");
 
         assertThat(dto.authorId()).isEqualTo("admin-1");
+        assertThat(dto.postedAsPlatform()).isTrue();
         verify(auditService).log(eq("admin-1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_POST_CREATED),
                 eq("Post"), any(), eq("1.2.3.4"), any());
         verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
@@ -466,6 +467,7 @@ class FeedServiceTest {
                 "  Author@Example.com ", "1.2.3.4");
 
         assertThat(dto.authorId()).isEqualTo("author-9");
+        assertThat(dto.postedAsPlatform()).isFalse();
         verify(auditService).log(eq("admin-1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_POST_CREATED),
                 eq("Post"), any(), eq("1.2.3.4"), any());
         verify(notificationService).notify(eq("author-9"), any(), anyString(), anyString(), any(), eq("admin-1"));
