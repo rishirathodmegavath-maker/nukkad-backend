@@ -119,12 +119,19 @@ public class FeedService {
         // Only posts this viewer may read (public, their own, or connections-only from a connection).
         String tagFilter = (tag == null || tag.isBlank()) ? null : normalizedTagOrNoMatch(tag);
         Page<Post> posts = postRepository.findVisibleTo(viewerId, author, typeFilter, tagFilter, pageable);
+        List<PostDto> dtos = toDtoList(posts.getContent(), viewerId);
+        return new PageImpl<>(dtos, pageable, posts.getTotalElements());
+    }
 
-        List<String> postIds = posts.getContent().stream().map(Post::getId).toList();
+    /** The like/save batching every list-of-posts endpoint needs — exactly 2 extra queries
+     *  regardless of how many posts are in {@code posts}, never N+1. Used by {@link #list} and by
+     *  {@code PersonalizedFeedService} so the personalized feed doesn't re-implement this. */
+    @Transactional(readOnly = true)
+    public List<PostDto> toDtoList(List<Post> posts, String viewerId) {
+        List<String> postIds = posts.stream().map(Post::getId).toList();
         Set<String> likedIds = postIds.isEmpty() ? Set.of() : postLikeRepository.findLikedPostIds(viewerId, postIds);
         Set<String> savedIds = postIds.isEmpty() ? Set.of() : postSaveRepository.findSavedPostIds(viewerId, postIds);
-
-        return posts.map(p -> toDto(p, likedIds.contains(p.getId()), savedIds.contains(p.getId())));
+        return posts.stream().map(p -> toDto(p, likedIds.contains(p.getId()), savedIds.contains(p.getId()))).toList();
     }
 
     public enum SavedPostsSort { NEWEST_SAVED, OLDEST_SAVED, NEWEST_POST, OLDEST_POST }

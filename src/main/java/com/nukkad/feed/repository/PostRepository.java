@@ -123,6 +123,42 @@ public interface PostRepository extends JpaRepository<Post, String> {
 
     long countByTypeAndRemovedByAdminFalseAndVisibility(Post.Type type, Post.Visibility visibility);
 
+    // ---- Personalized feed candidate pool (com.nukkad.feed.recommendation.PostCandidatePoolService) ----
+    // Every query here folds in PostVisibilityQuery.VISIBLE_TO_VIEWER and excludes already-shown/
+    // hidden posts via one merged NOT IN parameter. excludeIds must never be an empty collection —
+    // pass a single sentinel value that can't match a real id when there's nothing to exclude
+    // (same technique DiscussionService already uses for its own "no such tag" sentinel).
+
+    /** Recent posts from a specific set of authors (followed creators + accepted connections) —
+     *  one of three candidate buckets. {@code authorIds} must never be empty either, for the same
+     *  reason as {@code excludeIds}. */
+    @Query("select p from Post p where p.removedByAdmin = false "
+            + "and p.authorId in :authorIds and p.createdAt >= :since and p.id not in :excludeIds "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc")
+    List<Post> findRecentByAuthors(@Param("viewerId") String viewerId, @Param("authorIds") Collection<String> authorIds,
+                                    @Param("since") Instant since, @Param("excludeIds") Collection<String> excludeIds,
+                                    Pageable pageable);
+
+    /** Recent posts carrying at least one of a set of hashtags — the affinity-matched bucket. */
+    @Query("select p from Post p where p.removedByAdmin = false "
+            + "and exists (select h.id from PostHashtag h where h.postId = p.id and h.tag in :tags) "
+            + "and p.createdAt >= :since and p.id not in :excludeIds "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc")
+    List<Post> findRecentByTags(@Param("viewerId") String viewerId, @Param("tags") Collection<String> tags,
+                                 @Param("since") Instant since, @Param("excludeIds") Collection<String> excludeIds,
+                                 Pageable pageable);
+
+    /** Recent posts with no author/tag filter — the trending/general bucket, and (called again
+     *  with {@code since} pushed back to the beginning of time) the cold-start/thin-pool fallback. */
+    @Query("select p from Post p where p.removedByAdmin = false "
+            + "and p.createdAt >= :since and p.id not in :excludeIds "
+            + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
+            + "order by p.createdAt desc")
+    List<Post> findRecentGeneral(@Param("viewerId") String viewerId, @Param("since") Instant since,
+                                  @Param("excludeIds") Collection<String> excludeIds, Pageable pageable);
+
     /** Everyone who has started a public discussion — half of the "participants" platform stat (see
      *  PostCommentRepository for the reply-side half); unioned and de-duplicated in Java. */
     @Query("select distinct p.authorId from Post p where p.type = com.nukkad.feed.entity.Post.Type.discussion "
