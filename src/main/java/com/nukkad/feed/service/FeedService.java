@@ -17,12 +17,17 @@ import com.nukkad.feed.dto.UpdatePostRequest;
 import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.entity.PostAttachment;
 import com.nukkad.feed.entity.PostComment;
+import com.nukkad.feed.entity.PostHide;
+import com.nukkad.feed.entity.PostInteraction;
 import com.nukkad.feed.entity.PostLike;
 import com.nukkad.feed.entity.PostSave;
 import com.nukkad.feed.dto.TrendingTopicDto;
 import com.nukkad.feed.entity.PostHashtag;
+import com.nukkad.feed.recommendation.UserTopicAffinityService;
 import com.nukkad.feed.repository.PostCommentRepository;
 import com.nukkad.feed.repository.PostHashtagRepository;
+import com.nukkad.feed.repository.PostHideRepository;
+import com.nukkad.feed.repository.PostInteractionRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
@@ -66,6 +71,9 @@ public class FeedService {
     private final PostLikeRepository postLikeRepository;
     private final PostCommentRepository postCommentRepository;
     private final PostSaveRepository postSaveRepository;
+    private final PostHideRepository postHideRepository;
+    private final PostInteractionRepository postInteractionRepository;
+    private final UserTopicAffinityService userTopicAffinityService;
     private final FileStorageService fileStorageService;
     private final AuditService auditService;
     private final ConnectionRepository connectionRepository;
@@ -75,6 +83,8 @@ public class FeedService {
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
                         PostCommentRepository postCommentRepository, PostSaveRepository postSaveRepository,
+                        PostHideRepository postHideRepository, PostInteractionRepository postInteractionRepository,
+                        UserTopicAffinityService userTopicAffinityService,
                         FileStorageService fileStorageService, AuditService auditService,
                         ConnectionRepository connectionRepository, PostHashtagRepository postHashtagRepository,
                         UserRepository userRepository, NotificationService notificationService) {
@@ -82,12 +92,23 @@ public class FeedService {
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
         this.postSaveRepository = postSaveRepository;
+        this.postHideRepository = postHideRepository;
+        this.postInteractionRepository = postInteractionRepository;
+        this.userTopicAffinityService = userTopicAffinityService;
         this.fileStorageService = fileStorageService;
         this.auditService = auditService;
         this.connectionRepository = connectionRepository;
         this.postHashtagRepository = postHashtagRepository;
         this.userRepository = userRepository;
         this.notificationService = notificationService;
+    }
+
+    /** Records a real behavioral-signal row and bumps the viewer's topic affinity — called after
+     *  the triggering action (like/save/comment/hide/open) has already succeeded, never instead
+     *  of it, so a signal-recording failure can't be confused with the action itself failing. */
+    private void recordInteraction(String viewerId, Post post, PostInteraction.Type type) {
+        postInteractionRepository.save(PostInteraction.builder().userId(viewerId).postId(post.getId()).interactionType(type).build());
+        userTopicAffinityService.recordSignal(viewerId, post, type);
     }
 
     @Transactional(readOnly = true)
@@ -266,6 +287,7 @@ public class FeedService {
         // The modifying query above clears the persistence context, so this is a fresh read.
         Post refreshed = postRepository.findById(postId)
                 .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
+        recordInteraction(viewerId, refreshed, liked ? PostInteraction.Type.LIKE : PostInteraction.Type.UNLIKE);
         boolean saved = postSaveRepository.findByPostIdAndUserId(postId, viewerId).isPresent();
         return toDto(refreshed, liked, saved);
     }
@@ -283,15 +305,53 @@ public class FeedService {
             postSaveRepository.save(PostSave.builder().postId(postId).userId(viewerId).build());
             saved = true;
         }
+        recordInteraction(viewerId, post, saved ? PostInteraction.Type.SAVE : PostInteraction.Type.UNSAVE);
         boolean liked = postLikeRepository.findByPostIdAndUserId(postId, viewerId).isPresent();
         return toDto(post, liked, saved);
     }
 
-    @Transactional(readOnly = true)
+    /** The only "share" this app has is forwarding a post into a DM (see ConversationService) —
+     *  called right after that succeeds, so a share still counts as a real signal even though
+     *  there's no public repost/share count to back it with. */
+    @Transactional
+    public void recordShare(String viewerId, String postId) {
+        Post post = requireVisiblePost(viewerId, postId);
+        recordInteraction(viewerId, post, PostInteraction.Type.SHARE);
+    }
+
+    /** Mirrors {@link #toggleSave} exactly — the personalized feed's strong-negative signal and
+     *  its own candidate-pool exclusion (see PostHideRepository), never a topic-level exclusion:
+     *  liking other posts in the same topic still raises it, this specific post just won't
+     *  reappear in the viewer's personalized feed. */
+    @Transactional
+    public PostDto toggleHide(String viewerId, String postId) {
+        Post post = requireVisiblePost(viewerId, postId);
+
+        var existing = postHideRepository.findByPostIdAndUserId(postId, viewerId);
+        boolean hidden;
+        if (existing.isPresent()) {
+            postHideRepository.deleteByPostIdAndUserId(postId, viewerId);
+            hidden = false;
+        } else {
+            postHideRepository.save(PostHide.builder().postId(postId).userId(viewerId).build());
+            hidden = true;
+        }
+        recordInteraction(viewerId, post, hidden ? PostInteraction.Type.HIDE : PostInteraction.Type.UNHIDE);
+        boolean liked = postLikeRepository.findByPostIdAndUserId(postId, viewerId).isPresent();
+        boolean saved = postSaveRepository.findByPostIdAndUserId(postId, viewerId).isPresent();
+        return toDto(post, liked, saved);
+    }
+
+    @Transactional
     public PostDto get(String viewerId, String postId) {
         Post post = requireVisiblePost(viewerId, postId);
         if (post.isRemovedByAdmin()) {
             throw new ResourceNotFoundException("Post not found: " + postId);
+        }
+        // Never record a viewer opening their own post — that's not a discovery signal, and would
+        // otherwise fire on every single glance at something the author already wrote.
+        if (!post.getAuthorId().equals(viewerId)) {
+            recordInteraction(viewerId, post, PostInteraction.Type.OPEN);
         }
         return toDto(post, viewerId);
     }
@@ -495,6 +555,7 @@ public class FeedService {
                 .build());
 
         postRepository.incrementCommentsCount(postId);
+        recordInteraction(authorId, post, PostInteraction.Type.COMMENT);
 
         return toCommentDto(comment, 0);
     }

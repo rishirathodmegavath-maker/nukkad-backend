@@ -15,8 +15,11 @@ import com.nukkad.feed.entity.PostComment;
 import com.nukkad.feed.entity.PostLike;
 import com.nukkad.feed.entity.PostSave;
 import com.nukkad.feed.entity.PostHashtag;
+import com.nukkad.feed.recommendation.UserTopicAffinityService;
 import com.nukkad.feed.repository.PostCommentRepository;
 import com.nukkad.feed.repository.PostHashtagRepository;
+import com.nukkad.feed.repository.PostHideRepository;
+import com.nukkad.feed.repository.PostInteractionRepository;
 import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
@@ -58,6 +61,9 @@ class FeedServiceTest {
     @Mock private PostLikeRepository postLikeRepository;
     @Mock private PostCommentRepository postCommentRepository;
     @Mock private PostSaveRepository postSaveRepository;
+    @Mock private PostHideRepository postHideRepository;
+    @Mock private PostInteractionRepository postInteractionRepository;
+    @Mock private UserTopicAffinityService userTopicAffinityService;
     @Mock private FileStorageService fileStorageService;
     @Mock private AuditService auditService;
     @Mock private ConnectionRepository connectionRepository;
@@ -67,6 +73,7 @@ class FeedServiceTest {
 
     private FeedService service() {
         return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
+                postHideRepository, postInteractionRepository, userTopicAffinityService,
                 fileStorageService, auditService, connectionRepository, postHashtagRepository,
                 userRepository, notificationService);
     }

@@ -219,6 +219,7 @@ public class ConversationService {
         if (normalizedPostId != null) {
             // Fail fast (404) if the post doesn't exist rather than persisting a dangling reference.
             feedService.get(senderId, normalizedPostId);
+            feedService.recordShare(senderId, normalizedPostId);
         }
         String normalizedReplyToId = (replyToMessageId == null || replyToMessageId.isBlank()) ? null : replyToMessageId;
         if (normalizedReplyToId != null) {
