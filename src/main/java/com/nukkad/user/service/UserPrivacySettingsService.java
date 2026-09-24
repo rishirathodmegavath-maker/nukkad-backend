@@ -3,8 +3,10 @@ package com.nukkad.user.service;
 import com.nukkad.user.entity.ConnectPermission;
 import com.nukkad.user.entity.MessagePermission;
 import com.nukkad.user.entity.ProfileVisibility;
+import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.UserPrivacySettings;
 import com.nukkad.user.repository.UserPrivacySettingsRepository;
+import com.nukkad.user.repository.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,9 +19,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class UserPrivacySettingsService {
 
     private final UserPrivacySettingsRepository repository;
+    private final UserRepository userRepository;
 
-    public UserPrivacySettingsService(UserPrivacySettingsRepository repository) {
+    public UserPrivacySettingsService(UserPrivacySettingsRepository repository, UserRepository userRepository) {
         this.repository = repository;
+        this.userRepository = userRepository;
     }
 
     @Transactional(readOnly = true)
@@ -39,9 +43,12 @@ public class UserPrivacySettingsService {
         return repository.save(settings);
     }
 
-    /** Owner can always message themselves is not a real case (self-messaging doesn't exist); this is for other viewers. */
+    /** Owner can always message themselves is not a real case (self-messaging doesn't exist); this is for other viewers.
+     *  An admin account is never messageable — not a per-user setting, so it isn't configurable via
+     *  {@link #updateSettings} and can't be opened up by mistake. */
     @Transactional(readOnly = true)
     public boolean canMessage(String recipientId, boolean isConnected) {
+        if (userRepository.existsByIdAndRole(recipientId, SecurityRole.ADMIN)) return false;
         MessagePermission permission = getSettings(recipientId).getMessagePermission();
         return switch (permission) {
             case EVERYONE -> true;
