@@ -790,6 +790,7 @@ public class StartupService {
         } else if (file != null && !file.isEmpty()) {
             FileStorageService.StoredMedia media = fileStorageService.storeMedia(file, "startup-materials");
             requireExpectedKind(material.getMaterialType(), media.kind());
+            fileStorageService.deleteIfHosted(material.getUrl());
             material.setUrl(media.url());
             material.setOriginalFileName(file.getOriginalFilename());
             material.setContentType(file.getContentType());
@@ -803,6 +804,7 @@ public class StartupService {
         StartupMaterial material = materialRepository.findById(materialId)
                 .orElseThrow(() -> new ResourceNotFoundException("Material not found: " + materialId));
         requireManager(userId, material.getStartupId());
+        fileStorageService.deleteIfHosted(material.getUrl());
         materialRepository.delete(material);
     }
 

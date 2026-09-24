@@ -770,6 +770,38 @@ class StartupServiceTest {
         verify(materialRepository, never()).delete(any(StartupMaterial.class));
     }
 
+    @Test
+    void deletingAMaterialAlsoDeletesItsHostedFile() {
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.PITCH_DECK).url("https://storage.example.com/startup-materials/x.pdf")
+                .createdByUserId("f1").build();
+        when(materialRepository.findById("mat1")).thenReturn(Optional.of(material));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+
+        service().deleteMaterial("f1", "mat1");
+
+        verify(fileStorageService).deleteIfHosted("https://storage.example.com/startup-materials/x.pdf");
+        verify(materialRepository).delete(material);
+    }
+
+    @Test
+    void replacingAMaterialsFileDeletesThePreviousOne() {
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.PITCH_DECK).url("https://storage.example.com/startup-materials/old.pdf")
+                .createdByUserId("f1").build();
+        when(materialRepository.findById("mat1")).thenReturn(Optional.of(material));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        MockMultipartFile file = new MockMultipartFile("file", "new.pdf", "application/pdf", "x".getBytes());
+        when(fileStorageService.storeMedia(any(), eq("startup-materials")))
+                .thenReturn(new FileStorageService.StoredMedia("https://storage.example.com/startup-materials/new.pdf", FileStorageService.AttachmentKind.PDF));
+        when(materialRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupMaterialDto dto = service().updateMaterial("f1", "mat1", null, null, file);
+
+        verify(fileStorageService).deleteIfHosted("https://storage.example.com/startup-materials/old.pdf");
+        assertThat(dto.url()).isEqualTo("https://storage.example.com/startup-materials/new.pdf");
+    }
+
     // ---- profile completion percentage is real, not fabricated ----
 
     @Test

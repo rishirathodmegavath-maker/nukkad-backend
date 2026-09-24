@@ -7,7 +7,9 @@ import com.nukkad.feed.dto.PostDto;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.feed.dto.AttachmentRef;
 import com.nukkad.feed.dto.CreateCommentRequest;
+import com.nukkad.feed.entity.PostAttachment;
 import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.entity.PostComment;
 import com.nukkad.feed.entity.PostLike;
@@ -513,6 +515,46 @@ class FeedServiceTest {
 
     private CreatePostRequest request(String content, String type, String visibility, String linkUrl) {
         return new CreatePostRequest(content, type, null, null, visibility, linkUrl);
+    }
+
+    // ---- an attachment must be a file this server actually stored, not an arbitrary client string ----
+
+    @Test
+    void anAttachmentUrlThisServerDidNotHostIsRejected() {
+        when(fileStorageService.isHostedUrl("javascript:alert(1)")).thenReturn(false);
+        CreatePostRequest req = new CreatePostRequest("hi", "text", null,
+                List.of(new AttachmentRef("javascript:alert(1)", "IMAGE", "x")), null, null);
+
+        assertThatThrownBy(() -> service().create("author-1", req)).isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void anAttachmentUrlThisServerHostedIsAccepted() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(fileStorageService.isHostedUrl("https://cdn.example/x.png")).thenReturn(true);
+        CreatePostRequest req = new CreatePostRequest("hi", "text", null,
+                List.of(new AttachmentRef("https://cdn.example/x.png", "IMAGE", "x")), null, null);
+
+        PostDto dto = service().create("author-1", req);
+
+        assertThat(dto.attachments()).hasSize(1);
+    }
+
+    // ---- deleting a post also deletes its stored attachments, so they don't stay live forever ----
+
+    @Test
+    void deletingAPostAlsoDeletesItsHostedAttachments() {
+        Post post = post("post-1");
+        post.getAttachments().add(PostAttachment.builder().url("https://cdn.example/a.png").kind(PostAttachment.Kind.IMAGE).build());
+        post.getAttachments().add(PostAttachment.builder().url("https://cdn.example/b.png").kind(PostAttachment.Kind.IMAGE).build());
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+
+        service().delete("author-1", "post-1");
+
+        verify(fileStorageService).deleteIfHosted("https://cdn.example/a.png");
+        verify(fileStorageService).deleteIfHosted("https://cdn.example/b.png");
+        verify(postRepository).delete(post);
     }
 
     private Post connectionsOnlyPost() {

@@ -178,6 +178,13 @@ public class FeedService {
 
         for (int i = 0; i < attachmentRefs.size(); i++) {
             AttachmentRef ref = attachmentRefs.get(i);
+            // An attachment must be a file this server actually stored via /feed/attachments — not an
+            // arbitrary client-supplied string. Without this, a caller could skip the real upload
+            // endpoint entirely and hand back e.g. a javascript: URI, which every viewer of the post
+            // (public by default) would then have served back to them as attachment content.
+            if (!fileStorageService.isHostedUrl(ref.url())) {
+                throw new BadRequestException("Invalid attachment");
+            }
             post.getAttachments().add(PostAttachment.builder()
                     .post(post)
                     .url(ref.url())
@@ -317,6 +324,7 @@ public class FeedService {
     @Transactional
     public void delete(String viewerId, String postId) {
         Post post = requireOwnedPost(viewerId, postId);
+        post.getAttachments().forEach(a -> fileStorageService.deleteIfHosted(a.getUrl()));
         postRepository.delete(post);
     }
 
