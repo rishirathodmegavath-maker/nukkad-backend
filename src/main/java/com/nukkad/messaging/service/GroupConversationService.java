@@ -10,6 +10,8 @@ import com.nukkad.messaging.entity.ConversationParticipant;
 import com.nukkad.messaging.repository.ConversationParticipantRepository;
 import com.nukkad.messaging.repository.ConversationRepository;
 import com.nukkad.user.repository.ConnectionRepository;
+import com.nukkad.user.repository.UserBlockRepository;
+import com.nukkad.user.service.UserPrivacySettingsService;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,6 +35,8 @@ public class GroupConversationService {
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
     private final ConnectionRepository connectionRepository;
+    private final UserBlockRepository userBlockRepository;
+    private final UserPrivacySettingsService privacySettingsService;
     private final FileStorageService fileStorageService;
     private final SimpMessagingTemplate messagingTemplate;
     private final ConversationService conversationService;
@@ -40,15 +44,33 @@ public class GroupConversationService {
     public GroupConversationService(ConversationRepository conversationRepository,
                                      ConversationParticipantRepository participantRepository,
                                      ConnectionRepository connectionRepository,
+                                     UserBlockRepository userBlockRepository,
+                                     UserPrivacySettingsService privacySettingsService,
                                      FileStorageService fileStorageService,
                                      SimpMessagingTemplate messagingTemplate,
                                      ConversationService conversationService) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.connectionRepository = connectionRepository;
+        this.userBlockRepository = userBlockRepository;
+        this.privacySettingsService = privacySettingsService;
         this.fileStorageService = fileStorageService;
         this.messagingTemplate = messagingTemplate;
         this.conversationService = conversationService;
+    }
+
+    /** The 1:1 equivalent (ConversationService#requireCanInitiateConversation) only ever checks the
+     *  recipient's own setting, because only the sender initiates a DM. A group is many-to-many —
+     *  once two people share a group, either can message the other — so both directions' block and
+     *  privacy state matter here, not just the adder's relationship to the person being added. */
+    private void requireCanShareGroupWith(String a, String b) {
+        if (userBlockRepository.existsBetween(a, b)) {
+            throw new ForbiddenException("Can't add this member to the group");
+        }
+        boolean connected = connectionRepository.existsAcceptedBetween(a, b);
+        if (!privacySettingsService.canMessage(a, connected) || !privacySettingsService.canMessage(b, connected)) {
+            throw new ForbiddenException("Can't add this member to the group");
+        }
     }
 
     @Transactional
@@ -61,6 +83,15 @@ public class GroupConversationService {
         for (String memberId : members) {
             if (!connectionRepository.existsAcceptedBetween(creatorId, memberId)) {
                 throw new ForbiddenException("You can only add your connections to a group");
+            }
+        }
+        // The creator↔member pairs above are already safe (an accepted connection rules out a block,
+        // and canMessage is always true once connected) — but two members being added together may
+        // have no relationship with each other at all, and that pairing was never checked before.
+        List<String> memberList = new ArrayList<>(members);
+        for (int i = 0; i < memberList.size(); i++) {
+            for (int j = i + 1; j < memberList.size(); j++) {
+                requireCanShareGroupWith(memberList.get(i), memberList.get(j));
             }
         }
 
@@ -107,12 +138,33 @@ public class GroupConversationService {
     @Transactional
     public ConversationDto addMembers(String viewerId, String conversationId, List<String> memberIds) {
         Conversation conversation = requireGroupAdmin(viewerId, conversationId);
+        // Same gap as createGroup's pairwise check, but against whoever is already in the group: the
+        // adder↔target check above says nothing about the target's relationship with every OTHER
+        // member already sharing this group, who they'd be forced into contact with by joining.
+        // Excludes viewerId: the adder↔target pair is already fully covered by the connection check
+        // just below (connected ⟹ not blocked, and canMessage is always true once connected), so
+        // re-running it here would just repeat that check with swapped arguments for no benefit.
+        List<String> otherMemberIds = participantRepository.findByConversationIdAndDeletedAtIsNull(conversationId).stream()
+                .map(ConversationParticipant::getUserId)
+                .filter(id -> !id.equals(viewerId))
+                .toList();
+        List<String> newlyActivated = new ArrayList<>();
         for (String memberId : memberIds) {
             if (memberId.equals(viewerId)) continue;
             if (!connectionRepository.existsAcceptedBetween(viewerId, memberId)) {
                 throw new ForbiddenException("You can only add your connections to a group");
             }
             var existing = participantRepository.findByConversationIdAndUserId(conversationId, memberId);
+            boolean alreadyActive = existing.isPresent() && existing.get().getDeletedAt() == null;
+            if (!alreadyActive) {
+                for (String otherMemberId : otherMemberIds) {
+                    if (!otherMemberId.equals(memberId)) requireCanShareGroupWith(memberId, otherMemberId);
+                }
+                for (String other : newlyActivated) {
+                    requireCanShareGroupWith(memberId, other);
+                }
+                newlyActivated.add(memberId);
+            }
             if (existing.isPresent()) {
                 ConversationParticipant participant = existing.get();
                 if (participant.getDeletedAt() == null) continue; // already an active member
