@@ -53,6 +53,15 @@ import java.util.stream.Collectors;
 @Service
 public class FeedService {
 
+    /** Every attachment key this service ever stores lives under this prefix — used both to store new
+     *  ones and, in {@link #create}, to reject a client-supplied key that doesn't (see that method). */
+    private static final String FEED_ATTACHMENT_SUBDIR = "feed";
+
+    /** How long a minted attachment URL stays valid — mirrors ConversationService's own
+     *  ATTACHMENT_URL_TTL (same reasoning: long enough that a normal open-tab session never sees a
+     *  broken image, short enough that a leaked URL isn't a standing door; a refetch mints a fresh one). */
+    private static final Duration ATTACHMENT_URL_TTL = Duration.ofHours(6);
+
     private final PostRepository postRepository;
     private final PostLikeRepository postLikeRepository;
     private final PostCommentRepository postCommentRepository;
@@ -178,6 +187,16 @@ public class FeedService {
 
         for (int i = 0; i < attachmentRefs.size(); i++) {
             AttachmentRef ref = attachmentRefs.get(i);
+            // An attachment must be a key this server itself minted via /feed/attachments (always under
+            // FEED_ATTACHMENT_SUBDIR/) — not an arbitrary client-supplied string. Without this, a caller
+            // could hand back e.g. a javascript: URI (served to every public viewer as attachment
+            // content), or — now that attachments are private, stored+presigned by key rather than by a
+            // world-readable URL — the key of a file from an unrelated, more sensitive private prefix
+            // (like a chat attachment under messages/), which this code would otherwise happily presign
+            // and embed into a public post, leaking a file its real owner never made public.
+            if (!ref.url().startsWith(FEED_ATTACHMENT_SUBDIR + "/") || ref.url().contains("..")) {
+                throw new BadRequestException("Invalid attachment");
+            }
             post.getAttachments().add(PostAttachment.builder()
                     .post(post)
                     .url(ref.url())
@@ -317,6 +336,15 @@ public class FeedService {
     @Transactional
     public void delete(String viewerId, String postId) {
         Post post = requireOwnedPost(viewerId, postId);
+        // A legacy attachment is still a full public URL (deleteIfHosted); every attachment stored
+        // since attachments became private is a bare key (deleteByKey) — see resolveAttachmentUrl.
+        post.getAttachments().forEach(a -> {
+            if (fileStorageService.isHostedUrl(a.getUrl())) {
+                fileStorageService.deleteIfHosted(a.getUrl());
+            } else {
+                fileStorageService.deleteByKey(a.getUrl());
+            }
+        });
         postRepository.delete(post);
     }
 
@@ -497,9 +525,9 @@ public class FeedService {
     }
 
     public AttachmentRef uploadAttachment(MultipartFile file) {
-        var stored = fileStorageService.storeFeedAttachment(file, "feed");
+        var stored = fileStorageService.storePrivateFeedAttachment(file, FEED_ATTACHMENT_SUBDIR);
         String originalName = file.getOriginalFilename();
-        return new AttachmentRef(stored.url(), stored.kind().name(), originalName);
+        return new AttachmentRef(stored.key(), stored.kind().name(), originalName);
     }
 
     private Post.Type parseType(String type) {
@@ -560,12 +588,21 @@ public class FeedService {
 
     private PostDto toDto(Post post, boolean isLiked, boolean isSaved, Instant savedAt) {
         List<AttachmentDto> attachments = post.getAttachments().stream()
-                .map(a -> new AttachmentDto(a.getId(), a.getUrl(), a.getKind().name(), a.getFileName()))
+                .map(a -> new AttachmentDto(a.getId(), resolveAttachmentUrl(a.getUrl()), a.getKind().name(), a.getFileName()))
                 .toList();
         return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
                 post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason(),
                 post.getVisibility().name(), post.getLinkUrl(), post.isPostedAsPlatform());
+    }
+
+    /** {@code stored} is either a legacy full public URL (from before attachments were made private —
+     *  left exactly as it was stored; that file's own object-storage prefix is still public, moving
+     *  it is a separate, real migration, not something to fake here) or, for every attachment stored
+     *  since, the private key {@link #uploadAttachment} minted — which needs a fresh presigned URL on
+     *  every read, the same way ConversationService already does for chat attachments. */
+    private String resolveAttachmentUrl(String stored) {
+        return fileStorageService.isHostedUrl(stored) ? stored : fileStorageService.presignGet(stored, ATTACHMENT_URL_TTL);
     }
 
     private CommentDto toCommentDto(PostComment comment, int replyCount) {

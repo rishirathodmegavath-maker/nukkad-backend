@@ -50,15 +50,23 @@ services:
     # fetch a key they already know. None of the 4 built-in presets (none/download/upload/public)
     # is "read objects but don't list them", so this writes a custom policy with GetObject only.
     #
-    # messages/* is carved out via NotResource (everything else keeps its existing public-read
-    # behavior, unchanged) -- chat attachments are private, reachable only through a short-lived
-    # presigned URL the backend generates per-request (see FileStorageService#presignGet), never
-    # through a permanent public link the way every other prefix here still works.
+    # messages/*, feed/* and startup-materials/* are carved out via NotResource (everything else
+    # keeps its existing public-read behavior, unchanged: avatars, covers, logos, resource files,
+    # group avatars -- none of those carry a post's or startup's own restricted visibility the way
+    # a post attachment or a startup material can). Each is private, reachable only through a
+    # short-lived presigned URL the backend generates per-request (see FileStorageService#presignGet
+    # / FeedService#resolveAttachmentUrl / StartupService#resolveMaterialUrl), never through a
+    # permanent public link the way every other prefix here still works.
+    #
+    # This container only ever runs once per stack start (it's a one-shot policy-setter, not a
+    # long-running service) -- deploy.sh's "backend" case does `docker compose up -d --build backend`
+    # only, so a policy change here needs `docker compose up minio-init` run explicitly on the VPS
+    # (or a full `docker compose up -d`) to actually take effect; merging this file alone does not.
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
       (mc mb -p local/${S3_BUCKET} || true) &&
-      printf '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"NotResource\":[\"arn:aws:s3:::%s/messages/*\"]}]}' ${S3_BUCKET} > /tmp/anon-policy.json &&
+      printf '{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Action\":[\"s3:GetObject\"],\"NotResource\":[\"arn:aws:s3:::%s/messages/*\",\"arn:aws:s3:::%s/feed/*\",\"arn:aws:s3:::%s/startup-materials/*\"]}]}' ${S3_BUCKET} ${S3_BUCKET} ${S3_BUCKET} > /tmp/anon-policy.json &&
       mc anonymous set-json /tmp/anon-policy.json local/${S3_BUCKET}
       "
     networks:

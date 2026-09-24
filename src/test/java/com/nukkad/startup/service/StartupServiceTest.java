@@ -737,25 +737,27 @@ class StartupServiceTest {
         when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
         when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
         MockMultipartFile file = new MockMultipartFile("file", "deck.pdf", "application/pdf", "x".getBytes());
-        when(fileStorageService.storeMedia(any(), eq("startup-materials")))
-                .thenReturn(new FileStorageService.StoredMedia("https://storage.example.com/x.pdf", FileStorageService.AttachmentKind.PDF));
+        when(fileStorageService.storePrivateMedia(any(), eq("startup-materials")))
+                .thenReturn(new FileStorageService.StoredPrivateMedia("startup-materials/x.pdf", FileStorageService.AttachmentKind.PDF));
 
         assertThatThrownBy(() -> service().addMaterial("f1", "s1", "Screenshots", null, null, file))
                 .isInstanceOf(BadRequestException.class);
     }
 
     @Test
-    void pitchDeckUploadStoresThroughFileStorageServiceAndPersistsTheHostedUrl() {
+    void pitchDeckUploadStoresPrivatelyAndReturnsAPresignedUrl() {
         when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
         when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
         MockMultipartFile file = new MockMultipartFile("file", "deck.pdf", "application/pdf", "x".getBytes());
-        when(fileStorageService.storeMedia(any(), eq("startup-materials")))
-                .thenReturn(new FileStorageService.StoredMedia("https://storage.example.com/startup-materials/abc.pdf", FileStorageService.AttachmentKind.PDF));
+        when(fileStorageService.storePrivateMedia(any(), eq("startup-materials")))
+                .thenReturn(new FileStorageService.StoredPrivateMedia("startup-materials/abc.pdf", FileStorageService.AttachmentKind.PDF));
+        when(fileStorageService.presignGet(eq("startup-materials/abc.pdf"), any()))
+                .thenReturn("https://storage.example.com/startup-materials/abc.pdf?sig=1");
         when(materialRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         StartupMaterialDto dto = service().addMaterial("f1", "s1", "Pitch Deck", "Seed deck", null, file);
 
-        assertThat(dto.url()).isEqualTo("https://storage.example.com/startup-materials/abc.pdf");
+        assertThat(dto.url()).isEqualTo("https://storage.example.com/startup-materials/abc.pdf?sig=1");
         assertThat(dto.originalFileName()).isEqualTo("deck.pdf");
     }
 
@@ -768,6 +770,70 @@ class StartupServiceTest {
 
         assertThatThrownBy(() -> service().deleteMaterial("notFounder", "mat1")).isInstanceOf(ForbiddenException.class);
         verify(materialRepository, never()).delete(any(StartupMaterial.class));
+    }
+
+    @Test
+    void deletingAMaterialDeletesALegacyHostedFileByUrl() {
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.PITCH_DECK).url("https://storage.example.com/startup-materials/x.pdf")
+                .createdByUserId("f1").build();
+        when(materialRepository.findById("mat1")).thenReturn(Optional.of(material));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(fileStorageService.isHostedUrl("https://storage.example.com/startup-materials/x.pdf")).thenReturn(true);
+
+        service().deleteMaterial("f1", "mat1");
+
+        verify(fileStorageService).deleteIfHosted("https://storage.example.com/startup-materials/x.pdf");
+        verify(fileStorageService, never()).deleteByKey(any());
+        verify(materialRepository).delete(material);
+    }
+
+    @Test
+    void deletingAMaterialDeletesAPrivateKeyFileByKey() {
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.PITCH_DECK).url("startup-materials/x.pdf")
+                .createdByUserId("f1").build();
+        when(materialRepository.findById("mat1")).thenReturn(Optional.of(material));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+
+        service().deleteMaterial("f1", "mat1");
+
+        verify(fileStorageService).deleteByKey("startup-materials/x.pdf");
+        verify(fileStorageService, never()).deleteIfHosted(any());
+        verify(materialRepository).delete(material);
+    }
+
+    @Test
+    void deletingAnExternalLinkMaterialDoesNotTouchFileStorage() {
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.WEBSITE).url("https://example.com").createdByUserId("f1").build();
+        when(materialRepository.findById("mat1")).thenReturn(Optional.of(material));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+
+        service().deleteMaterial("f1", "mat1");
+
+        verify(fileStorageService, never()).deleteByKey(any());
+        verify(fileStorageService, never()).deleteIfHosted(any());
+    }
+
+    @Test
+    void replacingAMaterialsFileDeletesThePreviousOne() {
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.PITCH_DECK).url("startup-materials/old.pdf")
+                .createdByUserId("f1").build();
+        when(materialRepository.findById("mat1")).thenReturn(Optional.of(material));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        MockMultipartFile file = new MockMultipartFile("file", "new.pdf", "application/pdf", "x".getBytes());
+        when(fileStorageService.storePrivateMedia(any(), eq("startup-materials")))
+                .thenReturn(new FileStorageService.StoredPrivateMedia("startup-materials/new.pdf", FileStorageService.AttachmentKind.PDF));
+        when(fileStorageService.presignGet(eq("startup-materials/new.pdf"), any()))
+                .thenReturn("https://storage.example.com/startup-materials/new.pdf?sig=2");
+        when(materialRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        StartupMaterialDto dto = service().updateMaterial("f1", "mat1", null, null, file);
+
+        verify(fileStorageService).deleteByKey("startup-materials/old.pdf");
+        assertThat(dto.url()).isEqualTo("https://storage.example.com/startup-materials/new.pdf?sig=2");
     }
 
     // ---- profile completion percentage is real, not fabricated ----
