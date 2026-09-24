@@ -55,6 +55,9 @@ public interface UserRepository extends JpaRepository<User, String>, JpaSpecific
     @Query("SELECT COUNT(u) FROM User u JOIN u.securityRoles r WHERE r = :role")
     long countByRole(@Param("role") SecurityRole role);
 
+    @Query("SELECT COUNT(u) > 0 FROM User u JOIN u.securityRoles r WHERE u.id = :id AND r = :role")
+    boolean existsByIdAndRole(@Param("id") String id, @Param("role") SecurityRole role);
+
     /** Resolves the account the AI grant-discovery pipeline attributes its auto-published grants
      *  to (see GrantDiscoveryService) -- the platform's own longest-standing Admin account, never
      *  a member's. Pageable(0, 1) picks the single oldest match. */

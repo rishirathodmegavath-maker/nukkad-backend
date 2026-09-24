@@ -28,6 +28,7 @@ import com.nukkad.user.entity.LookingFor;
 import com.nukkad.user.entity.OpenTo;
 import com.nukkad.user.entity.ProfileSection;
 import com.nukkad.user.entity.ProfileVisibility;
+import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.entity.UserAchievement;
 import com.nukkad.user.entity.MutedAccount;
@@ -279,6 +280,11 @@ public class UserService {
     @Transactional(readOnly = true)
     public UserDto getUser(String id, String viewerId) {
         User user = getEntityOrThrow(id);
+        // An admin account is not a member profile — treat it as not found rather than a restricted
+        // profile, so nothing (not even that the account exists) is exposed to another member.
+        if (user.getSecurityRoles().contains(SecurityRole.ADMIN)) {
+            throw new ResourceNotFoundException("User not found");
+        }
         String connectionStatus = null;
         Boolean isFollowing = null;
         if (viewerId != null && !viewerId.equals(id)) {

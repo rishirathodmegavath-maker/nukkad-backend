@@ -85,6 +85,19 @@ class UserServiceTest {
         return User.builder().id(id).name(name).email(id + "@example.com").passwordHash("hash").build();
     }
 
+    // ---- getUser: an admin account is confidential, not a viewable profile ----
+
+    @Test
+    void getUserTreatsAnAdminAccountAsNotFound() {
+        User admin = User.builder().id("admin-1").name("Admin").email("admin@example.com").passwordHash("hash")
+                .securityRoles(java.util.Set.of(com.nukkad.user.entity.SecurityRole.ADMIN))
+                .build();
+        when(userRepository.findById("admin-1")).thenReturn(Optional.of(admin));
+
+        assertThatThrownBy(() -> service().getUser("admin-1", "viewer-1"))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
     // ---- Self-connect / self-decline / self-follow / self-block / self-mute prevention ----
 
     @Test
