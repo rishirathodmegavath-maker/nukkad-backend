@@ -44,6 +44,29 @@ public class Post {
     public enum Visibility { PUBLIC, CONNECTIONS }
 
     /**
+     * Which BuildAdda editorial identity to show as the author of a platform post — meaningful only
+     * when {@code postedAsPlatform} is true. Still exactly one real admin account behind every one of
+     * these (see {@code authorId}); no separate User row is ever created per identity. A fixed,
+     * code-curated list on purpose (same idea as {@link Topic} above) — an admin cannot type an
+     * arbitrary publisher name.
+     */
+    public enum PublisherIdentity {
+        BUILDADDA("BuildAdda"), BUILDADDA_INSIGHTS("BuildAdda Insights"), BUILDADDA_GRANTS("BuildAdda Grants"),
+        BUILDADDA_COMMUNITY("BuildAdda Community"), BUILDADDA_STARTUP_DESK("BuildAdda Startup Desk"),
+        BUILDADDA_EDITORIAL("BuildAdda Editorial");
+
+        private final String label;
+
+        PublisherIdentity(String label) {
+            this.label = label;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+    }
+
+    /**
      * A curated category, meaningful only for {@code type = discussion} (null for every other kind).
      * Code-curated on purpose, same idea as {@code ResourceCategory} ("adding a topic is a code
      * change") — a fixed, small, labelled list reads better for "Popular Topics" than the free-text,
@@ -82,6 +105,24 @@ public class Post {
     @Column(name = "posted_as_platform", nullable = false)
     @Builder.Default
     private boolean postedAsPlatform = false;
+
+    /** Which BuildAdda identity to display for a platform post; ignored (left at its default) for
+     *  every ordinary member post since display logic always gates on {@code postedAsPlatform} first. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "publisher_identity", nullable = false, length = 30)
+    @Builder.Default
+    private PublisherIdentity publisherIdentity = PublisherIdentity.BUILDADDA;
+
+    /** Seeded/platform-level engagement shown alongside real likes so a freshly-published platform
+     *  post doesn't look empty (displayed count = likesCount + platformEngagementCount). Never backed
+     *  by a PostLike row: never returned by the liker list ({@link com.nukkad.feed.repository.PostLikeRepository}
+     *  is the only source for that), never touched by {@code toggleLike}, and deliberately excluded
+     *  from feed-ranking's engagement-velocity signal (see PersonalizedFeedService, which reads only
+     *  the real likesCount) so seeded engagement can never inflate what a real user's like earns a
+     *  post in ranking. Meaningful only for a platform post; stays 0 for every member post. */
+    @Column(name = "platform_engagement_count", nullable = false)
+    @Builder.Default
+    private int platformEngagementCount = 0;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
