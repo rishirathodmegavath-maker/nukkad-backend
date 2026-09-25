@@ -701,12 +701,13 @@ public class FeedService {
     }
 
     /** {@code stored} is either a legacy full public URL (from before attachments were made private —
-     *  left exactly as it was stored; that file's own object-storage prefix is still public, moving
-     *  it is a separate, real migration, not something to fake here) or, for every attachment stored
-     *  since, the private key {@link #uploadAttachment} minted — which needs a fresh presigned URL on
-     *  every read, the same way ConversationService already does for chat attachments. */
+     *  the live bucket policy since blocked anonymous reads of {@code feed/*}, so that URL now 403s
+     *  unless re-presigned the same as a private key below) or, for every attachment stored since,
+     *  the private key {@link #uploadAttachment} minted — which needs a fresh presigned URL on every
+     *  read, the same way ConversationService already does for chat attachments. */
     private String resolveAttachmentUrl(String stored) {
-        return fileStorageService.isHostedUrl(stored) ? stored : fileStorageService.presignGet(stored, ATTACHMENT_URL_TTL);
+        String key = fileStorageService.isHostedUrl(stored) ? fileStorageService.keyFromHostedUrl(stored) : stored;
+        return fileStorageService.presignGet(key, ATTACHMENT_URL_TTL);
     }
 
     private CommentDto toCommentDto(PostComment comment, int replyCount) {

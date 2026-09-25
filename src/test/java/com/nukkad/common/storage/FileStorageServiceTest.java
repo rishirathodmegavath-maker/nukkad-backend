@@ -331,6 +331,12 @@ class FileStorageServiceTest {
     }
 
     @Test
+    void keyFromHostedUrlIsTheExactInverseOfWhatUploadingMints() {
+        assertThat(fileStorageService.keyFromHostedUrl("https://cdn.example.com/resources/a.pdf")).isEqualTo("resources/a.pdf");
+        assertThat(fileStorageService.keyFromHostedUrl("https://cdn.example.com/feed/legacy.png")).isEqualTo("feed/legacy.png");
+    }
+
+    @Test
     void openingAHostedFileReadsItsKeyFromTheConfiguredBucket() throws Exception {
         GetObjectResponse head = GetObjectResponse.builder().contentType("application/pdf").contentLength(9L).build();
         when(s3Client.getObject(any(GetObjectRequest.class)))

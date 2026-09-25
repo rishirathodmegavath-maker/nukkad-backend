@@ -36,6 +36,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -707,6 +708,29 @@ class StartupServiceTest {
 
         assertThat(dto.materialType()).isEqualTo("Website");
         assertThat(dto.url()).isEqualTo("https://example.com");
+    }
+
+    @Test
+    void getMaterialsPresignsALegacyHostedFileUrlInsteadOfReturningItUnchanged() {
+        // Regression test for the same bug as FeedServiceTest#aLegacyFullUrlAttachmentIsPresignedOnRead:
+        // the live bucket policy blocks anonymous reads of startup-materials/*, so a pre-migration row's
+        // full public URL 403s in the browser unless it's re-presigned like any other private key.
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "viewer1")).thenReturn(Optional.empty());
+        StartupMaterial material = StartupMaterial.builder().id("mat1").startupId("s1")
+                .materialType(StartupMaterialType.PITCH_DECK).url("https://storage.example.com/startup-materials/legacy.pdf")
+                .originalFileName("deck.pdf").createdByUserId("f1").build();
+        when(materialRepository.findByStartupIdOrderBySortOrderAscCreatedAtAsc("s1")).thenReturn(List.of(material));
+        when(fileStorageService.isHostedUrl("https://storage.example.com/startup-materials/legacy.pdf")).thenReturn(true);
+        when(fileStorageService.keyFromHostedUrl("https://storage.example.com/startup-materials/legacy.pdf"))
+                .thenReturn("startup-materials/legacy.pdf");
+        when(fileStorageService.presignGet(eq("startup-materials/legacy.pdf"), any()))
+                .thenReturn("https://storage.example.com/startup-materials/legacy.pdf?sig=fresh");
+
+        List<StartupMaterialDto> materials = service().getMaterials("s1", "viewer1");
+
+        assertThat(materials).hasSize(1);
+        assertThat(materials.get(0).url()).isEqualTo("https://storage.example.com/startup-materials/legacy.pdf?sig=fresh");
     }
 
     @Test
