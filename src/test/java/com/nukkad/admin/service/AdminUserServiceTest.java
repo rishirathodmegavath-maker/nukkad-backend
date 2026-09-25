@@ -200,11 +200,13 @@ class AdminUserServiceTest {
 
     @Test
     void lastAdminProtectionLeavesTokenVersionUntouched() {
-        User target = user("admin1", AccountStatus.ACTIVE, 7, SecurityRole.USER, SecurityRole.ADMIN);
-        when(userRepository.findById("admin1")).thenReturn(Optional.of(target));
+        // A different target from the acting admin, so this exercises the last-admin count guard in
+        // isolation from the self-targeting guard (see anAdminCannotRevokeTheirOwnRoleEvenWhenOtherAdminsExist).
+        User target = user("admin2", AccountStatus.ACTIVE, 7, SecurityRole.USER, SecurityRole.ADMIN);
+        when(userRepository.findById("admin2")).thenReturn(Optional.of(target));
         when(userRepository.countByRole(SecurityRole.ADMIN)).thenReturn(1L);
 
-        assertThatThrownBy(() -> service().updateRole("admin1", "admin1",
+        assertThatThrownBy(() -> service().updateRole("admin1", "admin2",
                 new AdminUserService.UpdateUserRoleCommand("ADMIN", false), "127.0.0.1"))
                 .isInstanceOf(BadRequestException.class);
 
@@ -255,13 +257,31 @@ class AdminUserServiceTest {
 
     @Test
     void soleAdminCannotRevokeTheirOwnLastAdminRole() {
+        // The self-targeting guard now fires before the last-admin count is even checked (see
+        // anAdminCannotRevokeTheirOwnRoleEvenWhenOtherAdminsExist) -- either guard alone would block
+        // this exact case, so the outcome (rejected, no save) is what this test actually asserts.
         User target = user("admin1", AccountStatus.ACTIVE, 0, SecurityRole.USER, SecurityRole.ADMIN);
         when(userRepository.findById("admin1")).thenReturn(Optional.of(target));
-        when(userRepository.countByRole(SecurityRole.ADMIN)).thenReturn(1L);
 
         assertThatThrownBy(() -> service().updateRole("admin1", "admin1",
                 new AdminUserService.UpdateUserRoleCommand("ADMIN", false), "127.0.0.1"))
                 .isInstanceOf(BadRequestException.class);
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void anAdminCannotRevokeTheirOwnRoleEvenWhenOtherAdminsExist() {
+        // Distinct from soleAdminCannotRevokeTheirOwnLastAdminRole above: this admin is NOT the last
+        // one (countByRole would return 2, so the last-admin guard alone would let this through) --
+        // the self-targeting check must independently block it, the same way updateStatus already
+        // blocks a self-targeted status change regardless of how many other admins exist.
+        User target = user("admin1", AccountStatus.ACTIVE, 0, SecurityRole.USER, SecurityRole.ADMIN);
+        when(userRepository.findById("admin1")).thenReturn(Optional.of(target));
+
+        assertThatThrownBy(() -> service().updateRole("admin1", "admin1",
+                new AdminUserService.UpdateUserRoleCommand("ADMIN", false), "127.0.0.1"))
+                .isInstanceOf(BadRequestException.class);
+        verify(userRepository, never()).countByRole(any());
         verify(userRepository, never()).save(any());
     }
 

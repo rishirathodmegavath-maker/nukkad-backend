@@ -443,6 +443,16 @@ class InvestorCatalogServiceTest {
     }
 
     @Test
+    void bulkDeleteRejectsAnIdListLargerThanTheReasonableMax() {
+        List<String> tooMany = java.util.stream.IntStream.range(0, com.nukkad.common.paging.PageRequests.MAX_SIZE + 1)
+                .mapToObj(i -> "id" + i).toList();
+
+        assertThatThrownBy(() -> service().bulkDelete("admin1", tooMany, null))
+                .isInstanceOf(BadRequestException.class);
+        verify(investorRepository, never()).findAllById(any());
+    }
+
+    @Test
     void closingAnAlreadyClosedIntroRequestIsAConflict() {
         InvestorIntroRequest closed = InvestorIntroRequest.builder().id("rec1").investorId("inv1").requesterUserId("founder1")
                 .startupId("s1").message("hi").status(InvestorIntroRequestStatus.CLOSED).build();

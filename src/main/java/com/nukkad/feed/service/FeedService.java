@@ -364,6 +364,16 @@ public class FeedService {
         return toDto(post, viewerId);
     }
 
+    /** The post's author, but only once visibility is confirmed the same way {@link #get} does —
+     *  used by ReportService.submit so reporting a postId can't be used to probe whether a post
+     *  outside the reporter's own visibility (e.g. a connections-only post from a stranger) exists:
+     *  "not visible" and "doesn't exist" both surface as the identical 404 here, exactly as they do
+     *  for a direct {@code GET} on the post. */
+    @Transactional(readOnly = true)
+    public String requireVisibleAuthorId(String viewerId, String postId) {
+        return requireVisiblePost(viewerId, postId).getAuthorId();
+    }
+
     // ADMIN-ONLY — bypasses the removed check above.
     @Transactional(readOnly = true)
     public PostDto getForAdmin(String postId) {

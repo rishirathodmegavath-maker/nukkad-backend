@@ -337,6 +337,12 @@ public class ResourceService {
         if (ids == null || ids.isEmpty()) {
             throw new BadRequestException("No resources specified");
         }
+        // Same ceiling PageRequests already uses for "how many rows is one reasonable request" --
+        // nothing an admin selects by hand on one page could ever reach it; this only stops a
+        // crafted request from asking to delete an unbounded number of rows in one call.
+        if (ids.size() > PageRequests.MAX_SIZE) {
+            throw new BadRequestException("Cannot delete more than " + PageRequests.MAX_SIZE + " resources at once");
+        }
         Set<String> uniqueIds = new LinkedHashSet<>(ids);
         List<Resource> resources = resourceRepository.findAllById(uniqueIds);
         if (resources.size() != uniqueIds.size()) {

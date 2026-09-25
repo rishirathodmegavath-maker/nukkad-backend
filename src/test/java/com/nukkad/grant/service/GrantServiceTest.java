@@ -90,6 +90,37 @@ class GrantServiceTest {
         assertThatThrownBy(() -> service().createGrant("founder1", bad)).isInstanceOf(BadRequestException.class);
     }
 
+    // ---- a deadline, once stated, can't already be in the past -- same rule Opportunities enforce ----
+
+    @Test
+    void createGrantRejectsAPastDeadline() {
+        CreateGrantRequest bad = new CreateGrantRequest("X", "Y", "Government", null, null, null, null, null,
+                java.time.Instant.now().minusSeconds(3600), "example.com");
+
+        assertThatThrownBy(() -> service().createGrant("founder1", bad)).isInstanceOf(BadRequestException.class);
+        verify(grantRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void createGrantAsAdminAlsoRejectsAPastDeadline() {
+        CreateGrantRequest bad = new CreateGrantRequest("X", "Y", "Government", null, null, null, null, null,
+                java.time.Instant.now().minusSeconds(3600), "example.com");
+
+        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", bad, null, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+        verify(grantRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void createGrantAllowsANullDeadlineAsARollingGrant() {
+        when(grantRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        CreateGrantRequest rolling = new CreateGrantRequest("X", "Y", "Government", null, null, null, null, null, null, "example.com");
+
+        GrantDto dto = service().createGrant("founder1", rolling);
+
+        assertThat(dto.deadline()).isNull();
+    }
+
     // ---- an admin publishing a grant listing from the admin panel ----
 
     @Test
@@ -153,6 +184,34 @@ class GrantServiceTest {
                 "New Name", null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New Name");
+    }
+
+    @Test
+    void updatingAGrantsDeadlineToThePastIsRejected() {
+        Grant grant = Grant.builder().id("g1").name("Name").provider("P").createdByUserId("creator1").build();
+        when(grantRepository.findById("g1")).thenReturn(Optional.of(grant));
+
+        assertThatThrownBy(() -> service().updateGrant("creator1", "g1", new UpdateGrantRequest(
+                null, null, null, null, null, null, null, null, java.time.Instant.now().minusSeconds(3600), null)))
+                .isInstanceOf(BadRequestException.class);
+        verify(grantRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void reSubmittingAGrantsUnchangedPastDeadlineDoesNotFail() {
+        // An edit form re-sending the stored deadline as-is (e.g. only the description changed) must
+        // not fail just because that old grant's deadline has since passed -- only a deadline that is
+        // actually changing has to be in the future. Mirrors OpportunityService's identical rule.
+        java.time.Instant pastDeadline = java.time.Instant.now().minusSeconds(3600);
+        Grant grant = Grant.builder().id("g1").name("Name").provider("P").createdByUserId("creator1")
+                .deadline(pastDeadline).build();
+        when(grantRepository.findById("g1")).thenReturn(Optional.of(grant));
+        when(grantRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        GrantDto dto = service().updateGrant("creator1", "g1", new UpdateGrantRequest(
+                null, null, null, "Updated description", null, null, null, null, pastDeadline, null));
+
+        assertThat(dto.deadline()).isEqualTo(pastDeadline);
     }
 
     @Test

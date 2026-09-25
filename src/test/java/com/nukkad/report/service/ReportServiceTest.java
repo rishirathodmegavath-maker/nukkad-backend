@@ -3,8 +3,7 @@ package com.nukkad.report.service;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ResourceNotFoundException;
-import com.nukkad.feed.entity.Post;
-import com.nukkad.feed.repository.PostRepository;
+import com.nukkad.feed.service.FeedService;
 import com.nukkad.report.entity.Report;
 import com.nukkad.report.entity.ReportStatus;
 import com.nukkad.report.repository.ReportRepository;
@@ -14,6 +13,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,10 +27,10 @@ import static org.mockito.Mockito.when;
 class ReportServiceTest {
 
     @Mock private ReportRepository reportRepository;
-    @Mock private PostRepository postRepository;
+    @Mock private FeedService feedService;
 
     private ReportService service() {
-        return new ReportService(reportRepository, postRepository);
+        return new ReportService(reportRepository, feedService);
     }
 
     @Test
@@ -45,8 +45,7 @@ class ReportServiceTest {
 
     @Test
     void reportingAPostResolvesTheReportedUserFromThePostsOwnAuthorNeverFromTheClient() {
-        when(postRepository.findById("post1")).thenReturn(Optional.of(
-                Post.builder().id("post1").authorId("realAuthor").content("spam content").build()));
+        when(feedService.requireVisibleAuthorId("reporter1", "post1")).thenReturn("realAuthor");
 
         service().submit("reporter1", "someoneElseEntirely", "Spam", null, "post1");
 
@@ -58,7 +57,8 @@ class ReportServiceTest {
 
     @Test
     void reportingAPostThatDoesntExistIsNotFound() {
-        when(postRepository.findById("ghost")).thenReturn(Optional.empty());
+        when(feedService.requireVisibleAuthorId("reporter1", "ghost"))
+                .thenThrow(new ResourceNotFoundException("Post not found: ghost"));
 
         assertThatThrownBy(() -> service().submit("reporter1", null, "Spam", null, "ghost"))
                 .isInstanceOf(ResourceNotFoundException.class);
@@ -66,9 +66,21 @@ class ReportServiceTest {
     }
 
     @Test
+    void reportingAPostOutsideTheReportersVisibilityIsNotFoundJustLikeANonexistentOne() {
+        // A connections-only post from a stranger, or any other post the reporter can't otherwise
+        // see, must fail the exact same way a nonexistent postId does -- never a different response
+        // that would let "report" be used to probe whether such a post exists.
+        when(feedService.requireVisibleAuthorId("reporter1", "hidden-post"))
+                .thenThrow(new ResourceNotFoundException("Post not found: hidden-post"));
+
+        assertThatThrownBy(() -> service().submit("reporter1", null, "Spam", null, "hidden-post"))
+                .isInstanceOf(ResourceNotFoundException.class);
+        verify(reportRepository, never()).save(any());
+    }
+
+    @Test
     void cannotReportYourOwnPost() {
-        when(postRepository.findById("post1")).thenReturn(Optional.of(
-                Post.builder().id("post1").authorId("author1").content("x").build()));
+        when(feedService.requireVisibleAuthorId("author1", "post1")).thenReturn("author1");
 
         assertThatThrownBy(() -> service().submit("author1", null, "Spam", null, "post1"))
                 .isInstanceOf(BadRequestException.class);
@@ -87,6 +99,55 @@ class ReportServiceTest {
         assertThatThrownBy(() -> service().submit("user1", "user1", "Spam", null, null))
                 .isInstanceOf(BadRequestException.class);
         verify(reportRepository, never()).save(any());
+    }
+
+    // ---- duplicate reports don't pile up in the moderation queue ----
+
+    @Test
+    void reportingTheSamePostAgainWhileTheFirstReportIsStillOpenIsASilentNoOp() {
+        when(feedService.requireVisibleAuthorId("reporter1", "post1")).thenReturn("author1");
+        Report existing = Report.builder().id("r0").reporterId("reporter1").reportedUserId("author1")
+                .postId("post1").status(ReportStatus.OPEN).build();
+        when(reportRepository.findByReporterIdAndStatus("reporter1", ReportStatus.OPEN)).thenReturn(List.of(existing));
+
+        service().submit("reporter1", null, "Spam", null, "post1");
+
+        verify(reportRepository, never()).save(any());
+    }
+
+    @Test
+    void reportingTheSameUserDirectlyAgainWhileTheFirstReportIsStillOpenIsASilentNoOp() {
+        Report existing = Report.builder().id("r0").reporterId("reporter1").reportedUserId("reported1")
+                .status(ReportStatus.OPEN).build();
+        when(reportRepository.findByReporterIdAndStatus("reporter1", ReportStatus.OPEN)).thenReturn(List.of(existing));
+
+        service().submit("reporter1", "reported1", "Spam", null, null);
+
+        verify(reportRepository, never()).save(any());
+    }
+
+    @Test
+    void aNewReportIsAllowedOnceThePriorOneWasAlreadyResolved() {
+        when(feedService.requireVisibleAuthorId("reporter1", "post1")).thenReturn("author1");
+        // findByReporterIdAndStatus(..., OPEN) only ever returns OPEN rows, so a resolved prior
+        // report against the same post simply isn't in this list -- nothing to mock returning it.
+        when(reportRepository.findByReporterIdAndStatus("reporter1", ReportStatus.OPEN)).thenReturn(List.of());
+
+        service().submit("reporter1", null, "Spam", null, "post1");
+
+        verify(reportRepository).save(any());
+    }
+
+    @Test
+    void reportingADifferentPostWhileAnotherIsOpenStillGoesThrough() {
+        when(feedService.requireVisibleAuthorId("reporter1", "post2")).thenReturn("author2");
+        Report existing = Report.builder().id("r0").reporterId("reporter1").reportedUserId("author1")
+                .postId("post1").status(ReportStatus.OPEN).build();
+        when(reportRepository.findByReporterIdAndStatus("reporter1", ReportStatus.OPEN)).thenReturn(List.of(existing));
+
+        service().submit("reporter1", null, "Spam", null, "post2");
+
+        verify(reportRepository).save(any());
     }
 
     // ---- resolve ----

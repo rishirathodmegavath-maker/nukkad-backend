@@ -469,6 +469,16 @@ class ResourceServiceTest {
         verify(resourceRepository, never()).findAllById(any());
     }
 
+    @Test
+    void bulkDeleteResourcesRejectsAnIdListLargerThanTheReasonableMax() {
+        List<String> tooMany = java.util.stream.IntStream.range(0, com.nukkad.common.paging.PageRequests.MAX_SIZE + 1)
+                .mapToObj(i -> "id" + i).toList();
+
+        assertThatThrownBy(() -> service().bulkDeleteResources("admin1", tooMany, null))
+                .isInstanceOf(BadRequestException.class);
+        verify(resourceRepository, never()).findAllById(any());
+    }
+
     // ---- open in browser / download metadata ----
 
     @Test
