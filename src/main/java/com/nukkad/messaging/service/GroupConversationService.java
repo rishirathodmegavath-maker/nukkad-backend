@@ -4,6 +4,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.messaging.config.ConversationSubscriptionRevoker;
 import com.nukkad.messaging.dto.ConversationDto;
 import com.nukkad.messaging.entity.Conversation;
 import com.nukkad.messaging.entity.ConversationParticipant;
@@ -15,6 +16,8 @@ import com.nukkad.user.service.UserPrivacySettingsService;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
@@ -32,6 +35,9 @@ import java.util.Set;
 @Service
 public class GroupConversationService {
 
+    /** Same wording for "no such group" and "you're not in it" — see ConversationService#getConversationForParticipant. */
+    private static final String GROUP_NOT_FOUND = "Group not found";
+
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
     private final ConnectionRepository connectionRepository;
@@ -40,6 +46,7 @@ public class GroupConversationService {
     private final FileStorageService fileStorageService;
     private final SimpMessagingTemplate messagingTemplate;
     private final ConversationService conversationService;
+    private final ConversationSubscriptionRevoker subscriptionRevoker;
 
     public GroupConversationService(ConversationRepository conversationRepository,
                                      ConversationParticipantRepository participantRepository,
@@ -48,7 +55,8 @@ public class GroupConversationService {
                                      UserPrivacySettingsService privacySettingsService,
                                      FileStorageService fileStorageService,
                                      SimpMessagingTemplate messagingTemplate,
-                                     ConversationService conversationService) {
+                                     ConversationService conversationService,
+                                     ConversationSubscriptionRevoker subscriptionRevoker) {
         this.conversationRepository = conversationRepository;
         this.participantRepository = participantRepository;
         this.connectionRepository = connectionRepository;
@@ -57,6 +65,7 @@ public class GroupConversationService {
         this.fileStorageService = fileStorageService;
         this.messagingTemplate = messagingTemplate;
         this.conversationService = conversationService;
+        this.subscriptionRevoker = subscriptionRevoker;
     }
 
     /** The 1:1 equivalent (ConversationService#requireCanInitiateConversation) only ever checks the
@@ -193,6 +202,7 @@ public class GroupConversationService {
                 .orElseThrow(() -> new ResourceNotFoundException("Member not found: " + memberId));
         participant.setDeletedAt(Instant.now());
         participantRepository.save(participant);
+        revokeRealtimeAccessAfterCommit(memberId, conversationId);
         broadcastGroupUpdate(conversation);
         return conversationService.toDto(conversation, viewerId);
     }
@@ -201,10 +211,10 @@ public class GroupConversationService {
     public void leaveGroup(String viewerId, String conversationId) {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .filter(c -> c.getConversationType() == Conversation.Type.GROUP)
-                .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + conversationId));
+                .orElseThrow(() -> new ResourceNotFoundException(GROUP_NOT_FOUND));
         ConversationParticipant participant = participantRepository
                 .findByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, viewerId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this group"));
+                .orElseThrow(() -> new ResourceNotFoundException(GROUP_NOT_FOUND));
 
         boolean wasLastAdmin = participant.getRole() == ConversationParticipant.Role.ADMIN
                 && participantRepository.countByConversationIdAndRoleAndDeletedAtIsNull(
@@ -222,6 +232,7 @@ public class GroupConversationService {
                         participantRepository.save(successor);
                     });
         }
+        revokeRealtimeAccessAfterCommit(viewerId, conversationId);
         broadcastGroupUpdate(conversation);
     }
 
@@ -254,14 +265,31 @@ public class GroupConversationService {
     private Conversation requireGroupAdmin(String viewerId, String conversationId) {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .filter(c -> c.getConversationType() == Conversation.Type.GROUP)
-                .orElseThrow(() -> new ResourceNotFoundException("Group not found: " + conversationId));
+                .orElseThrow(() -> new ResourceNotFoundException(GROUP_NOT_FOUND));
+        // A non-member gets the same 404 as a missing group, so group ids can't be enumerated by trying them.
+        // Only someone who IS a member (and so can already see the group) is told the reason is "not an admin".
         ConversationParticipant participant = participantRepository
                 .findByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, viewerId)
-                .orElseThrow(() -> new ForbiddenException("You are not a member of this group"));
+                .orElseThrow(() -> new ResourceNotFoundException(GROUP_NOT_FOUND));
         if (participant.getRole() != ConversationParticipant.Role.ADMIN) {
             throw new ForbiddenException("Only group admins can do this");
         }
         return conversation;
+    }
+
+    /** Once a member is out, their already-open sockets stop receiving that group's live traffic too — not
+     * just their REST access. Deferred to after commit so a rolled-back removal never cuts anyone off. */
+    private void revokeRealtimeAccessAfterCommit(String userId, String conversationId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    subscriptionRevoker.revoke(userId, conversationId);
+                }
+            });
+        } else {
+            subscriptionRevoker.revoke(userId, conversationId);
+        }
     }
 
     private void broadcastGroupUpdate(Conversation conversation) {

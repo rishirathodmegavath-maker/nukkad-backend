@@ -27,6 +27,8 @@ import com.nukkad.startup.repository.StartupTeamMemberRepository;
 import com.nukkad.user.repository.ConnectionRepository;
 import com.nukkad.user.repository.UserBlockRepository;
 import com.nukkad.user.service.UserPrivacySettingsService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -48,10 +50,21 @@ import java.util.Set;
 @Service
 public class ConversationService {
 
-    /** How long a chat attachment's presigned URL stays valid — long enough that a normal open-tab chat
-     * session never sees a broken image, short enough that a leaked URL (screenshot, proxy log) isn't a
-     * standing door. Reopening a conversation (or any refetch) mints a fresh one regardless. */
-    private static final Duration ATTACHMENT_URL_TTL = Duration.ofHours(6);
+    private static final Logger log = LoggerFactory.getLogger(ConversationService.class);
+
+    /** How long a chat attachment's presigned URL stays valid. Short enough that a leaked URL (screenshot,
+     * proxy log, forwarded link) is a narrow window rather than a standing door; long enough to open,
+     * play and download comfortably. It used to be 6 hours only because a stale URL had no way to be
+     * refreshed — now an expired one is re-minted on demand ({@link #getAttachment}), so the window can be
+     * this small without an open tab ever being stuck with a broken image. */
+    private static final Duration ATTACHMENT_URL_TTL = Duration.ofHours(1);
+
+    /** One message for every reason an attachment reference is refused (not this conversation's, already
+     * used, not in storage) so the response never says which — or whether a given key exists. */
+    private static final String INVALID_ATTACHMENT = "This attachment can't be sent. Please upload it again.";
+    /** Same wording for "no such conversation" and "you're not in it": a non-participant can't tell them apart. */
+    private static final String CONVERSATION_NOT_FOUND = "Conversation not found";
+    private static final String ATTACHMENT_NOT_FOUND = "Attachment not found";
 
     private final ConversationRepository conversationRepository;
     private final ConversationParticipantRepository participantRepository;
@@ -105,9 +118,35 @@ public class ConversationService {
      * actual bytes (see {@link FileStorageService#storeConversationAttachment}). */
     @Transactional(readOnly = true)
     public ConversationAttachmentRef uploadAttachment(String conversationId, String userId, MultipartFile file) {
-        getConversationForParticipant(conversationId, userId);
-        var stored = fileStorageService.storeConversationAttachment(file, "messages");
-        return new ConversationAttachmentRef(stored.key(), stored.kind().name(), file.getOriginalFilename());
+        Conversation conversation = getConversationForParticipant(conversationId, userId);
+        // The conversation id is baked into the key's path, which is what lets sendMessage later prove the
+        // key belongs to the conversation it's being attached to (see FileStorageService#isConversationAttachmentKey).
+        var stored = fileStorageService.storeConversationAttachment(file, "messages/" + conversation.getId());
+        return new ConversationAttachmentRef(stored.key(), stored.kind().name(),
+                FileStorageService.safeDisplayName(file.getOriginalFilename()));
+    }
+
+    /** What a client is actually allowed to attach, derived entirely server-side from a reference it sent back. */
+    private record ValidatedAttachment(String key, FileStorageService.AttachmentKind kind, String fileName) {}
+
+    /**
+     * Turns a client-supplied attachment reference into one the server will stand behind. The key is data the
+     * client controls, and it ends up (a) presigned into a download URL for every participant and (b) deleted
+     * from object storage on unsend — so accepting an arbitrary one would let any member read any object in
+     * the bucket by key and delete objects that aren't theirs. Hence all of: the key must have exactly the
+     * shape this service minted for THIS conversation (which also excludes every other prefix and any path
+     * trickery), it must not already back another message, and it must really exist in storage — whose recorded
+     * content type, not the request's {@code kind}, decides the message type.
+     */
+    private ValidatedAttachment validateAttachment(Conversation conversation, ConversationAttachmentRef ref) {
+        String key = ref.key();
+        if (!FileStorageService.isConversationAttachmentKey(key, conversation.getId())
+                || messageRepository.existsByAttachmentKey(key)) {
+            throw new BadRequestException(INVALID_ATTACHMENT);
+        }
+        FileStorageService.AttachmentKind kind = fileStorageService.describePrivateObject(key)
+                .orElseThrow(() -> new BadRequestException(INVALID_ATTACHMENT));
+        return new ValidatedAttachment(key, kind, FileStorageService.safeDisplayName(ref.fileName()));
     }
 
     @Transactional
@@ -228,15 +267,13 @@ public class ConversationService {
                     .orElseThrow(() -> new ResourceNotFoundException("Message not found: " + normalizedReplyToId));
         }
 
+        ValidatedAttachment validatedAttachment = attachment != null ? validateAttachment(conversation, attachment) : null;
+
         Message.Type messageType;
         if (normalizedPostId != null) {
             messageType = Message.Type.SHARED_POST;
-        } else if (attachment != null) {
-            try {
-                messageType = Message.Type.valueOf(attachment.kind());
-            } catch (IllegalArgumentException e) {
-                throw new BadRequestException("Unsupported attachment type: " + attachment.kind());
-            }
+        } else if (validatedAttachment != null) {
+            messageType = Message.Type.valueOf(validatedAttachment.kind().name());
         } else {
             messageType = Message.Type.TEXT;
         }
@@ -248,9 +285,9 @@ public class ConversationService {
                 .contentCiphertext(encryptionService.encrypt(trimmedContent))
                 .messageType(messageType)
                 .sharedPostId(normalizedPostId)
-                .attachmentKey(attachment != null ? attachment.key() : null)
-                .attachmentKind(attachment != null ? attachment.kind() : null)
-                .attachmentFileName(attachment != null ? attachment.fileName() : null)
+                .attachmentKey(validatedAttachment != null ? validatedAttachment.key() : null)
+                .attachmentKind(validatedAttachment != null ? validatedAttachment.kind().name() : null)
+                .attachmentFileName(validatedAttachment != null ? validatedAttachment.fileName() : null)
                 .build();
         message = messageRepository.saveAndFlush(message);
 
@@ -362,8 +399,19 @@ public class ConversationService {
             throw new ForbiddenException("You can only unsend your own messages");
         }
         if (message.getUnsentAt() == null) {
-            if (message.getAttachmentKey() != null) {
-                fileStorageService.deleteByKey(message.getAttachmentKey());
+            String attachmentKey = message.getAttachmentKey();
+            if (attachmentKey != null) {
+                // Belt and braces on top of validateAttachment: only ever delete a key that is shaped like a
+                // chat attachment of THIS conversation (or the old flat layout), and only if no other message
+                // still shows the same file. A row that doesn't qualify is simply unlinked below.
+                boolean ownedChatFile = FileStorageService.isConversationAttachmentKey(attachmentKey, conversation.getId())
+                        || FileStorageService.isLegacyConversationAttachmentKey(attachmentKey);
+                if (ownedChatFile && !messageRepository.existsByAttachmentKeyAndIdNot(attachmentKey, message.getId())) {
+                    fileStorageService.deleteByKey(attachmentKey);
+                } else {
+                    log.warn("Unsending message {} without deleting its stored file: key is shared or outside this conversation's chat-attachment layout",
+                            message.getId());
+                }
             }
             message.setUnsentAt(Instant.now());
             message.setContentCiphertext(encryptionService.encrypt(""));
@@ -480,14 +528,17 @@ public class ConversationService {
         messageDeletionRepository.saveAll(newHides);
     }
 
+    /** The single gate for every conversation-scoped operation. A conversation the caller isn't in is reported
+     * exactly like one that doesn't exist (404, same message, id not echoed) — a 403 here would let anyone
+     * enumerate which conversation ids are real by trying them. */
     private Conversation getConversationForParticipant(String conversationId, String viewerId) {
         Conversation conversation = conversationRepository.findById(conversationId)
-                .orElseThrow(() -> new ResourceNotFoundException("Conversation not found: " + conversationId));
+                .orElseThrow(() -> new ResourceNotFoundException(CONVERSATION_NOT_FOUND));
         boolean allowed = conversation.getConversationType() == Conversation.Type.GROUP
                 ? participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, viewerId)
                 : conversation.hasParticipant(viewerId);
         if (!allowed) {
-            throw new ForbiddenException("You are not a participant in this conversation");
+            throw new ResourceNotFoundException(CONVERSATION_NOT_FOUND);
         }
         return conversation;
     }
@@ -567,14 +618,50 @@ public class ConversationService {
         // this same method, so both always carry a currently-valid URL regardless of how long the
         // underlying message has existed. Presigning is a local signature computation (no request to
         // storage), so doing this per-message on every read is cheap.
-        MessageAttachmentDto attachment = message.getAttachmentKey() != null
-                ? new MessageAttachmentDto(fileStorageService.presignGet(message.getAttachmentKey(), ATTACHMENT_URL_TTL),
-                        message.getAttachmentKind(), message.getAttachmentFileName())
-                : null;
+        MessageAttachmentDto attachment = message.getAttachmentKey() != null ? presignedAttachment(message) : null;
         return new MessageDto(message.getId(), message.getConversationId(), message.getSenderId(),
                 message.getMessageType().name(), encryptionService.decrypt(message.getContentCiphertext()),
                 message.getSharedPostId(), sharedPost, attachment, message.getReplyToMessageId(), replyTo,
                 message.isRead(), message.getReadAt(), message.getEditedAt(), message.getUnsentAt(), message.getCreatedAt());
+    }
+
+    /** Builds the attachment DTO with a freshly presigned GET URL — but only for a key that has the shape of a
+     * chat attachment of this message's own conversation (or the old flat layout). Anything else (a row that
+     * predates key validation and points somewhere it shouldn't) gets no URL at all rather than a signature
+     * for whatever object the key names; the client shows its "unavailable" state. */
+    private MessageAttachmentDto presignedAttachment(Message message) {
+        String key = message.getAttachmentKey();
+        boolean presignable = FileStorageService.isConversationAttachmentKey(key, message.getConversationId())
+                || FileStorageService.isLegacyConversationAttachmentKey(key);
+        if (!presignable) {
+            log.warn("Not presigning the attachment of message {}: its key is outside the chat-attachment layout", message.getId());
+        }
+        String url = presignable ? fileStorageService.presignGet(key, ATTACHMENT_URL_TTL) : null;
+        return new MessageAttachmentDto(url, message.getAttachmentKind(), message.getAttachmentFileName());
+    }
+
+    /**
+     * A fresh presigned URL for one message's attachment, for a client whose earlier URL expired (or that never
+     * had one). This is the ONLY way a URL is minted other than as part of a message the caller may already read,
+     * and it takes no key from the client at all — just ids, resolved server-side through the whole chain:
+     * authenticated caller → caller is a participant of the conversation → the message is in that conversation
+     * (an id from any other conversation is indistinguishable from a missing one) → the caller hasn't hidden it
+     * ("delete for me") → it hasn't been unsent → it really has an attachment → the key is a chat-attachment key.
+     * Every failure is the same 404 so nothing about other conversations, messages or objects can be probed.
+     */
+    @Transactional(readOnly = true)
+    public MessageAttachmentDto getAttachment(String conversationId, String viewerId, String messageId) {
+        Conversation conversation = getConversationForParticipant(conversationId, viewerId);
+        Message message = messageRepository.findById(messageId)
+                .filter(m -> m.getConversationId().equals(conversation.getId()))
+                .filter(m -> m.getUnsentAt() == null && m.getAttachmentKey() != null)
+                .filter(m -> messageDeletionRepository.findDeletedMessageIds(viewerId, List.of(m.getId())).isEmpty())
+                .orElseThrow(() -> new ResourceNotFoundException(ATTACHMENT_NOT_FOUND));
+        MessageAttachmentDto attachment = presignedAttachment(message);
+        if (attachment.url() == null) {
+            throw new ResourceNotFoundException(ATTACHMENT_NOT_FOUND);
+        }
+        return attachment;
     }
 
     private static boolean isAttachmentType(Message.Type type) {

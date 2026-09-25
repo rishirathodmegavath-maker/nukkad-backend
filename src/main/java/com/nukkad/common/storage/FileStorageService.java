@@ -12,6 +12,7 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
@@ -22,8 +23,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /** Uploads validated media to S3-compatible object storage and returns a public, directly-loadable URL. */
 @Service
@@ -100,6 +103,50 @@ public class FileStorageService {
 
     /** A stored file streamed back out of object storage. The caller must close {@code stream}. */
     public record StoredObject(InputStream stream, String contentType, long contentLength) {}
+
+    /** The most a single chat attachment may weigh. Enforced here, on the server, independently of the
+     * frontend's own picker check (which it mirrors): the global multipart ceiling is 100MB because the
+     * admin bulk-CSV imports need it, and that must not become the chat limit by default. */
+    public static final long MAX_CONVERSATION_ATTACHMENT_BYTES = 50L * 1024 * 1024;
+
+    private static final String UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+    private static final Pattern SAFE_PATH_SEGMENT = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+    /** Chat attachments stored before per-conversation prefixes: {@code messages/<uuid>.<ext>}. */
+    private static final Pattern LEGACY_CONVERSATION_KEY = Pattern.compile("^messages/" + UUID_PATTERN + "\\.[a-z0-9]{1,10}$");
+
+    /** True only for a key {@link #storeConversationAttachment} could have produced for THIS conversation:
+     * {@code messages/<conversationId>/<uuid>.<ext>}, exactly that shape and nothing else. A key is
+     * never trusted just because a client sent it back — this is what stops a message being created that
+     * points at another conversation's file, at a different prefix ({@code feed/}, {@code startup-materials/},
+     * an avatar or resource), or at a traversal-style path. */
+    public static boolean isConversationAttachmentKey(String key, String conversationId) {
+        // The id becomes a path segment, so it must be a plain token: no dots (".."), slashes or anything else
+        // that could turn "messages/<id>/..." into a different path. Real ids are UUIDs, which always qualify.
+        if (key == null || conversationId == null || !SAFE_PATH_SEGMENT.matcher(conversationId).matches()) return false;
+        return Pattern.matches("^messages/" + Pattern.quote(conversationId) + "/" + UUID_PATTERN + "\\.[a-z0-9]{1,10}$", key);
+    }
+
+    /** True for a chat attachment key in the flat layout used before per-conversation prefixes existed. Those
+     * rows are still valid and still need to open; they just can't be tied to a conversation by their key. */
+    public static boolean isLegacyConversationAttachmentKey(String key) {
+        return key != null && LEGACY_CONVERSATION_KEY.matcher(key).matches();
+    }
+
+    /** A client-supplied file name reduced to something safe to store and show: no path, no control or
+     * bidirectional-override characters (which can make "gpj.exe" render as "exe.jpg"), and no more than
+     * 200 characters with the extension kept. It is a display label only — never part of a storage key. */
+    public static String safeDisplayName(String original) {
+        if (original == null) return null;
+        String name = original.replace('\\', '/');
+        name = name.substring(name.lastIndexOf('/') + 1);
+        name = name.replaceAll("[\\p{Cntrl}\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069]", "").strip();
+        if (name.length() > 200) {
+            int dot = name.lastIndexOf('.');
+            String extension = dot > 0 && name.length() - dot <= 10 ? name.substring(dot) : "";
+            name = name.substring(0, 200 - extension.length()) + extension;
+        }
+        return name.isEmpty() ? null : name;
+    }
 
     private final S3Client s3Client;
     private final S3Presigner s3Presigner;
@@ -186,6 +233,11 @@ public class FileStorageService {
         if (file == null || file.isEmpty()) {
             throw new BadRequestException("No file was uploaded");
         }
+        // Checked before a single byte is read for validation or sent to storage.
+        if (file.getSize() > MAX_CONVERSATION_ATTACHMENT_BYTES) {
+            throw new BadRequestException("This file is too large. Chat attachments can be up to "
+                    + (MAX_CONVERSATION_ATTACHMENT_BYTES / (1024 * 1024)) + "MB.");
+        }
         AttachmentKind kind;
         String extension;
         String contentType = file.getContentType();
@@ -208,7 +260,7 @@ public class FileStorageService {
         }
 
         byte[] header = readHeader(file);
-        if (!AttachmentContentValidator.matches(header, header.length, kind)) {
+        if (!AttachmentContentValidator.matches(header, header.length, file.getSize(), kind)) {
             throw new BadRequestException("This file's contents don't match its declared type — try re-exporting or re-saving it");
         }
 
@@ -284,6 +336,26 @@ public class FileStorageService {
             return read == buffer.length ? buffer : java.util.Arrays.copyOf(buffer, read);
         } catch (IOException e) {
             throw new RuntimeException("Failed to read uploaded file", e);
+        }
+    }
+
+    /** What a private object actually is, according to what storage recorded when it was uploaded — never
+     * according to anything a client says now. Empty when no such object exists. Used to attach a
+     * previously-uploaded file to a message: the message's type comes from here, not from the request. */
+    public Optional<AttachmentKind> describePrivateObject(String key) {
+        try {
+            String contentType = s3Client.headObject(HeadObjectRequest.builder().bucket(properties.bucket()).key(key).build())
+                    .contentType();
+            if (contentType == null) return Optional.empty();
+            String normalized = contentType.toLowerCase();
+            AttachmentKind kind = ALLOWED_MEDIA_CONTENT_TYPES.get(normalized);
+            if (kind == null && FEED_FILE_CONTENT_TYPES.containsValue(normalized)) kind = AttachmentKind.FILE;
+            return Optional.ofNullable(kind);
+        } catch (NoSuchKeyException e) {
+            return Optional.empty();
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404) return Optional.empty();
+            throw new RuntimeException("Failed to read stored file metadata", e);
         }
     }
 

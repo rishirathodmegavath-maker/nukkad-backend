@@ -2,7 +2,9 @@ package com.nukkad.messaging.service;
 
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.messaging.config.ConversationSubscriptionRevoker;
 import com.nukkad.messaging.dto.ConversationDto;
 import com.nukkad.messaging.entity.Conversation;
 import com.nukkad.messaging.entity.ConversationParticipant;
@@ -44,10 +46,12 @@ class GroupConversationServiceTest {
     @Mock private FileStorageService fileStorageService;
     @Mock private SimpMessagingTemplate messagingTemplate;
     @Mock private ConversationService conversationService;
+    @Mock private ConversationSubscriptionRevoker subscriptionRevoker;
 
     private GroupConversationService service() {
         return new GroupConversationService(conversationRepository, participantRepository, connectionRepository,
-                userBlockRepository, privacySettingsService, fileStorageService, messagingTemplate, conversationService);
+                userBlockRepository, privacySettingsService, fileStorageService, messagingTemplate, conversationService,
+                subscriptionRevoker);
     }
 
     private Conversation group() {
@@ -146,6 +150,75 @@ class GroupConversationServiceTest {
 
         assertThatThrownBy(() -> service().removeMember("bob", "conv1", "carol"))
                 .isInstanceOf(ForbiddenException.class);
+    }
+
+    @Test
+    void removingAMemberCutsOffTheirLiveSubscriptionsToThisGroupAsWellAsTheirRestAccess() {
+        ConversationParticipant carol = participant("carol", ConversationParticipant.Role.MEMBER, Instant.now());
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group()));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice"))
+                .thenReturn(Optional.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "carol")).thenReturn(Optional.of(carol));
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1"))
+                .thenReturn(List.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        stubToDto();
+
+        service().removeMember("alice", "conv1", "carol");
+
+        assertThat(carol.getDeletedAt()).isNotNull();
+        // Without this, carol's already-open socket keeps receiving this group's messages until it reconnects.
+        verify(subscriptionRevoker).revoke("carol", "conv1");
+        verify(subscriptionRevoker, never()).revoke(eq("alice"), anyString());
+    }
+
+    @Test
+    void leavingAGroupCutsOffTheLeaversLiveSubscriptionsToIt() {
+        ConversationParticipant bob = participant("bob", ConversationParticipant.Role.MEMBER, Instant.now());
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group()));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "bob")).thenReturn(Optional.of(bob));
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1"))
+                .thenReturn(List.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        stubToDto();
+
+        service().leaveGroup("bob", "conv1");
+
+        verify(subscriptionRevoker).revoke("bob", "conv1");
+    }
+
+    @Test
+    void aMembershipChangeThatDoesNotRemoveAnyoneNeverRevokesAnything() {
+        Conversation conv = group();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "alice"))
+                .thenReturn(Optional.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        when(participantRepository.findByConversationIdAndDeletedAtIsNull("conv1"))
+                .thenReturn(List.of(participant("alice", ConversationParticipant.Role.ADMIN, Instant.now())));
+        stubToDto();
+
+        service().renameGroup("alice", "conv1", "New Name");
+
+        verify(subscriptionRevoker, never()).revoke(anyString(), anyString());
+    }
+
+    @Test
+    void everyGroupOperationTreatsANonMemberExactlyLikeAGroupThatDoesNotExist() {
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(group()));
+        when(conversationRepository.findById("missing")).thenReturn(Optional.empty());
+        when(participantRepository.findByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "mallory")).thenReturn(Optional.empty());
+
+        for (String id : List.of("conv1", "missing")) {
+            assertThatThrownBy(() -> service().renameGroup("mallory", id, "x")).as("rename " + id)
+                    .isInstanceOf(ResourceNotFoundException.class).hasMessage("Group not found");
+            assertThatThrownBy(() -> service().addMembers("mallory", id, List.of("bob"))).as("add " + id)
+                    .isInstanceOf(ResourceNotFoundException.class).hasMessage("Group not found");
+            assertThatThrownBy(() -> service().removeMember("mallory", id, "bob")).as("remove " + id)
+                    .isInstanceOf(ResourceNotFoundException.class).hasMessage("Group not found");
+            assertThatThrownBy(() -> service().updateRole("mallory", id, "bob", "ADMIN")).as("role " + id)
+                    .isInstanceOf(ResourceNotFoundException.class).hasMessage("Group not found");
+            assertThatThrownBy(() -> service().leaveGroup("mallory", id)).as("leave " + id)
+                    .isInstanceOf(ResourceNotFoundException.class).hasMessage("Group not found");
+        }
+        verify(subscriptionRevoker, never()).revoke(anyString(), anyString());
     }
 
     @Test
