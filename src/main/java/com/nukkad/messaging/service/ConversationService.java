@@ -3,6 +3,7 @@ package com.nukkad.messaging.service;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.feed.dto.PostDto;
 import com.nukkad.feed.service.FeedService;
@@ -209,13 +210,13 @@ public class ConversationService {
         int from = Math.min(page * size, all.size());
         int to = Math.min(from + size, all.size());
         List<ConversationDto> content = all.subList(from, to).stream().map(c -> toDto(c, viewerId)).toList();
-        return new PageImpl<>(content, PageRequest.of(page, size), all.size());
+        return new PageImpl<>(content, PageRequests.of(page, size), all.size());
     }
 
     @Transactional(readOnly = true)
     public Page<MessageDto> getMessages(String conversationId, String viewerId, int page, int size) {
         Conversation conversation = getConversationForParticipant(conversationId, viewerId);
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
         return messageRepository.findVisibleForViewer(conversation.getId(), viewerId, pageable)
                 .map(m -> toMessageDto(m, viewerId));
     }

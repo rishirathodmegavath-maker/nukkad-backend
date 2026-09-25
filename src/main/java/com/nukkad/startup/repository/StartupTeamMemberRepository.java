@@ -27,6 +27,10 @@ public interface StartupTeamMemberRepository extends JpaRepository<StartupTeamMe
     boolean existsByStartupIdAndUserId(String startupId, String userId);
     List<StartupTeamMember> findByStartupIdAndTeamRole(String startupId, StartupTeamMember.TeamRole teamRole);
     List<StartupTeamMember> findByStartupIdAndTeamRoleIn(String startupId, List<StartupTeamMember.TeamRole> teamRoles);
+
+    /** One viewer's membership row (if any) across a whole page of startups, in one query instead of one
+     *  {@link #findByStartupIdAndUserId} call per row. */
+    List<StartupTeamMember> findByStartupIdInAndUserId(List<String> startupIds, String userId);
     boolean existsByUserIdAndTeamRoleInAndStatus(String userId, List<StartupTeamMember.TeamRole> teamRoles, StartupTeamMember.Status status);
     boolean existsByStartupIdAndUserIdAndTeamRoleInAndStatus(String startupId, String userId, List<StartupTeamMember.TeamRole> teamRoles, StartupTeamMember.Status status);
     List<StartupTeamMember> findByUserIdAndTeamRoleInAndStatus(String userId, List<StartupTeamMember.TeamRole> teamRoles, StartupTeamMember.Status status);

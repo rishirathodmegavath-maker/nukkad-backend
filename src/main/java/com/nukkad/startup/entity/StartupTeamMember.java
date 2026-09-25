@@ -27,7 +27,12 @@ import java.time.Instant;
 @Builder
 public class StartupTeamMember {
 
-    public enum Status { ACTIVE, PENDING, REJECTED }
+    /**
+     * ACTIVE is on the team. PENDING is someone who asked to join, waiting for a manager. INVITED is someone a manager
+     * asked to join, waiting for them: it confers nothing until they accept, so nobody can be put on a team (and gain
+     * the messaging access teammates have) without agreeing to it. REJECTED is a declined join request.
+     */
+    public enum Status { ACTIVE, PENDING, REJECTED, INVITED }
 
     public enum TeamRole { FOUNDER, ADMIN, MEMBER }
 

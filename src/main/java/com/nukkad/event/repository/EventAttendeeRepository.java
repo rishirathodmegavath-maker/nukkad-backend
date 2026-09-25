@@ -22,4 +22,13 @@ public interface EventAttendeeRepository extends JpaRepository<EventAttendee, St
     long countRsvpsForStartupEvents(@Param("startupId") String startupId, @Param("activeStatus") StartupTeamMember.Status activeStatus);
     List<EventAttendee> findByEventIdOrderByRegisteredAtAsc(String eventId);
     void deleteByEventId(String eventId);
+
+    /** One viewer's RSVP rows across a whole page of events, in one query instead of one
+     *  {@link #existsByEventIdAndUserId} call per row. */
+    List<EventAttendee> findByEventIdInAndUserId(List<String> eventIds, String userId);
+
+    /** Attendee counts for a whole page of events in one query, instead of one {@link #countByEventId}
+     *  call per row. */
+    @Query("select a.eventId as eventId, count(a) as total from EventAttendee a where a.eventId in :eventIds group by a.eventId")
+    List<EventIdCount> countGroupedByEventIdIn(@Param("eventIds") List<String> eventIds);
 }

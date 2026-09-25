@@ -60,6 +60,8 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import java.time.temporal.ChronoUnit;
+import com.nukkad.opportunity.dto.UpdateOpportunityRequest;
 
 /**
  * Covers the Opportunity Application workflow's state machine, authorization, duplicate/withdrawal
@@ -639,11 +641,11 @@ class OpportunityServiceTest {
         when(applicantRepository.findByUserId("applicant1")).thenReturn(List.of(app));
         when(interestRepository.findByUserId("applicant1")).thenReturn(List.of());
         when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(closedOpp));
-        when(applicantRepository.findByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(Optional.of(app));
-        when(interestRepository.existsByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(false);
-        when(applicantRepository.countByOpportunityIdAndStatusNotIn(
-                "opp1", List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED))).thenReturn(1L);
-        when(interestRepository.countByOpportunityId("opp1")).thenReturn(0L);
+        when(applicantRepository.findByOpportunityIdInAndUserId(List.of("opp1"), "applicant1")).thenReturn(List.of(app));
+        when(interestRepository.findByOpportunityIdInAndUserId(List.of("opp1"), "applicant1")).thenReturn(List.of());
+        when(applicantRepository.countGroupedByOpportunityIdInAndStatusNotIn(
+                List.of("opp1"), List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED))).thenReturn(List.of());
+        when(interestRepository.countGroupedByOpportunityIdIn(List.of("opp1"))).thenReturn(List.of());
         when(opportunityMapper.toDto(eq(closedOpp), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any()))
                 .thenAnswer(inv -> new OpportunityDto(
                         closedOpp.getId(),           // id
@@ -684,6 +686,37 @@ class OpportunityServiceTest {
         assertThat(page.getContent()).hasSize(1);
         assertThat(page.getContent().get(0).id()).isEqualTo("opp1");
         assertThat(page.getContent().get(0).closed()).isTrue();
+    }
+
+    // ---- Listing a page of opportunities batches the per-viewer/per-row lookups instead of running them once per row ----
+
+    @Test
+    void listingOpportunitiesFetchesApplicantAndInterestDataInFixedQueriesRegardlessOfPageSize() {
+        Opportunity opp1 = Opportunity.builder().id("opp1").title("A").postedByUserId("owner1")
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
+        Opportunity opp2 = Opportunity.builder().id("opp2").title("B").postedByUserId("owner2")
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
+        when(opportunityRepository.findAll(
+                org.mockito.Mockito.any(org.springframework.data.jpa.domain.Specification.class),
+                org.mockito.Mockito.any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(opp1, opp2)));
+        when(applicantRepository.findByOpportunityIdInAndUserId(any(), eq("viewer1"))).thenReturn(List.of());
+        when(interestRepository.findByOpportunityIdInAndUserId(any(), eq("viewer1"))).thenReturn(List.of());
+        when(applicantRepository.countGroupedByOpportunityIdInAndStatusNotIn(any(), any())).thenReturn(List.of());
+        when(interestRepository.countGroupedByOpportunityIdIn(any())).thenReturn(List.of());
+
+        Page<OpportunityDto> page = service().listOpportunities(null, null, null, null, null, null, "viewer1", 0, 20);
+
+        assertThat(page.getContent()).hasSize(2);
+        // One call each for the whole page, not one per opportunity — the actual N+1 fix.
+        verify(applicantRepository, org.mockito.Mockito.times(1)).findByOpportunityIdInAndUserId(any(), eq("viewer1"));
+        verify(interestRepository, org.mockito.Mockito.times(1)).findByOpportunityIdInAndUserId(any(), eq("viewer1"));
+        verify(applicantRepository, org.mockito.Mockito.times(1)).countGroupedByOpportunityIdInAndStatusNotIn(any(), any());
+        verify(interestRepository, org.mockito.Mockito.times(1)).countGroupedByOpportunityIdIn(any());
+        verify(applicantRepository, never()).findByOpportunityIdAndUserId(anyString(), anyString());
+        verify(interestRepository, never()).existsByOpportunityIdAndUserId(anyString(), anyString());
+        verify(applicantRepository, never()).countByOpportunityIdAndStatusNotIn(anyString(), any());
+        verify(interestRepository, never()).countByOpportunityId(anyString());
     }
 
     // ---- Poster cannot apply/express interest in their own opportunity ----
@@ -1068,5 +1101,131 @@ class OpportunityServiceTest {
 
         assertThat(page.getContent()).isEmpty();
         verify(opportunityMapper, never()).toDto(any(), anyBoolean(), anyBoolean(), any(), anyInt(), anyInt(), any());
+    }
+
+    // ---- Application deadline: refused when set in the past, and enforced once it has passed ----
+
+    private PostOpportunityRequest postRequestWithDeadline(Instant deadline) {
+        return new PostOpportunityRequest("AI/ML Intern", "Internship", null, "ABC Technologies",
+                "Bengaluru", "Remote", "Build ML pipelines", null, List.of("Python"), null, null, null, null, deadline);
+    }
+
+    /** What the forms send for a chosen date: midnight UTC at the start of that day. */
+    private static Instant dateInputDaysFromToday(long days) {
+        return Instant.now().truncatedTo(ChronoUnit.DAYS).plus(days, ChronoUnit.DAYS);
+    }
+
+    private void founderCanPost() {
+        when(startupTeamMemberRepository.existsByUserIdAndTeamRoleInAndStatus("founder1", MANAGER_ROLES, StartupTeamMember.Status.ACTIVE))
+                .thenReturn(true);
+        when(userRepository.findById("founder1")).thenReturn(Optional.of(user("founder1", "Rishi")));
+    }
+
+    @Test
+    void aDeadlineThatHasAlreadyPassedIsRejectedWhenPosting() {
+        founderCanPost();
+
+        assertThatThrownBy(() -> service().postOpportunity("founder1", postRequestWithDeadline(dateInputDaysFromToday(-1))))
+                .isInstanceOf(BadRequestException.class).hasMessageContaining("deadline");
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aDeadlineOfTodayIsStillOpenSoItIsAccepted() {
+        founderCanPost();
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().postOpportunity("founder1", postRequestWithDeadline(dateInputDaysFromToday(0)));
+
+        verify(opportunityRepository).saveAndFlush(any(Opportunity.class));
+    }
+
+    @Test
+    void aFutureDeadlineAndNoDeadlineAreBothAccepted() {
+        founderCanPost();
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service().postOpportunity("founder1", postRequestWithDeadline(dateInputDaysFromToday(30)));
+        service().postOpportunity("founder1", postRequestWithDeadline(null));
+
+        verify(opportunityRepository, org.mockito.Mockito.times(2)).saveAndFlush(any(Opportunity.class));
+    }
+
+    @Test
+    void anAdminCannotPublishAPastDeadlineEither() {
+        when(userRepository.findById("admin1")).thenReturn(Optional.of(user("admin1", "Admin")));
+
+        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequestWithDeadline(dateInputDaysFromToday(-3)), null, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
+    }
+
+    private Opportunity opportunityWithDeadline(Instant deadline) {
+        Opportunity opp = opportunity("owner1");
+        opp.setApplicationDeadline(deadline);
+        return opp;
+    }
+
+    @Test
+    void applyingAfterTheDeadlineDayIsRefusedAndSavesNothing() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunityWithDeadline(dateInputDaysFromToday(-1))));
+
+        assertThatThrownBy(() -> service().apply("applicant1", "opp1", ANY_APPLICATION))
+                .isInstanceOf(BadRequestException.class).hasMessageContaining("deadline");
+
+        verify(applicantRepository, never()).saveAndFlush(any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void expressingInterestAfterTheDeadlineDayIsRefusedToo() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunityWithDeadline(dateInputDaysFromToday(-1))));
+
+        assertThatThrownBy(() -> service().expressInterest("applicant1", "opp1"))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(interestRepository, never()).save(any());
+    }
+
+    @Test
+    void applyingOnTheDeadlineDayItselfStillWorks() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunityWithDeadline(dateInputDaysFromToday(0))));
+        when(userRepository.findById("applicant1")).thenReturn(Optional.of(user("applicant1", "Meera Joshi")));
+        when(applicantRepository.findByOpportunityIdAndUserId("opp1", "applicant1")).thenReturn(Optional.empty());
+        when(applicantRepository.saveAndFlush(any(OpportunityApplicant.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(userService.getUser("applicant1", "applicant1")).thenReturn(stubUserDto("applicant1"));
+
+        ApplicationDto dto = service().apply("applicant1", "opp1", ANY_APPLICATION);
+
+        assertThat(dto.status()).isEqualTo("Pending");
+    }
+
+    private UpdateOpportunityRequest updateWithDeadline(Instant deadline) {
+        return new UpdateOpportunityRequest(null, null, null, null, null, null, "A longer description", null, null, null,
+                null, null, null, deadline);
+    }
+
+    @Test
+    void editingAnExpiredPostingKeepsItsStoredDeadlineInsteadOfFailingOnIt() {
+        Instant expired = dateInputDaysFromToday(-10);
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunityWithDeadline(expired)));
+        when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // The edit form re-sends the deadline it loaded, so this must not be treated as "setting a past deadline".
+        service().updateOpportunity("owner1", "opp1", updateWithDeadline(expired));
+
+        verify(opportunityRepository).saveAndFlush(any(Opportunity.class));
+    }
+
+    @Test
+    void movingTheDeadlineToAPastDateIsRefused() {
+        when(opportunityRepository.findById("opp1")).thenReturn(Optional.of(opportunityWithDeadline(dateInputDaysFromToday(20))));
+
+        assertThatThrownBy(() -> service().updateOpportunity("owner1", "opp1", updateWithDeadline(dateInputDaysFromToday(-2))))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(opportunityRepository, never()).saveAndFlush(any());
     }
 }

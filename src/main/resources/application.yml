@@ -86,6 +86,13 @@ server:
   # headers. Without this, request.isSecure() always reports false behind that proxy, which
   # silently suppresses Spring Security's HSTS header (its writer only fires on secure requests).
   forward-headers-strategy: framework
+  # The API's JSON (lists of 20-100 records per request) shrinks roughly tenfold under gzip, and nothing in front of
+  # the backend compresses it (Caddy's api. host has no `encode`). Bearer-token API with no cookies, so there is no
+  # ambient credential for a compression-length attack to ride on. Small bodies are left alone.
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 1KB
   error:
     include-message: always
     include-binding-errors: never

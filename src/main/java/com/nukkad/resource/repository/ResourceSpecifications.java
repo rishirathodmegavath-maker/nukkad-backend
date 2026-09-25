@@ -1,5 +1,7 @@
 package com.nukkad.resource.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.resource.entity.Resource;
 import com.nukkad.resource.entity.ResourceCategory;
@@ -23,7 +25,7 @@ public final class ResourceSpecifications {
 
     public static Specification<Resource> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("title")), like),
                 cb.like(cb.lower(cb.coalesce(root.get("description"), "")), like),

@@ -1,5 +1,7 @@
 package com.nukkad.investor.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.investor.entity.InvestorProfile;
 import com.nukkad.investor.entity.InvestorType;
 import org.springframework.data.jpa.domain.Specification;
@@ -21,7 +23,7 @@ public final class InvestorProfileSpecifications {
 
     public static Specification<InvestorProfile> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(cb.coalesce(root.get("firmName"), "")), like),
                 cb.like(cb.lower(cb.coalesce(root.get("thesis"), "")), like)

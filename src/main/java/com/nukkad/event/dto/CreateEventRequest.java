@@ -1,6 +1,7 @@
 package com.nukkad.event.dto;
 
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
@@ -16,7 +17,7 @@ public record CreateEventRequest(
         @Size(max = 300) String location,
         @Size(max = 500) String meetingUrl,
         @Size(max = 500) String coverImageUrl,
-        Integer capacity,
+        @Positive Integer capacity,
         List<String> startupIds
 ) {
 }

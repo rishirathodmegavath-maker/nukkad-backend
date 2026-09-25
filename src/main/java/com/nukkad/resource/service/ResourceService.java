@@ -6,6 +6,7 @@ import com.nukkad.common.audit.AuditAction;
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.resource.dto.ResourceChapterOption;
 import com.nukkad.resource.dto.ResourceDto;
@@ -93,7 +94,7 @@ public class ResourceService {
                 ResourceSpecifications.chapterId(chapterId)
         );
         // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         return resourceRepository.findAll(spec, pageable).map(r -> toDto(r, viewerId));
     }
 

@@ -8,11 +8,32 @@
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy no-referrer-when-downgrade
+		# Nothing in the app uses these; switching them off for the page and anything it embeds.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
 	}
+}
+
+# Content-Security-Policy for the two SPA hosts, in REPORT-ONLY mode: the browser logs every violation to the console
+# ("[Report Only] Refused to ...") and blocks nothing, so it cannot break the app. To validate, open app. and admin.
+# and use every main screen (Google sign-in, feed with an image and a YouTube link, messages with an attachment,
+# a startup page, the investor catalogue); when the console stays clean, rename the header to
+# Content-Security-Policy to enforce it. img-src allows any https image on purpose: avatars, logos and link
+# previews come from several third-party hosts. Scripts, frames, plugins and <base>/form targets are locked down.
+(spa_csp_report_only) {
+	header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' blob: https://media.buildadda.com; connect-src 'self' https://api.buildadda.com wss://api.buildadda.com https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/ https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+}
+
+# The build's /assets/* files are named by content hash, so they can be cached for good; index.html (not under
+# /assets/) is left to revalidate, so a new release is picked up straight away.
+(spa_hashed_assets) {
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
 }
 
 app.buildadda.com {
 	import security_headers
+	import spa_csp_report_only
+	import spa_hashed_assets
 	# /srv/frontend-dist/current is a symlink deploy.sh repoints atomically to the newest release --
 	# never point root directly at frontend-dist itself (see deploy.sh's frontend case for why).
 	root * /srv/frontend-dist/current
@@ -36,6 +57,10 @@ buildadda.com, www.buildadda.com {
 # mounts only the control panel (separate sign-in, separate session, admin-scoped API token).
 admin.buildadda.com {
 	import security_headers
+	import spa_csp_report_only
+	import spa_hashed_assets
+	# The control panel has no business in a search index.
+	header X-Robots-Tag "noindex, nofollow"
 	root * /srv/frontend-dist/current
 	encode gzip
 	try_files {path} /index.html
@@ -43,6 +68,11 @@ admin.buildadda.com {
 }
 
 api.buildadda.com {
+	# deploy.sh probes /actuator/health from inside the Docker network (caddy -> backend:8082), never through this public
+	# hostname, so the health endpoint doesn't have to be world-readable. If an external uptime monitor watches
+	# https://api.buildadda.com/actuator/health, point it elsewhere (or drop this rule) before applying.
+	@actuator path /actuator /actuator/*
+	respond @actuator 404
 	reverse_proxy backend:8082
 }
 

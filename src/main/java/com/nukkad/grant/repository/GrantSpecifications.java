@@ -1,5 +1,7 @@
 package com.nukkad.grant.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.grant.entity.Grant;
 import com.nukkad.grant.entity.GrantProviderType;
@@ -26,7 +28,7 @@ public final class GrantSpecifications {
 
     public static Specification<Grant> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("name")), like),
                 cb.like(cb.lower(root.get("provider")), like),

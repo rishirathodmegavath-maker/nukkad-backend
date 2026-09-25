@@ -499,13 +499,19 @@ class StartupServiceTest {
                 .thenReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(a, b)));
         when(followRepository.countByStartupIds(any())).thenReturn(java.util.List.of(new Object[] {"s1", 3L}, new Object[] {"s2", 7L}));
         // The viewer manages s1 (so its real count of 3 shows) but not s2 (whose real count of 7 stays hidden).
-        when(teamMemberRepository.findByStartupIdAndUserId("s1", "viewer1")).thenReturn(Optional.of(founder("s1", "viewer1")));
+        when(teamMemberRepository.findByStartupIdInAndUserId(any(), eq("viewer1")))
+                .thenReturn(java.util.List.of(founder("s1", "viewer1")));
 
         var page = service().listStartups(null, null, null, null, null, null, "viewer1", 0, 20);
 
         assertThat(page.getContent()).extracting("id", "followerCount").containsExactly(
                 org.assertj.core.groups.Tuple.tuple("s1", 3L), org.assertj.core.groups.Tuple.tuple("s2", 0L));
+        // One call each for the whole page, not one per startup — the actual N+1 fix.
         verify(followRepository, org.mockito.Mockito.times(1)).countByStartupIds(any());
+        verify(followRepository, org.mockito.Mockito.times(1)).findStartupIdsFollowedByUser(eq("viewer1"), any());
+        verify(teamMemberRepository, org.mockito.Mockito.times(1)).findByStartupIdInAndUserId(any(), eq("viewer1"));
+        verify(followRepository, never()).existsByUserIdAndStartupId(anyString(), anyString());
+        verify(teamMemberRepository, never()).findByStartupIdAndUserId(anyString(), anyString());
     }
 
     @Test
@@ -1176,5 +1182,239 @@ class StartupServiceTest {
 
     private void accessibleStartup() {
         when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+    }
+
+    // ---- QA audit: team invitations (nobody is put on a team without agreeing to it) ----
+
+    private static StartupTeamMember withStatus(StartupTeamMember m, StartupTeamMember.Status status) {
+        m.setStatus(status);
+        return m;
+    }
+
+    private void founderInvites(String personId, Optional<StartupTeamMember> existingRow) {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(userRepository.findById(personId)).thenReturn(Optional.of(User.builder().id(personId).build()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", personId)).thenReturn(existingRow);
+        org.mockito.Mockito.lenient().when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void addingSomeoneToATeamInvitesThemInsteadOfPuttingThemOnIt() {
+        founderInvites("newUser", Optional.empty());
+
+        StartupTeamMemberDto dto = service().addMember("f1", "s1", "newUser", null, null);
+
+        assertThat(dto.status()).isEqualTo("INVITED");
+        assertThat(dto.reviewedAt()).isNull();
+        verify(notificationService).notify(eq("newUser"), eq(com.nukkad.notification.entity.NotificationType.startup),
+                eq("You're invited to join a team"), anyString(), eq("s1"), eq("f1"));
+    }
+
+    @Test
+    void anInvitationToBeAnAdminDoesNotLookLikeManagementRightsToTheClient() {
+        founderInvites("newUser", Optional.empty());
+
+        StartupTeamMemberDto dto = service().addMember("f1", "s1", "newUser", null, "ADMIN");
+
+        assertThat(dto.teamRole()).isEqualTo("ADMIN");
+        assertThat(dto.canManage()).isFalse();
+    }
+
+    @Test
+    void addingSomeoneWhoAskedToJoinAcceptsTheirRequest() {
+        founderInvites("asker", Optional.of(withStatus(member("s1", "asker"), StartupTeamMember.Status.PENDING)));
+
+        StartupTeamMemberDto dto = service().addMember("f1", "s1", "asker", null, null);
+
+        assertThat(dto.status()).isEqualTo("ACTIVE");
+        verify(notificationService).notify(eq("asker"), eq(com.nukkad.notification.entity.NotificationType.startup),
+                eq("You're on the team"), anyString(), eq("s1"), eq("f1"));
+    }
+
+    @Test
+    void aPersonWhoAlreadyDeclinedCanBeInvitedAgain() {
+        founderInvites("again", Optional.of(withStatus(member("s1", "again"), StartupTeamMember.Status.REJECTED)));
+
+        assertThat(service().addMember("f1", "s1", "again", null, null).status()).isEqualTo("INVITED");
+    }
+
+    @Test
+    void invitingSomeoneTwiceOrInvitingAnActiveMemberIsAConflictAndNotifiesNobody() {
+        founderInvites("invited", Optional.of(withStatus(member("s1", "invited"), StartupTeamMember.Status.INVITED)));
+        assertThatThrownBy(() -> service().addMember("f1", "s1", "invited", null, null)).isInstanceOf(ConflictException.class);
+
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "already")).thenReturn(Optional.of(member("s1", "already")));
+        when(userRepository.findById("already")).thenReturn(Optional.of(User.builder().id("already").build()));
+        assertThatThrownBy(() -> service().addMember("f1", "s1", "already", null, null)).isInstanceOf(ConflictException.class);
+
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    private void invitationFor(String userId, StartupTeamMember.Status status) {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", userId))
+                .thenReturn(Optional.of(withStatus(member("s1", userId), status)));
+        org.mockito.Mockito.lenient().when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void acceptingAnInvitationPutsThePersonOnTheTeamAndTellsTheManagersWhoAreActive() {
+        invitationFor("guest", StartupTeamMember.Status.INVITED);
+        when(userRepository.findById("guest")).thenReturn(Optional.of(User.builder().id("guest").name("Meera").build()));
+        // An Admin who was invited but has not answered must not be told anything about the team.
+        StartupTeamMember invitedAdmin = withStatus(admin("s1", "a-invited"), StartupTeamMember.Status.INVITED);
+        when(teamMemberRepository.findByStartupIdAndTeamRoleIn(eq("s1"), any()))
+                .thenReturn(java.util.List.of(founder("s1", "f1"), invitedAdmin));
+
+        StartupTeamMemberDto dto = service().acceptInvitation("guest", "s1");
+
+        assertThat(dto.status()).isEqualTo("ACTIVE");
+        assertThat(dto.reviewedAt()).isNotNull();
+        verify(notificationService).notify(eq("f1"), eq(com.nukkad.notification.entity.NotificationType.startup),
+                eq("Invitation accepted"), anyString(), eq("s1"), eq("guest"));
+        verify(notificationService, never()).notify(eq("a-invited"), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void onlyAPendingInvitationCanBeAcceptedOrDeclined() {
+        for (StartupTeamMember.Status notInvited : new StartupTeamMember.Status[] {
+                StartupTeamMember.Status.ACTIVE, StartupTeamMember.Status.PENDING, StartupTeamMember.Status.REJECTED}) {
+            invitationFor("guest", notInvited);
+            assertThatThrownBy(() -> service().acceptInvitation("guest", "s1")).isInstanceOf(ResourceNotFoundException.class);
+            assertThatThrownBy(() -> service().declineInvitation("guest", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        }
+        // And someone with no row at all learns nothing either.
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "stranger")).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service().acceptInvitation("stranger", "s1")).isInstanceOf(ResourceNotFoundException.class);
+
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+        verify(teamMemberRepository, never()).delete(any());
+    }
+
+    @Test
+    void oneUserCannotAnswerAnInvitationSentToSomeoneElse() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "meddler")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().acceptInvitation("meddler", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().declineInvitation("meddler", "s1")).isInstanceOf(ResourceNotFoundException.class);
+
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+        verify(teamMemberRepository, never()).delete(any());
+    }
+
+    @Test
+    void decliningAnInvitationWithdrawsItQuietly() {
+        invitationFor("guest", StartupTeamMember.Status.INVITED);
+
+        service().declineInvitation("guest", "s1");
+
+        verify(teamMemberRepository).delete(any(StartupTeamMember.class));
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anInvitationToAnAdminRemovedStartupCannotBeAnswered() {
+        removedStartupWithFounder();
+
+        assertThatThrownBy(() -> service().acceptInvitation("guest", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().declineInvitation("guest", "s1")).isInstanceOf(ResourceNotFoundException.class);
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aManagerCanWithdrawAnInvitationBeforeItIsAnsweredAndNoOneIsToldTheyWereRemoved() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1")).thenReturn(Optional.of(admin("s1", "a1")));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "guest"))
+                .thenReturn(Optional.of(withStatus(member("s1", "guest"), StartupTeamMember.Status.INVITED)));
+
+        service().removeMember("a1", "s1", "guest");
+
+        verify(teamMemberRepository).delete(any(StartupTeamMember.class));
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anInvitedAdminCannotEditTheStartupYet() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "a1"))
+                .thenReturn(Optional.of(withStatus(admin("s1", "a1"), StartupTeamMember.Status.INVITED)));
+        UpdateBuilder u = new UpdateBuilder();
+        u.tagline = "Nope";
+
+        assertThatThrownBy(() -> service().updateStartup("a1", "s1", u.build())).isInstanceOf(ForbiddenException.class);
+        verify(startupRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void someoneWhoWasInvitedCannotAlsoFileAJoinRequestOverTheInvitation() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(userRepository.findById("guest")).thenReturn(Optional.of(User.builder().id("guest").build()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "guest"))
+                .thenReturn(Optional.of(withStatus(admin("s1", "guest"), StartupTeamMember.Status.INVITED)));
+
+        assertThatThrownBy(() -> service().requestToJoin("guest", "s1", null, "let me in")).isInstanceOf(ConflictException.class);
+
+        verify(teamMemberRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aJoinRequestIsOnlyAnnouncedToManagersWhoAreActuallyOnTheTeam() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(userRepository.findById("asker")).thenReturn(Optional.of(User.builder().id("asker").build()));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "asker")).thenReturn(Optional.empty());
+        when(teamMemberRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(teamMemberRepository.findByStartupIdAndTeamRoleIn(eq("s1"), any())).thenReturn(java.util.List.of(
+                founder("s1", "f1"), withStatus(admin("s1", "a-invited"), StartupTeamMember.Status.INVITED)));
+
+        service().requestToJoin("asker", "s1", null, "hi");
+
+        verify(notificationService).notify(eq("f1"), any(), eq("New join request"), anyString(), eq("s1"), eq("asker"));
+        verify(notificationService, never()).notify(eq("a-invited"), any(), any(), any(), any(), any());
+    }
+
+    // ---- QA audit: "raising" is what an open fundraise says, not something a profile edit can claim ----
+
+    @Test
+    void aProfileEditCannotMarkAStartupAsRaisingWithoutAFundraise() {
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(startup("s1", StartupVisibility.PUBLIC, false, true)));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        UpdateBuilder u = new UpdateBuilder();
+        u.isRaising = true;
+
+        assertThatThrownBy(() -> service().updateStartup("f1", "s1", u.build())).isInstanceOf(BadRequestException.class);
+
+        verify(startupRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aProfileEditCanStillClearAStaleRaisingFlag() {
+        Startup raising = startup("s1", StartupVisibility.PUBLIC, true, true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(raising));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(startupRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        UpdateBuilder u = new UpdateBuilder();
+        u.isRaising = false;
+
+        service().updateStartup("f1", "s1", u.build());
+
+        assertThat(raising.isRaising()).isFalse();
+    }
+
+    @Test
+    void sendingTheCurrentRaisingValueBackUnchangedIsHarmless() {
+        Startup raising = startup("s1", StartupVisibility.PUBLIC, true, true);
+        when(startupRepository.findById("s1")).thenReturn(Optional.of(raising));
+        when(teamMemberRepository.findByStartupIdAndUserId("s1", "f1")).thenReturn(Optional.of(founder("s1", "f1")));
+        when(startupRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        UpdateBuilder u = new UpdateBuilder();
+        u.isRaising = true;
+
+        service().updateStartup("f1", "s1", u.build());
+
+        assertThat(raising.isRaising()).isTrue();
     }
 }

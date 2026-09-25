@@ -2,6 +2,7 @@ package com.nukkad.discussion.service;
 
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.discussion.dto.CreateDiscussionRequest;
 import com.nukkad.discussion.dto.DiscussionCommentDto;
 import com.nukkad.discussion.dto.DiscussionDto;
@@ -102,7 +103,7 @@ public class DiscussionService {
     public Page<DiscussionDto> list(String viewerId, String sort, String topicParam, String tagParam, int page, int size) {
         Post.Topic topic = parseTopicOrNull(topicParam);
         String tag = normalizedTagOrNoMatch(tagParam);
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
         Sort sortMode = parseSort(sort);
 
         Page<Post> posts = switch (sortMode) {

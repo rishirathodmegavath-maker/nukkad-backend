@@ -1,5 +1,7 @@
 package com.nukkad.investor.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.investor.entity.Investor;
 import com.nukkad.investor.entity.InvestorType;
 import org.springframework.data.jpa.domain.Specification;
@@ -27,7 +29,7 @@ public final class InvestorSpecifications {
 
     public static Specification<Investor> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("name")), like),
                 cb.like(cb.lower(cb.coalesce(root.get("description"), "")), like),
@@ -63,7 +65,7 @@ public final class InvestorSpecifications {
 
     public static Specification<Investor> location(String location) {
         if (location == null || location.isBlank()) return null;
-        String like = "%" + location.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(location);
         return (root, query, cb) -> cb.like(cb.lower(cb.coalesce(root.get("location"), "")), like);
     }
 

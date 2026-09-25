@@ -86,6 +86,32 @@ class EventServiceTest {
                 false, "HSR Layout", null, null, null, null);
     }
 
+    // ---- Listing a page of events batches the per-viewer/per-row lookups instead of running them once per row ----
+
+    @Test
+    void listingEventsFetchesChapterAttendeeAndStartupDataInFixedQueriesRegardlessOfPageSize() {
+        Event e1 = event("ev1", null, "owner1", 10);
+        Event e2 = event("ev2", null, "owner2", 10);
+        when(eventRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(e1, e2)));
+        when(attendeeRepository.countGroupedByEventIdIn(any())).thenReturn(java.util.List.of());
+        when(attendeeRepository.findByEventIdInAndUserId(any(), org.mockito.ArgumentMatchers.eq("viewer1"))).thenReturn(java.util.List.of());
+        when(eventStartupRepository.findByEventIdIn(any())).thenReturn(java.util.List.of());
+
+        var page = service().listEvents(null, null, null, null, "viewer1", 0, 20);
+
+        assertThat(page.getContent()).hasSize(2);
+        // One call each for the whole page, not one per event — the actual N+1 fix.
+        org.mockito.Mockito.verify(attendeeRepository, org.mockito.Mockito.times(1)).countGroupedByEventIdIn(any());
+        org.mockito.Mockito.verify(attendeeRepository, org.mockito.Mockito.times(1))
+                .findByEventIdInAndUserId(any(), org.mockito.ArgumentMatchers.eq("viewer1"));
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.times(1)).findByEventIdIn(any());
+        org.mockito.Mockito.verify(attendeeRepository, org.mockito.Mockito.never()).countByEventId(org.mockito.ArgumentMatchers.anyString());
+        org.mockito.Mockito.verify(attendeeRepository, org.mockito.Mockito.never())
+                .existsByEventIdAndUserId(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString());
+        org.mockito.Mockito.verify(eventStartupRepository, org.mockito.Mockito.never()).findByEventId(org.mockito.ArgumentMatchers.anyString());
+    }
+
     // ---- create: authorization ----
 
     @Test
@@ -717,5 +743,169 @@ class EventServiceTest {
         assertThatThrownBy(() -> service().uploadCoverImage(pdf))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("images are allowed");
+    }
+
+    // ---- QA audit: status, validation and RSVP rules the server itself must enforce ----
+
+    private Event eventBetween(String id, Instant start, Instant end) {
+        return Event.builder().id(id).title("Demo night").organizerUserId("organizer1")
+                .startAt(start).endAt(end).online(false).location("HSR Layout").build();
+    }
+
+    @Test
+    void theServerSaysWhereAnEventIsInTimeSoNoClientHasToGuess() {
+        Instant now = Instant.now();
+        Event upcoming = eventBetween("up", now.plus(1, ChronoUnit.DAYS), now.plus(2, ChronoUnit.DAYS));
+        Event live = eventBetween("live", now.minus(1, ChronoUnit.HOURS), now.plus(1, ChronoUnit.HOURS));
+        Event ended = eventBetween("gone", now.minus(2, ChronoUnit.DAYS), now.minus(1, ChronoUnit.DAYS));
+        when(eventRepository.findById("up")).thenReturn(Optional.of(upcoming));
+        when(eventRepository.findById("live")).thenReturn(Optional.of(live));
+        when(eventRepository.findById("gone")).thenReturn(Optional.of(ended));
+        when(attendeeRepository.countByEventId(any())).thenReturn(0L);
+
+        assertThat(service().getEvent("up", "viewer1").status()).isEqualTo(com.nukkad.event.entity.EventStatus.UPCOMING);
+        assertThat(service().getEvent("live", "viewer1").status()).isEqualTo(com.nukkad.event.entity.EventStatus.LIVE);
+        assertThat(service().getEvent("gone", "viewer1").status()).isEqualTo(com.nukkad.event.entity.EventStatus.ENDED);
+    }
+
+    @Test
+    void anEventThatHasAlreadyEndedCannotBeCreated() {
+        Instant end = Instant.now().minus(1, ChronoUnit.HOURS);
+        CreateEventRequest inThePast = new CreateEventRequest("Old news", null, null, end.minus(2, ChronoUnit.HOURS), end,
+                false, "Somewhere", null, null, null, null);
+
+        assertThatThrownBy(() -> service().createEvent("regularUser", inThePast)).isInstanceOf(BadRequestException.class);
+
+        verify0Saves();
+    }
+
+    @Test
+    void anEventThatIsAlreadyUnderWayCanStillBeCreated() {
+        Instant now = Instant.now();
+        CreateEventRequest underWay = new CreateEventRequest("Happening now", null, null, now.minus(30, ChronoUnit.MINUTES),
+                now.plus(2, ChronoUnit.HOURS), false, "Somewhere", null, null, null, null);
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId(any())).thenReturn(0L);
+
+        assertThat(service().createEvent("regularUser", underWay).status()).isEqualTo(com.nukkad.event.entity.EventStatus.LIVE);
+    }
+
+    @Test
+    void aMeetingLinkThatIsNotAWebAddressIsRefusedAndNothingIsSaved() {
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        CreateEventRequest hostile = new CreateEventRequest("Webinar", null, null, start, start.plus(1, ChronoUnit.HOURS),
+                true, null, "javascript:alert(document.cookie)", null, null, null);
+
+        assertThatThrownBy(() -> service().createEvent("regularUser", hostile)).isInstanceOf(BadRequestException.class);
+
+        verify0Saves();
+    }
+
+    @Test
+    void aBareMeetingLinkIsStoredAsAnHttpsAddress() {
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        CreateEventRequest bare = new CreateEventRequest("Webinar", null, null, start, start.plus(1, ChronoUnit.HOURS),
+                true, null, "meet.example.com/abc-defg", null, null, null);
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId(any())).thenReturn(0L);
+
+        assertThat(service().createEvent("regularUser", bare).meetingUrl()).isEqualTo("https://meet.example.com/abc-defg");
+    }
+
+    @Test
+    void aCoverImageThatIsNotAWebAddressIsRefused() {
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        CreateEventRequest hostile = new CreateEventRequest("Meetup", null, null, start, start.plus(1, ChronoUnit.HOURS),
+                false, "HSR Layout", null, "data:text/html;base64,PHNjcmlwdD4=", null, null);
+
+        assertThatThrownBy(() -> service().createEvent("regularUser", hostile)).isInstanceOf(BadRequestException.class);
+
+        verify0Saves();
+    }
+
+    @Test
+    void anUpdatedMeetingLinkGetsTheSameCheck() {
+        Event online = event("e1", null, "organizer1", null);
+        online.setOnline(true);
+        online.setMeetingUrl("https://meet.example.com/ok");
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(online));
+
+        assertThatThrownBy(() -> service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, "javascript:alert(1)", null, null, null)))
+                .isInstanceOf(BadRequestException.class);
+
+        verify0Saves();
+    }
+
+    @Test
+    void registeringForAnEventThatHasEndedIsRefusedAndNoAttendeeIsCreated() {
+        Instant now = Instant.now();
+        Event ended = eventBetween("gone", now.minus(2, ChronoUnit.DAYS), now.minus(1, ChronoUnit.DAYS));
+        when(eventRepository.findByIdForUpdate("gone")).thenReturn(Optional.of(ended));
+
+        assertThatThrownBy(() -> service().rsvp("member1", "gone")).isInstanceOf(BadRequestException.class);
+
+        org.mockito.Mockito.verify(attendeeRepository, org.mockito.Mockito.never()).saveAndFlush(any());
+    }
+
+    @Test
+    void registeringForAnEventThatIsUnderWayIsStillAllowed() {
+        Instant now = Instant.now();
+        Event live = eventBetween("live", now.minus(1, ChronoUnit.HOURS), now.plus(1, ChronoUnit.HOURS));
+        when(eventRepository.findByIdForUpdate("live")).thenReturn(Optional.of(live));
+        when(attendeeRepository.existsByEventIdAndUserId("live", "member1")).thenReturn(false);
+        when(attendeeRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().rsvp("member1", "live");
+
+        org.mockito.Mockito.verify(attendeeRepository).saveAndFlush(any());
+    }
+
+    @Test
+    void capacityCannotBeCutBelowTheNumberAlreadyRegistered() {
+        Event openEvent = event("e1", null, "organizer1", 50);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(openEvent));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(12L);
+
+        assertThatThrownBy(() -> service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, 5, null)))
+                .isInstanceOf(BadRequestException.class).hasMessageContaining("12");
+
+        verify0Saves();
+    }
+
+    @Test
+    void capacityAtOrAboveTheNumberRegisteredIsAccepted() {
+        Event openEvent = event("e1", null, "organizer1", 50);
+        when(eventRepository.findById("e1")).thenReturn(Optional.of(openEvent));
+        when(attendeeRepository.countByEventId("e1")).thenReturn(12L);
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        assertThat(service().updateEvent("organizer1", "e1",
+                new UpdateEventRequest(null, null, null, null, null, null, null, null, 12, null)).capacity()).isEqualTo(12);
+    }
+
+    // ---- request validation the API enforces regardless of the form in front of it ----
+
+    private static final jakarta.validation.Validator VALIDATOR =
+            jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
+
+    @Test
+    void aZeroOrNegativeCapacityIsRejectedByTheRequestValidation() {
+        Instant start = Instant.now().plus(1, ChronoUnit.DAYS);
+        for (int bad : new int[] {0, -5}) {
+            CreateEventRequest request = new CreateEventRequest("Meetup", null, null, start, start.plus(1, ChronoUnit.HOURS),
+                    false, "HSR Layout", null, null, bad, null);
+            assertThat(VALIDATOR.validate(request)).extracting(v -> v.getPropertyPath().toString()).containsExactly("capacity");
+        }
+        assertThat(VALIDATOR.validate(new UpdateEventRequest(null, null, null, null, null, null, null, null, 0, null))).hasSize(1);
+    }
+
+    @Test
+    void aBlankTitleCannotBeSetOnAnEventButLeavingItOutIsFine() {
+        assertThat(VALIDATOR.validate(new UpdateEventRequest("   ", null, null, null, null, null, null, null, null, null)))
+                .extracting(v -> v.getPropertyPath().toString()).containsExactly("title");
+        assertThat(VALIDATOR.validate(new UpdateEventRequest(null, null, null, null, null, null, null, null, null, null))).isEmpty();
+        assertThat(VALIDATOR.validate(new UpdateEventRequest("Renamed", null, null, null, null, null, null, null, null, null))).isEmpty();
     }
 }

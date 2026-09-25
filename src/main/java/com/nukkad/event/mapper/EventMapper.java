@@ -3,8 +3,10 @@ package com.nukkad.event.mapper;
 import com.nukkad.event.dto.EventDto;
 import com.nukkad.event.dto.EventStartupSummaryDto;
 import com.nukkad.event.entity.Event;
+import com.nukkad.event.entity.EventStatus;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.List;
 
 @Component
@@ -21,6 +23,7 @@ public class EventMapper {
                 event.getOrganizerUserId(),
                 event.getStartAt(),
                 event.getEndAt(),
+                EventStatus.of(event, Instant.now()),
                 event.isOnline(),
                 event.getLocation(),
                 event.getMeetingUrl(),

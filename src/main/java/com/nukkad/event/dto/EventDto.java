@@ -1,5 +1,7 @@
 package com.nukkad.event.dto;
 
+import com.nukkad.event.entity.EventStatus;
+
 import java.time.Instant;
 import java.util.List;
 
@@ -12,6 +14,8 @@ public record EventDto(
         String organizerUserId,
         Instant startAt,
         Instant endAt,
+        /** Where the event is in time, worked out by the server from start and end (never stored, so never stale). */
+        EventStatus status,
         boolean online,
         String location,
         String meetingUrl,

@@ -17,4 +17,9 @@ public interface StartupFollowRepository extends JpaRepository<StartupFollow, St
     /** Follower counts for a page of startups in one query: rows of (startupId, count); a startup nobody follows has no row. */
     @Query("select f.startupId, count(f) from StartupFollow f where f.startupId in :ids group by f.startupId")
     List<Object[]> countByStartupIds(@Param("ids") Collection<String> ids);
+
+    /** Which of a page's worth of startups this viewer follows, in one query instead of one
+     *  {@link #existsByUserIdAndStartupId} call per row. */
+    @Query("select f.startupId from StartupFollow f where f.userId = :userId and f.startupId in :ids")
+    List<String> findStartupIdsFollowedByUser(@Param("userId") String userId, @Param("ids") Collection<String> ids);
 }

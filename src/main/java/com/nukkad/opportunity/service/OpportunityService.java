@@ -7,6 +7,7 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
@@ -22,6 +23,7 @@ import com.nukkad.opportunity.entity.OpportunityType;
 import com.nukkad.opportunity.entity.WorkMode;
 import com.nukkad.opportunity.mapper.OpportunityMapper;
 import com.nukkad.opportunity.repository.OpportunityApplicantRepository;
+import com.nukkad.opportunity.repository.OpportunityIdCount;
 import com.nukkad.opportunity.repository.OpportunityInterestRepository;
 import com.nukkad.opportunity.repository.OpportunityRepository;
 import com.nukkad.opportunity.repository.OpportunitySpecifications;
@@ -50,10 +52,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -62,6 +67,34 @@ public class OpportunityService {
     /** Founder + Admin — who may post/attribute an opportunity to a startup. */
     private static final List<StartupTeamMember.TeamRole> MANAGER_ROLES =
             List.of(StartupTeamMember.TeamRole.FOUNDER, StartupTeamMember.TeamRole.ADMIN);
+
+    /**
+     * An application deadline is a date, not a moment: the forms send midnight UTC of the chosen day and the page
+     * shows "Apply by <date>". So it means "up to the end of that day", and the last instant to apply is the start
+     * of the day after.
+     */
+    private static Instant applicationCutoff(Instant deadline) {
+        return deadline.truncatedTo(ChronoUnit.DAYS).plus(1, ChronoUnit.DAYS);
+    }
+
+    private static boolean deadlinePassed(Instant deadline) {
+        return deadline != null && !applicationCutoff(deadline).isAfter(Instant.now());
+    }
+
+    private static void requireDeadlineNotInThePast(Instant deadline) {
+        if (deadlinePassed(deadline)) {
+            throw new BadRequestException("The application deadline can't be in the past");
+        }
+    }
+
+    private static void requireAcceptingApplications(Opportunity opportunity) {
+        if (opportunity.isClosed()) {
+            throw new BadRequestException("This opportunity is no longer accepting applications");
+        }
+        if (deadlinePassed(opportunity.getApplicationDeadline())) {
+            throw new BadRequestException("The deadline to apply for this opportunity has passed");
+        }
+    }
 
     private final OpportunityRepository opportunityRepository;
     private final OpportunityApplicantRepository applicantRepository;
@@ -142,6 +175,43 @@ public class OpportunityService {
         return opportunityMapper.toDto(opportunity, hasApplied, hasExpressedInterest, applicationStatus, applicantCount, interestCount, appliedAt);
     }
 
+    /**
+     * The same per-viewer/per-opportunity fields as {@link #toOpportunityDto}, but for a whole page at once:
+     * 4 queries total (viewer's applications, viewer's interest, grouped applicant counts, grouped interest
+     * counts) instead of 4 queries per row. Callers must apply the returned function only to opportunities
+     * from the exact list passed in, since its lookups are pre-computed for those ids only.
+     */
+    private Function<Opportunity, OpportunityDto> batchOpportunityDtoMapper(List<Opportunity> opportunities, String viewerId) {
+        List<String> ids = opportunities.stream().map(Opportunity::getId).toList();
+        if (ids.isEmpty()) {
+            return opportunity -> opportunityMapper.toDto(opportunity, false, false, null, 0, 0, null);
+        }
+        Map<String, OpportunityApplicant> myApplicationByOpportunityId = applicantRepository
+                .findByOpportunityIdInAndUserId(ids, viewerId).stream()
+                .collect(Collectors.toMap(OpportunityApplicant::getOpportunityId, a -> a));
+        Set<String> myInterestOpportunityIds = interestRepository.findByOpportunityIdInAndUserId(ids, viewerId).stream()
+                .map(OpportunityInterest::getOpportunityId)
+                .collect(Collectors.toSet());
+        Map<String, Long> applicantCounts = toCountMap(applicantRepository.countGroupedByOpportunityIdInAndStatusNotIn(
+                ids, List.of(ApplicationStatus.WITHDRAWN, ApplicationStatus.REJECTED)));
+        Map<String, Long> interestCounts = toCountMap(interestRepository.countGroupedByOpportunityIdIn(ids));
+
+        return opportunity -> {
+            OpportunityApplicant application = myApplicationByOpportunityId.get(opportunity.getId());
+            boolean hasApplied = application != null;
+            String applicationStatus = hasApplied ? application.getStatus().getLabel() : null;
+            Instant appliedAt = hasApplied ? application.getCreatedAt() : null;
+            boolean hasExpressedInterest = myInterestOpportunityIds.contains(opportunity.getId());
+            int applicantCount = applicantCounts.getOrDefault(opportunity.getId(), 0L).intValue();
+            int interestCount = interestCounts.getOrDefault(opportunity.getId(), 0L).intValue();
+            return opportunityMapper.toDto(opportunity, hasApplied, hasExpressedInterest, applicationStatus, applicantCount, interestCount, appliedAt);
+        };
+    }
+
+    private static Map<String, Long> toCountMap(List<OpportunityIdCount> rows) {
+        return rows.stream().collect(Collectors.toMap(OpportunityIdCount::getOpportunityId, OpportunityIdCount::getTotal));
+    }
+
     @Transactional(readOnly = true)
     public OpportunityDto getOpportunity(String id, String viewerId) {
         Opportunity opportunity = getEntityOrThrow(id);
@@ -184,8 +254,9 @@ public class OpportunityService {
                 OpportunitySpecifications.notRemoved(),
                 ownContent ? null : OpportunitySpecifications.approved()
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return opportunityRepository.findAll(spec, pageable).map(o -> toOpportunityDto(o, viewerId));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<Opportunity> results = opportunityRepository.findAll(spec, pageable);
+        return results.map(batchOpportunityDtoMapper(results.getContent(), viewerId));
     }
 
     // ADMIN-ONLY escape hatch: everywhere else, closed/removed/non-approved postings are
@@ -208,8 +279,9 @@ public class OpportunityService {
                 includeRemoved ? null : OpportunitySpecifications.notRemoved(),
                 OpportunitySpecifications.moderationStatus(moderationStatus)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return opportunityRepository.findAll(spec, pageable).map(o -> toOpportunityDto(o, viewerId));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<Opportunity> results = opportunityRepository.findAll(spec, pageable);
+        return results.map(batchOpportunityDtoMapper(results.getContent(), viewerId));
     }
 
     // See IdeaService.setRemovedByAdmin for the shared rationale behind this moderation model.
@@ -320,6 +392,7 @@ public class OpportunityService {
     }
 
     private Opportunity buildOpportunity(String postedByUserId, String chapterId, PostOpportunityRequest request, ModerationStatus status) {
+        requireDeadlineNotInThePast(request.applicationDeadline());
         return Opportunity.builder()
                 .title(request.title().trim())
                 .type(OpportunityType.fromLabel(request.type()))
@@ -363,7 +436,15 @@ public class OpportunityService {
         if (request.compensation() != null) opportunity.setCompensation(request.compensation());
         if (request.equity() != null) opportunity.setEquity(request.equity());
         if (request.experienceLevel() != null) opportunity.setExperienceLevel(request.experienceLevel());
-        if (request.applicationDeadline() != null) opportunity.setApplicationDeadline(request.applicationDeadline());
+        if (request.applicationDeadline() != null) {
+            // Only a deadline that is actually being changed has to be in the future: the edit form re-sends the
+            // stored one, and editing an old posting's description must not fail on it.
+            Instant current = opportunity.getApplicationDeadline();
+            boolean unchanged = current != null
+                    && current.truncatedTo(ChronoUnit.DAYS).equals(request.applicationDeadline().truncatedTo(ChronoUnit.DAYS));
+            if (!unchanged) requireDeadlineNotInThePast(request.applicationDeadline());
+            opportunity.setApplicationDeadline(request.applicationDeadline());
+        }
         if (request.requirements() != null) opportunity.setRequirements(new ArrayList<>(request.requirements()));
         if (request.requiredSkills() != null) opportunity.setRequiredSkills(new ArrayList<>(request.requiredSkills()));
 
@@ -410,9 +491,7 @@ public class OpportunityService {
         if (opportunity.getPostedByUserId().equals(userId)) {
             throw new BadRequestException("You can't express interest in your own opportunity");
         }
-        if (opportunity.isClosed()) {
-            throw new BadRequestException("This opportunity is no longer accepting applications");
-        }
+        requireAcceptingApplications(opportunity);
         if (!interestRepository.existsByOpportunityIdAndUserId(id, userId)) {
             interestRepository.save(OpportunityInterest.builder().opportunityId(id).userId(userId).build());
             notificationService.notify(opportunity.getPostedByUserId(), NotificationType.opportunity,
@@ -428,9 +507,7 @@ public class OpportunityService {
         if (opportunity.getPostedByUserId().equals(userId)) {
             throw new BadRequestException("You can't apply to your own opportunity");
         }
-        if (opportunity.isClosed()) {
-            throw new BadRequestException("This opportunity is no longer accepting applications");
-        }
+        requireAcceptingApplications(opportunity);
         User applicantUser = userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + userId));
 
@@ -511,7 +588,7 @@ public class OpportunityService {
         Opportunity opportunity = getEntityOrThrow(opportunityId);
         requirePoster(ownerUserId, opportunity);
 
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
         Page<OpportunityApplicant> applicants = (statusFilter == null || statusFilter.isBlank())
                 ? applicantRepository.findByOpportunityIdOrderByCreatedAtDesc(opportunityId, pageable)
                 : applicantRepository.findByOpportunityIdAndStatusOrderByCreatedAtDesc(
@@ -615,8 +692,9 @@ public class OpportunityService {
 
     @Transactional(readOnly = true)
     public Page<OpportunityDto> listMyPosted(String userId, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return opportunityRepository.findByPostedByUserId(userId, pageable).map(o -> toOpportunityDto(o, userId));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<Opportunity> results = opportunityRepository.findByPostedByUserId(userId, pageable);
+        return results.map(batchOpportunityDtoMapper(results.getContent(), userId));
     }
 
     @Transactional(readOnly = true)
@@ -625,7 +703,7 @@ public class OpportunityService {
         applicantRepository.findByUserId(userId).forEach(a -> opportunityIds.add(a.getOpportunityId()));
         interestRepository.findByUserId(userId).forEach(i -> opportunityIds.add(i.getOpportunityId()));
 
-        List<OpportunityDto> all = opportunityIds.stream()
+        List<Opportunity> opportunities = opportunityIds.stream()
                 .map(opportunityRepository::findById)
                 .filter(java.util.Optional::isPresent)
                 .map(java.util.Optional::get)
@@ -634,12 +712,13 @@ public class OpportunityService {
                 // postings stay (still APPROVED), so genuine history is kept.
                 .filter(OpportunityService::isPubliclyVisible)
                 .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                .map(o -> toOpportunityDto(o, userId))
                 .toList();
+        List<OpportunityDto> all = opportunities.stream().map(batchOpportunityDtoMapper(opportunities, userId)).toList();
 
-        int from = Math.min(page * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return new PageImpl<>(all.subList(from, to), PageRequest.of(page, size), all.size());
+        int clampedSize = PageRequests.clampSize(size);
+        int from = Math.min(page * clampedSize, all.size());
+        int to = Math.min(from + clampedSize, all.size());
+        return new PageImpl<>(all.subList(from, to), PageRequests.of(page, size), all.size());
     }
 
     private void requirePoster(String userId, Opportunity opportunity) {

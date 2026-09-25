@@ -1,5 +1,7 @@
 package com.nukkad.event.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.event.entity.Event;
 import org.springframework.data.jpa.domain.Specification;
 
@@ -21,7 +23,7 @@ public final class EventSpecifications {
 
     public static Specification<Event> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("title")), like),
                 cb.like(cb.lower(cb.coalesce(root.get("description"), "")), like)
@@ -38,8 +40,10 @@ public final class EventSpecifications {
         return (root, query, cb) -> cb.equal(root.get("organizerUserId"), organizerUserId);
     }
 
+    /** Events that have not ended yet: upcoming ones and the ones happening right now. An event that has started
+     *  but not finished is still worth showing, so this looks at the end, not the start. */
     public static Specification<Event> upcoming(Boolean upcoming) {
         if (upcoming == null || !upcoming) return null;
-        return (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("startAt"), Instant.now());
+        return (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("endAt"), Instant.now());
     }
 }

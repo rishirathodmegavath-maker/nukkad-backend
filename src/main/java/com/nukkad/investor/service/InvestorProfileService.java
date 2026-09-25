@@ -10,6 +10,7 @@ import com.nukkad.investor.dto.InvestorProfileDto;
 import com.nukkad.investor.dto.UpdateInvestorProfileRequest;
 import com.nukkad.investor.entity.InvestorProfile;
 import com.nukkad.investor.entity.InvestorType;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.investor.mapper.InvestorMapper;
 import com.nukkad.investor.repository.InvestorProfileRepository;
 import com.nukkad.investor.repository.InvestorProfileSpecifications;
@@ -62,7 +63,7 @@ public class InvestorProfileService {
                 InvestorProfileSpecifications.geography(geography),
                 InvestorProfileSpecifications.ticketSize(ticketSize)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return investorProfileRepository.findAll(spec, pageable).map(p -> toDto(p, viewerId));
     }
 

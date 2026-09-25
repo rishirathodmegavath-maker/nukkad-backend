@@ -2,6 +2,7 @@ package com.nukkad.grant.service;
 
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.grant.dto.GrantImportBatchDto;
 import com.nukkad.grant.dto.GrantImportIssueDto;
 import com.nukkad.grant.dto.GrantImportPreviewDto;
@@ -100,7 +101,7 @@ public class GrantImportService {
 
     @Transactional(readOnly = true)
     public Page<GrantImportBatchDto> listBatches(int page, int size) {
-        return grantImportBatchRepository.findAllByOrderByCreatedAtDesc(PageRequest.of(page, size)).map(this::toDto);
+        return grantImportBatchRepository.findAllByOrderByCreatedAtDesc(PageRequests.of(page, size)).map(this::toDto);
     }
 
     @Transactional(readOnly = true)
@@ -109,7 +110,7 @@ public class GrantImportService {
             throw new ResourceNotFoundException("Import batch not found: " + batchId);
         }
         Page<GrantImportIssue> issues = grantImportIssueRepository.findByBatchIdOrderByRowNumberAsc(
-                batchId, PageRequest.of(page, size, Sort.by("rowNumber")));
+                batchId, PageRequests.of(page, size, Sort.by("rowNumber")));
         return issues.map(this::toDto);
     }
 

@@ -1,5 +1,7 @@
 package com.nukkad.idea.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.idea.entity.ContributionArea;
 import com.nukkad.idea.entity.Idea;
@@ -23,7 +25,7 @@ public final class IdeaSpecifications {
 
     public static Specification<Idea> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("title")), like),
                 cb.like(cb.lower(root.get("problem")), like),

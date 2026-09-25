@@ -1,5 +1,6 @@
 package com.nukkad.common.audit;
 
+import com.nukkad.common.paging.PageRequests;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -68,7 +69,7 @@ public class AuditService {
                 AuditLogSpecifications.createdAfter(from),
                 AuditLogSpecifications.createdBefore(to)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return auditLogRepository.findAll(spec, pageable);
     }
 }
