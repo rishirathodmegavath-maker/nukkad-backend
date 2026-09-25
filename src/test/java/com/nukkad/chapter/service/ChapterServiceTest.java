@@ -6,6 +6,7 @@ import com.nukkad.chapter.dto.UpdateChapterRequest;
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.storage.FileStorageService;
@@ -22,6 +23,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.HashSet;
 import java.util.Optional;
@@ -305,5 +308,37 @@ class ChapterServiceTest {
         assertThat(activity.get(0).actorName()).isEqualTo("User u1");
         assertThat(activity.get(1).type()).isEqualTo("IDEA");
         assertThat(activity.get(1).actorName()).isEqualTo("User u2");
+    }
+
+    // ---- cover image upload (works before the chapter exists) ---------------------------------
+
+    @Test
+    void uploadingACoverImageStoresItUnderChapterCoversAndReturnsItsUrl() {
+        MockMultipartFile file = new MockMultipartFile("file", "cover.png", "image/png", new byte[] {1, 2, 3});
+        when(fileStorageService.storeImage(file, "chapter-covers")).thenReturn("https://media.example.com/chapter-covers/a.png");
+
+        var result = service().uploadCoverImage(file);
+
+        assertThat(result.url()).isEqualTo("https://media.example.com/chapter-covers/a.png");
+    }
+
+    @Test
+    void aChapterCoverImageOverTheSizeLimitIsRejectedWithoutTouchingStorage() {
+        MultipartFile tooBig = org.mockito.Mockito.mock(MultipartFile.class);
+        when(tooBig.getSize()).thenReturn(ChapterService.MAX_COVER_IMAGE_BYTES + 1);
+
+        assertThatThrownBy(() -> service().uploadCoverImage(tooBig))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("8 MB");
+        org.mockito.Mockito.verifyNoInteractions(fileStorageService);
+    }
+
+    @Test
+    void aChapterCoverImageExactlyAtTheSizeLimitIsAccepted() {
+        MultipartFile atLimit = org.mockito.Mockito.mock(MultipartFile.class);
+        when(atLimit.getSize()).thenReturn(ChapterService.MAX_COVER_IMAGE_BYTES);
+        when(fileStorageService.storeImage(atLimit, "chapter-covers")).thenReturn("https://media.example.com/chapter-covers/b.jpg");
+
+        assertThat(service().uploadCoverImage(atLimit).url()).isEqualTo("https://media.example.com/chapter-covers/b.jpg");
     }
 }
