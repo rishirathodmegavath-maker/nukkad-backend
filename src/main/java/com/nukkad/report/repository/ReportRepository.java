@@ -9,10 +9,16 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface ReportRepository extends JpaRepository<Report, String>, JpaSpecificationExecutor<Report> {
     long countByStatus(ReportStatus status);
+
+    // Dedup check for submit(): a reporter's own reports are few enough per person that filtering
+    // in Java for a matching target (see ReportService) is simpler and just as safe as a more
+    // specific derived query, and avoids two near-duplicate query methods for the post-vs-user shape.
+    List<Report> findByReporterIdAndStatus(String reporterId, ReportStatus status);
 
     // Row-locked read for resolve(): without this, two concurrent resolve calls on the same OPEN
     // report can both read status == OPEN before either commits, so both succeed instead of one

@@ -112,6 +112,14 @@ public class AdminUserService {
             target.getSecurityRoles().add(SecurityRole.ADMIN);
         } else {
             if (!currentlyAdmin) return adminMapper.toDto(target);
+            // Same self-targeting rule as updateStatus, for the same reason: an admin can already
+            // only reach this endpoint by holding the role, so a self-revoke is a way to accidentally
+            // lock themselves out of the portal with no one else's action able to undo it in the
+            // moment. The frontend already hides this control for the caller's own row; this is the
+            // real boundary a direct API call would otherwise skip.
+            if (adminId.equals(targetUserId)) {
+                throw new BadRequestException("You cannot remove your own admin role");
+            }
             if (userRepository.countByRole(SecurityRole.ADMIN) <= 1) {
                 throw new BadRequestException("Cannot remove the last remaining admin");
             }

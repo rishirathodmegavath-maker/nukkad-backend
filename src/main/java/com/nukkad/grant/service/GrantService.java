@@ -265,7 +265,17 @@ public class GrantService {
         return creator.getId();
     }
 
+    /** Mirrors OpportunityService's own guard of the same name: a rolling grant (null deadline) is
+     *  always fine, but a stated one must not already be in the past — otherwise a member or admin
+     *  could post a grant applicants can never actually apply to. */
+    private static void requireDeadlineNotInThePast(Instant deadline) {
+        if (deadline != null && deadline.isBefore(Instant.now())) {
+            throw new BadRequestException("The deadline can't be in the past");
+        }
+    }
+
     private Grant buildGrant(String createdByUserId, CreateGrantRequest request, ModerationStatus status) {
+        requireDeadlineNotInThePast(request.deadline());
         return Grant.builder()
                 .name(request.name().trim())
                 .provider(request.provider().trim())
@@ -295,7 +305,12 @@ public class GrantService {
         if (request.eligibilityCriteria() != null) grant.setEligibilityCriteria(request.eligibilityCriteria());
         if (request.eligibleSectors() != null) grant.setEligibleSectors(new HashSet<>(request.eligibleSectors()));
         if (request.eligibleStages() != null) grant.setEligibleStages(parseStages(request.eligibleStages()));
-        if (request.deadline() != null) grant.setDeadline(request.deadline());
+        if (request.deadline() != null && !request.deadline().equals(grant.getDeadline())) {
+            // Only a deadline that's actually changing has to be in the future -- an edit form that
+            // re-sends the stored deadline unchanged must not fail on an old posting.
+            requireDeadlineNotInThePast(request.deadline());
+            grant.setDeadline(request.deadline());
+        }
         if (request.applicationUrl() != null) grant.setApplicationUrl(normalizeUrl(request.applicationUrl()));
 
         return grantMapper.toDto(grantRepository.saveAndFlush(grant), true);

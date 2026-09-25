@@ -4,8 +4,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.paging.PageRequests;
-import com.nukkad.feed.entity.Post;
-import com.nukkad.feed.repository.PostRepository;
+import com.nukkad.feed.service.FeedService;
 import com.nukkad.report.entity.Report;
 import com.nukkad.report.entity.ReportStatus;
 import com.nukkad.report.repository.ReportRepository;
@@ -24,28 +23,37 @@ import java.time.Instant;
 public class ReportService {
 
     private final ReportRepository reportRepository;
-    private final PostRepository postRepository;
+    private final FeedService feedService;
 
-    public ReportService(ReportRepository reportRepository, PostRepository postRepository) {
+    public ReportService(ReportRepository reportRepository, FeedService feedService) {
         this.reportRepository = reportRepository;
-        this.postRepository = postRepository;
+        this.feedService = feedService;
     }
 
     // reportedUserId is resolved from the post's own author when postId is given — never trusted
     // from the client directly in that case, so a caller can't report post X while attributing it
-    // to an unrelated user Y.
+    // to an unrelated user Y. Going through FeedService.requireVisibleAuthorId (rather than looking
+    // the post up directly) also means a postId the reporter can't actually see behaves exactly like
+    // a nonexistent one — the same 404 either way — instead of letting "report" be used to probe
+    // whether a connections-only post from a stranger exists.
     @Transactional
     public void submit(String reporterId, String reportedUserId, String category, String conversationId, String postId) {
         String resolvedReportedUserId = reportedUserId;
         if (postId != null && !postId.isBlank()) {
-            Post post = postRepository.findById(postId)
-                    .orElseThrow(() -> new ResourceNotFoundException("Post not found: " + postId));
-            resolvedReportedUserId = post.getAuthorId();
+            resolvedReportedUserId = feedService.requireVisibleAuthorId(reporterId, postId);
         }
         if (resolvedReportedUserId == null || resolvedReportedUserId.isBlank()) {
             throw new BadRequestException("reportedUserId or postId is required");
         }
         if (reporterId.equals(resolvedReportedUserId)) throw new BadRequestException("Cannot report yourself");
+        // Idempotent, not rejected: a second click/retry on the same target while the first report
+        // is still OPEN adds no new signal for the moderation queue, so it's a silent no-op rather
+        // than an error the caller would have to handle specially.
+        String targetUserId = resolvedReportedUserId;
+        boolean alreadyOpen = reportRepository.findByReporterIdAndStatus(reporterId, ReportStatus.OPEN).stream()
+                .anyMatch(r -> postId != null && !postId.isBlank() ? postId.equals(r.getPostId())
+                        : r.getPostId() == null && targetUserId.equals(r.getReportedUserId()));
+        if (alreadyOpen) return;
         Report report = Report.builder()
                 .reporterId(reporterId)
                 .reportedUserId(resolvedReportedUserId)
