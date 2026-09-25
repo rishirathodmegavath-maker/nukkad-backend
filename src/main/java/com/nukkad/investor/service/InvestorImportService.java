@@ -2,6 +2,7 @@ package com.nukkad.investor.service;
 
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.investor.dto.InvestorImportBatchDto;
 import com.nukkad.investor.dto.InvestorImportIssueDto;
@@ -113,7 +114,7 @@ public class InvestorImportService {
 
     @Transactional(readOnly = true)
     public Page<InvestorImportBatchDto> listBatches(int page, int size) {
-        return investorImportBatchRepository.findAllByOrderByCreatedAtDesc(PageRequest.of(page, size)).map(this::toDto);
+        return investorImportBatchRepository.findAllByOrderByCreatedAtDesc(PageRequests.of(page, size)).map(this::toDto);
     }
 
     @Transactional(readOnly = true)
@@ -122,7 +123,7 @@ public class InvestorImportService {
             throw new ResourceNotFoundException("Import batch not found: " + batchId);
         }
         Page<InvestorImportIssue> issues = investorImportIssueRepository.findByBatchIdOrderByRowNumberAsc(
-                batchId, PageRequest.of(page, size, Sort.by("rowNumber")));
+                batchId, PageRequests.of(page, size, Sort.by("rowNumber")));
         return issues.map(this::toDto);
     }
 

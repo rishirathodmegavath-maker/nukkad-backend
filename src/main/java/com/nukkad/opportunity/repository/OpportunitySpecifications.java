@@ -1,5 +1,7 @@
 package com.nukkad.opportunity.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.opportunity.entity.Opportunity;
 import com.nukkad.opportunity.entity.OpportunityType;
@@ -23,7 +25,7 @@ public final class OpportunitySpecifications {
 
     public static Specification<Opportunity> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("title")), like),
                 cb.like(cb.lower(root.get("description")), like),

@@ -3,6 +3,7 @@ package com.nukkad.report.service;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.feed.entity.Post;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.report.entity.Report;
@@ -65,7 +66,7 @@ public class ReportService {
                 ReportSpecifications.status(status),
                 ReportSpecifications.category(category)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return reportRepository.findAll(spec, pageable);
     }
 

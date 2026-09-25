@@ -7,7 +7,9 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.common.validation.LinkSanitizer;
 import com.nukkad.event.dto.CreateEventRequest;
 import com.nukkad.event.dto.EventCoverImageDto;
 import com.nukkad.event.dto.EventDto;
@@ -20,6 +22,7 @@ import com.nukkad.event.entity.EventStartup;
 import com.nukkad.event.entity.EventStatus;
 import com.nukkad.event.mapper.EventMapper;
 import com.nukkad.event.repository.EventAttendeeRepository;
+import com.nukkad.event.repository.EventIdCount;
 import com.nukkad.event.repository.EventRepository;
 import com.nukkad.event.repository.EventSpecifications;
 import com.nukkad.event.repository.EventStartupRepository;
@@ -52,6 +55,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -112,8 +116,9 @@ public class EventService {
                 EventSpecifications.search(q),
                 EventSpecifications.organizerUserId(organizerUserId)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "startAt"));
-        return eventRepository.findAll(spec, pageable).map(event -> toDto(event, viewerId));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.ASC, "startAt"));
+        Page<Event> results = eventRepository.findAll(spec, pageable);
+        return results.map(batchEventDtoMapper(results.getContent(), viewerId));
     }
 
     @Transactional(readOnly = true)
@@ -149,7 +154,13 @@ public class EventService {
         if (!request.endAt().isAfter(request.startAt())) {
             throw new BadRequestException("Event end time must be after the start time");
         }
-        validateLocation(request.online(), request.location(), request.meetingUrl());
+        // One that is already under way is fine; one that has already finished can never be attended.
+        if (request.endAt().isBefore(Instant.now())) {
+            throw new BadRequestException("An event can't end in the past");
+        }
+        String meetingUrl = LinkSanitizer.normalizeHttpUrl(request.meetingUrl(), "Meeting link");
+        String coverImageUrl = LinkSanitizer.normalizeHttpUrl(request.coverImageUrl(), "Cover image");
+        validateLocation(request.online(), request.location(), meetingUrl);
 
         String chapterId = null;
         if (request.chapterId() != null && !request.chapterId().isBlank()) {
@@ -168,8 +179,8 @@ public class EventService {
                 .endAt(request.endAt())
                 .online(request.online())
                 .location(request.location())
-                .meetingUrl(request.meetingUrl())
-                .coverImageUrl(request.coverImageUrl())
+                .meetingUrl(meetingUrl)
+                .coverImageUrl(coverImageUrl)
                 .capacity(request.capacity())
                 .build();
         event = eventRepository.saveAndFlush(event);
@@ -193,8 +204,15 @@ public class EventService {
         }
         boolean newOnline = request.online() != null ? request.online() : event.isOnline();
         String newLocation = request.location() != null ? request.location() : event.getLocation();
-        String newMeetingUrl = request.meetingUrl() != null ? request.meetingUrl() : event.getMeetingUrl();
+        String newMeetingUrl = request.meetingUrl() != null
+                ? LinkSanitizer.normalizeHttpUrl(request.meetingUrl(), "Meeting link") : event.getMeetingUrl();
         validateLocation(newOnline, newLocation, newMeetingUrl);
+        if (request.capacity() != null) {
+            long registered = attendeeRepository.countByEventId(eventId);
+            if (request.capacity() < registered) {
+                throw new BadRequestException("Capacity can't be lower than the " + registered + " people already registered");
+            }
+        }
 
         boolean logisticsChanged = !newStart.equals(event.getStartAt())
                 || !newEnd.equals(event.getEndAt())
@@ -209,7 +227,7 @@ public class EventService {
         event.setOnline(newOnline);
         event.setLocation(newLocation);
         event.setMeetingUrl(newMeetingUrl);
-        if (request.coverImageUrl() != null) event.setCoverImageUrl(request.coverImageUrl());
+        if (request.coverImageUrl() != null) event.setCoverImageUrl(LinkSanitizer.normalizeHttpUrl(request.coverImageUrl(), "Cover image"));
         if (request.capacity() != null) event.setCapacity(request.capacity());
 
         event = eventRepository.saveAndFlush(event);
@@ -246,6 +264,9 @@ public class EventService {
     public EventDto rsvp(String userId, String eventId) {
         Event event = eventRepository.findByIdForUpdate(eventId)
                 .orElseThrow(() -> new ResourceNotFoundException("Event not found: " + eventId));
+        if (EventStatus.of(event, Instant.now()) == EventStatus.ENDED) {
+            throw new BadRequestException("This event has already ended");
+        }
         if (attendeeRepository.existsByEventIdAndUserId(eventId, userId)) {
             throw new ConflictException("You're already registered for this event");
         }
@@ -325,6 +346,64 @@ public class EventService {
         boolean isAttending = viewerId != null && attendeeRepository.existsByEventIdAndUserId(event.getId(), viewerId);
         boolean manage = viewerId != null && canManage(viewerId, event);
         return eventMapper.toDto(event, chapterName, attendeeCount, isAttending, manage, getEventStartups(event.getId(), viewerId, manage));
+    }
+
+    /**
+     * The same per-viewer/per-event fields as {@link #toDto}, but for a whole page at once: a handful of
+     * queries total (chapters, attendee counts, the viewer's own RSVPs, the viewer's own manager role, linked
+     * startups, the startups the viewer manages) instead of the ~8 queries {@link #toDto} ran per row
+     * (a chapter lookup for the name and another inside {@code canManage}, an attendee count, an RSVP check, a
+     * president-role check, and {@code getEventStartups}'s own 2-3 queries — all repeated for every event).
+     */
+    private Function<Event, EventDto> batchEventDtoMapper(List<Event> events, String viewerId) {
+        List<String> eventIds = events.stream().map(Event::getId).toList();
+        if (eventIds.isEmpty()) {
+            return event -> toDto(event, viewerId);
+        }
+        List<String> chapterIds = events.stream().map(Event::getChapterId).filter(Objects::nonNull).distinct().toList();
+        Map<String, Chapter> chapterById = chapterIds.isEmpty() ? Map.of()
+                : chapterRepository.findAllById(chapterIds).stream().collect(Collectors.toMap(Chapter::getId, c -> c));
+        Map<String, Long> attendeeCounts = attendeeRepository.countGroupedByEventIdIn(eventIds).stream()
+                .collect(Collectors.toMap(EventIdCount::getEventId, EventIdCount::getTotal));
+        Set<String> viewerAttendingEventIds = viewerId == null ? Set.of()
+                : attendeeRepository.findByEventIdInAndUserId(eventIds, viewerId).stream()
+                        .map(EventAttendee::getEventId).collect(Collectors.toSet());
+        boolean viewerHasPresidentRole = viewerId != null && userRepository.findById(viewerId)
+                .map(u -> u.getSecurityRoles().contains(SecurityRole.CHAPTER_PRESIDENT)).orElse(false);
+
+        Map<String, List<EventStartup>> eventStartupsByEventId = eventStartupRepository.findByEventIdIn(eventIds).stream()
+                .collect(Collectors.groupingBy(EventStartup::getEventId));
+        List<String> linkedStartupIds = eventStartupsByEventId.values().stream().flatMap(List::stream)
+                .map(EventStartup::getStartupId).distinct().toList();
+        Map<String, Startup> startupById = linkedStartupIds.isEmpty() ? Map.of()
+                : startupRepository.findAllById(linkedStartupIds).stream().collect(Collectors.toMap(Startup::getId, s -> s));
+        Set<String> startupsManagedByViewer = viewerId == null ? Set.of()
+                : startupTeamMemberRepository.findByUserIdAndTeamRoleInAndStatus(viewerId, MANAGER_ROLES, StartupTeamMember.Status.ACTIVE)
+                        .stream().map(StartupTeamMember::getStartupId).collect(Collectors.toSet());
+
+        return event -> {
+            Chapter chapter = event.getChapterId() == null ? null : chapterById.get(event.getChapterId());
+            String chapterName = chapter == null ? null : chapter.getName();
+            long attendeeCount = attendeeCounts.getOrDefault(event.getId(), 0L);
+            boolean isAttending = viewerAttendingEventIds.contains(event.getId());
+            boolean manage;
+            if (viewerId == null) {
+                manage = false;
+            } else if (event.getChapterId() == null) {
+                manage = viewerId.equals(event.getOrganizerUserId());
+            } else {
+                manage = chapter != null && viewerHasPresidentRole && viewerId.equals(chapter.getPresidentUserId());
+            }
+            boolean viewerRunsEvent = manage;
+            List<EventStartupSummaryDto> startups = eventStartupsByEventId.getOrDefault(event.getId(), List.of()).stream()
+                    .map(es -> startupById.get(es.getStartupId()))
+                    .filter(Objects::nonNull)
+                    .filter(s -> startupAccessPolicy.isReadableBy(s, viewerId))
+                    .map(s -> new EventStartupSummaryDto(s.getId(), s.getName(), s.getLogoUrl(),
+                            viewerRunsEvent || startupsManagedByViewer.contains(s.getId())))
+                    .toList();
+            return eventMapper.toDto(event, chapterName, attendeeCount, isAttending, manage, startups);
+        };
     }
 
     /** Only the startups the viewer may see: a removed or rejected startup's name and logo must not leak through an event page. */

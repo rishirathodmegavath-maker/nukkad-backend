@@ -152,6 +152,19 @@ public class StartupController {
         return ApiResponse.ok(null);
     }
 
+    /** The invited person's answer to a team invitation a founder or admin sent them (see {@code addMember}). */
+    @PostMapping("/{id}/invitation/accept")
+    public ApiResponse<StartupTeamMemberDto> acceptInvitation(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                                @PathVariable String id) {
+        return ApiResponse.ok(startupService.acceptInvitation(principal.id(), id));
+    }
+
+    @PostMapping("/{id}/invitation/decline")
+    public ApiResponse<Void> declineInvitation(@AuthenticationPrincipal AuthenticatedUser principal, @PathVariable String id) {
+        startupService.declineInvitation(principal.id(), id);
+        return ApiResponse.ok(null);
+    }
+
     @PostMapping("/{id}/members")
     @ResponseStatus(HttpStatus.CREATED)
     public ApiResponse<StartupTeamMemberDto> addMember(@AuthenticationPrincipal AuthenticatedUser principal,

@@ -22,6 +22,18 @@ public interface OpportunityApplicantRepository extends JpaRepository<Opportunit
     Page<OpportunityApplicant> findByOpportunityIdOrderByCreatedAtDesc(String opportunityId, Pageable pageable);
     Page<OpportunityApplicant> findByOpportunityIdAndStatusOrderByCreatedAtDesc(String opportunityId, ApplicationStatus status, Pageable pageable);
 
+    /** One viewer's application (if any) across a whole page of opportunities, in a single query — the
+     *  batched replacement for calling {@link #findByOpportunityIdAndUserId} once per row. */
+    List<OpportunityApplicant> findByOpportunityIdInAndUserId(List<String> opportunityIds, String userId);
+
+    /** Applicant counts (excluding withdrawn/rejected) for a whole page of opportunities in one query,
+     *  instead of one {@link #countByOpportunityIdAndStatusNotIn} call per row. */
+    @Query("select a.opportunityId as opportunityId, count(a) as total from OpportunityApplicant a "
+            + "where a.opportunityId in :opportunityIds and a.status not in :excludedStatuses "
+            + "group by a.opportunityId")
+    List<OpportunityIdCount> countGroupedByOpportunityIdInAndStatusNotIn(@Param("opportunityIds") List<String> opportunityIds,
+                                                                          @Param("excludedStatuses") List<ApplicationStatus> excludedStatuses);
+
     /** Whether an ACCEPTED application exists between these two users, in either applicant/poster direction. */
     @Query("select case when count(a) > 0 then true else false end from OpportunityApplicant a "
             + "join Opportunity o on o.id = a.opportunityId "

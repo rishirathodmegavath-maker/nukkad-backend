@@ -2,6 +2,7 @@ package com.nukkad.notification.service;
 
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.notification.dto.NotificationDto;
 import com.nukkad.notification.entity.Notification;
 import com.nukkad.notification.entity.NotificationType;
@@ -80,7 +81,7 @@ public class NotificationService {
 
     @Transactional(readOnly = true)
     public Page<NotificationDto> list(String userId, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
         return notificationRepository.findByUserIdAndTypeNotOrderByCreatedAtDesc(userId, LEGACY_CHAT_MESSAGE_TYPE, pageable)
                 .map(notificationMapper::toDto);
     }

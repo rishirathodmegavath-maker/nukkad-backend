@@ -7,6 +7,7 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.idea.dto.ConvertToStartupRequest;
 import com.nukkad.idea.dto.ExpressInterestRequest;
 import com.nukkad.idea.dto.IdeaDto;
@@ -19,6 +20,7 @@ import com.nukkad.idea.entity.IdeaInterest;
 import com.nukkad.idea.entity.IdeaInterestStatus;
 import com.nukkad.idea.entity.IdeaStage;
 import com.nukkad.idea.mapper.IdeaMapper;
+import com.nukkad.idea.repository.IdeaIdCount;
 import com.nukkad.idea.repository.IdeaInterestRepository;
 import com.nukkad.idea.repository.IdeaRepository;
 import com.nukkad.idea.repository.IdeaSpecifications;
@@ -58,6 +60,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -114,6 +117,19 @@ public class IdeaService {
                 idea.getId(), List.of(IdeaInterestStatus.WITHDRAWN, IdeaInterestStatus.REJECTED)));
     }
 
+    /** The same interest count as {@link #toIdeaDto}, but for a whole page at once: one grouped-count query
+     *  instead of one {@link #toIdeaDto} query per row. */
+    private Function<Idea, IdeaDto> batchIdeaDtoMapper(List<Idea> ideas) {
+        List<String> ideaIds = ideas.stream().map(Idea::getId).toList();
+        if (ideaIds.isEmpty()) {
+            return this::toIdeaDto;
+        }
+        Map<String, Long> interestCounts = ideaInterestRepository.countGroupedByIdeaIdInAndStatusNotIn(
+                        ideaIds, List.of(IdeaInterestStatus.WITHDRAWN, IdeaInterestStatus.REJECTED)).stream()
+                .collect(Collectors.toMap(IdeaIdCount::getIdeaId, IdeaIdCount::getTotal));
+        return idea -> ideaMapper.toDto(idea, interestCounts.getOrDefault(idea.getId(), 0L).intValue());
+    }
+
     @Transactional(readOnly = true)
     public IdeaDto getIdea(String id, String viewerId) {
         Idea idea = getEntityOrThrow(id);
@@ -153,8 +169,9 @@ public class IdeaService {
                 IdeaSpecifications.notRemoved(),
                 ownContent ? null : IdeaSpecifications.approved()
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return ideaRepository.findAll(spec, pageable).map(this::toIdeaDto);
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<Idea> results = ideaRepository.findAll(spec, pageable);
+        return results.map(batchIdeaDtoMapper(results.getContent()));
     }
 
     // ADMIN-ONLY — never applies the approved() gate; an admin must see PENDING/REJECTED ideas to
@@ -173,8 +190,9 @@ public class IdeaService {
                 includeRemoved ? null : IdeaSpecifications.notRemoved(),
                 IdeaSpecifications.moderationStatus(moderationStatus)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        return ideaRepository.findAll(spec, pageable).map(this::toIdeaDto);
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Page<Idea> results = ideaRepository.findAll(spec, pageable);
+        return results.map(batchIdeaDtoMapper(results.getContent()));
     }
 
     // Admin-only moderation toggle: hides an idea from public discovery (and 404s its public detail

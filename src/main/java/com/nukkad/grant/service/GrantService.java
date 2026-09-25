@@ -7,6 +7,7 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.grant.dto.CreateGrantRequest;
 import com.nukkad.grant.dto.DiscoveredGrantCandidate;
 import com.nukkad.grant.dto.GrantDto;
@@ -99,7 +100,7 @@ public class GrantService {
                 GrantSpecifications.notRemoved(),
                 GrantSpecifications.approved()
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return grantRepository.findAll(spec, pageable).map(g -> grantMapper.toDto(g, canManage(viewerId, g)));
     }
 
@@ -118,7 +119,7 @@ public class GrantService {
                 includeRemoved ? null : GrantSpecifications.notRemoved(),
                 GrantSpecifications.moderationStatus(moderationStatus)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return grantRepository.findAll(spec, pageable).map(g -> grantMapper.toDto(g, false));
     }
 

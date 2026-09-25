@@ -5,6 +5,7 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.investor.dto.CreateFundraiseRequest;
 import com.nukkad.investor.dto.FundraiseDto;
 import com.nukkad.investor.dto.UpdateFundraiseRequest;
@@ -59,7 +60,7 @@ public class FundraiseService {
                 FundraiseSpecifications.stage(stage),
                 FundraiseSpecifications.visibleTo(viewerId)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return fundraiseRepository.findAll(spec, pageable).map(f -> toDto(f, viewerId));
     }
 

@@ -114,6 +114,27 @@ class IdeaServiceTest {
                 null, null, null, null, null, null, null, null, null, null, null, Set.of(), false, true);
     }
 
+    // ---- Listing a page of ideas batches the per-row interest count instead of running it once per row ----
+
+    @Test
+    void listingIdeasFetchesInterestCountsInOneQueryRegardlessOfPageSize() {
+        Idea idea1 = idea("creator1");
+        Idea idea2 = Idea.builder().id("idea2").title("Farm Marketplace").problem("p").solution("s")
+                .stage(IdeaStage.CONCEPT).creatorId("creator2").tags(new HashSet<>()).helpNeeded(new HashSet<>())
+                .teamMemberIds(new HashSet<>(Set.of("creator2")))
+                .moderationStatus(com.nukkad.common.moderation.ModerationStatus.APPROVED).build();
+        when(ideaRepository.findAll(any(org.springframework.data.jpa.domain.Specification.class), any(org.springframework.data.domain.Pageable.class)))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(idea1, idea2)));
+        when(ideaInterestRepository.countGroupedByIdeaIdInAndStatusNotIn(any(), any())).thenReturn(List.of());
+
+        var page = service().listIdeas(null, null, null, null, null, null, "viewer1", 0, 20);
+
+        assertThat(page.getContent()).hasSize(2);
+        // One call for the whole page, not one per idea — the actual N+1 fix.
+        verify(ideaInterestRepository, times(1)).countGroupedByIdeaIdInAndStatusNotIn(any(), any());
+        verify(ideaInterestRepository, never()).countByIdeaIdAndStatusNotIn(anyString(), any());
+    }
+
     // ---- Posting an idea ----
 
     @Test

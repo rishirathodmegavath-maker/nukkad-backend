@@ -1,5 +1,7 @@
 package com.nukkad.chapter.service;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.chapter.dto.ChapterActivityDto;
 import com.nukkad.chapter.dto.ChapterDto;
 import com.nukkad.chapter.dto.CreateChapterRequest;
@@ -10,6 +12,7 @@ import com.nukkad.chapter.repository.ChapterRepository;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.entity.Event;
 import com.nukkad.event.repository.EventRepository;
@@ -94,14 +97,14 @@ public class ChapterService {
     public Page<ChapterDto> listChapters(String q, String presidentUserId, int page, int size) {
         Specification<Chapter> searchSpec = (root, query, cb) -> {
             if (q == null || q.isBlank()) return cb.conjunction();
-            String like = "%" + q.trim().toLowerCase() + "%";
+            String like = LikePatterns.contains(q);
             return cb.or(cb.like(cb.lower(root.get("name")), like), cb.like(cb.lower(cb.coalesce(root.get("city"), "")), like));
         };
         Specification<Chapter> spec = searchSpec;
         if (presidentUserId != null && !presidentUserId.isBlank()) {
             spec = spec.and((root, query, cb) -> cb.equal(root.get("presidentUserId"), presidentUserId));
         }
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.ASC, "name"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.ASC, "name"));
         return chapterRepository.findAll(spec, pageable).map(this::toDtoWithCounts);
     }
 

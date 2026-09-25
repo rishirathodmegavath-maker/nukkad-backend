@@ -21,6 +21,7 @@ import com.nukkad.investor.entity.InvestorIntroRequest;
 import com.nukkad.investor.entity.InvestorIntroRequestStatus;
 import com.nukkad.investor.entity.InvestorProfile;
 import com.nukkad.investor.entity.InvestorType;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.investor.mapper.InvestorMapper;
 import com.nukkad.investor.repository.InvestorIntroRequestRepository;
 import com.nukkad.investor.repository.InvestorProfileRepository;
@@ -132,7 +133,7 @@ public class InvestorCatalogService {
                 InvestorSpecifications.chequeSize(chequeSize)
         );
         // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         return investorRepository.findAll(spec, pageable).map(investorMapper::toDto);
     }
 
@@ -222,7 +223,7 @@ public class InvestorCatalogService {
                 active == null ? null : (root, query, cb) -> cb.equal(root.get("active"), active),
                 visible == null ? null : (root, query, cb) -> cb.equal(root.get("visible"), visible)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         return investorRepository.findAll(spec, pageable).map(this::toAdminDto);
     }
 
@@ -375,7 +376,7 @@ public class InvestorCatalogService {
 
     @Transactional(readOnly = true)
     public Page<InvestorIntroRequestDto> listIntroRequestsForAdmin(String status, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         Page<InvestorIntroRequest> requests = (status == null || status.isBlank())
                 ? investorIntroRequestRepository.findAllByOrderByCreatedAtDesc(pageable)
                 : investorIntroRequestRepository.findByStatusOrderByCreatedAtDesc(parseIntroStatus(status), pageable);

@@ -1,5 +1,7 @@
 package com.nukkad.startup.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.entity.StartupStage;
@@ -35,7 +37,7 @@ public final class StartupSpecifications {
         return (root, query, cb) -> {
             Predicate all = cb.conjunction();
             for (String token : tokens) {
-                String like = "%" + token + "%";
+                String like = LikePatterns.contains(token);
                 Predicate anyField = cb.or(
                         cb.like(cb.lower(root.get("name")), like),
                         cb.like(cb.lower(cb.coalesce(root.get("tagline"), "")), like),

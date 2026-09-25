@@ -1,5 +1,7 @@
 package com.nukkad.user.repository;
 
+import com.nukkad.common.validation.LikePatterns;
+
 import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.LookingFor;
 import com.nukkad.user.entity.SecurityRole;
@@ -41,7 +43,7 @@ public final class UserSpecifications {
 
     public static Specification<User> search(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("name")), like),
                 cb.like(cb.lower(cb.coalesce(root.get("headline"), ""))
@@ -62,19 +64,19 @@ public final class UserSpecifications {
 
     public static Specification<User> location(String location) {
         if (location == null || location.isBlank()) return null;
-        String like = "%" + location.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(location);
         return (root, query, cb) -> cb.like(cb.lower(cb.coalesce(root.get("location"), "")), like);
     }
 
     public static Specification<User> collegeOrCompany(String value) {
         if (value == null || value.isBlank()) return null;
-        String like = "%" + value.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(value);
         return (root, query, cb) -> cb.like(cb.lower(cb.coalesce(root.get("collegeOrCompany"), "")), like);
     }
 
     public static Specification<User> role(String value) {
         if (value == null || value.isBlank()) return null;
-        String like = "%" + value.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(value);
         return (root, query, cb) -> cb.like(cb.lower(cb.coalesce(root.get("role"), "")), like);
     }
 
@@ -111,7 +113,7 @@ public final class UserSpecifications {
      *  People search and must never let one user discover another purely by email address. */
     public static Specification<User> adminSearch(String q) {
         if (q == null || q.isBlank()) return null;
-        String like = "%" + q.trim().toLowerCase() + "%";
+        String like = LikePatterns.contains(q);
         return (root, query, cb) -> cb.or(
                 cb.like(cb.lower(root.get("name")), like),
                 cb.like(cb.lower(root.get("email")), like),

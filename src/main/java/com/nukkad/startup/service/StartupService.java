@@ -7,6 +7,7 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
@@ -64,6 +65,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
@@ -179,7 +181,7 @@ public class StartupService {
                 ownContent ? null : StartupSpecifications.approved()
         );
         // Newest first; the id breaks ties (timestamps are whole seconds), so a startup can't repeat or vanish between pages.
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.asc("id")));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.asc("id")));
         return toDtoPage(startupRepository.findAll(spec, pageable), viewerId);
     }
 
@@ -200,7 +202,7 @@ public class StartupService {
                 includeRemoved ? null : StartupSpecifications.notRemoved(),
                 StartupSpecifications.moderationStatus(moderationStatus)
         );
-        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
         return toDtoPage(startupRepository.findAll(spec, pageable), viewerId);
     }
 
@@ -232,14 +234,30 @@ public class StartupService {
                 .toList();
     }
 
-    /** A page of startups as the viewer sees them; follower counts come from one query for the whole page. */
+    /**
+     * A page of startups as the viewer sees them. Followed/managed/fundraising-visible status and follower
+     * counts all come from one query each for the whole page, instead of the 3 per-row lookups
+     * ({@code existsByUserIdAndStartupId}, {@code canManageStartup}, {@code canViewFundraising} each doing
+     * their own {@code findByStartupIdAndUserId}) this used to run for every row.
+     */
     private Page<StartupDto> toDtoPage(Page<Startup> page, String viewerId) {
-        Map<String, Long> followers = followerCounts(page.getContent().stream().map(Startup::getId).toList());
-        return page.map(s -> startupMapper.toDto(s,
-                viewerId != null && followRepository.existsByUserIdAndStartupId(viewerId, s.getId()),
-                canManageStartup(viewerId, s.getId()),
-                canViewFundraising(s, viewerId),
-                followers.getOrDefault(s.getId(), 0L)));
+        List<Startup> startups = page.getContent();
+        List<String> ids = startups.stream().map(Startup::getId).toList();
+        Map<String, Long> followers = followerCounts(ids);
+        if (viewerId == null || ids.isEmpty()) {
+            return page.map(s -> startupMapper.toDto(s, false, false, s.isFundraisingVisible(), followers.getOrDefault(s.getId(), 0L)));
+        }
+        Set<String> followedStartupIds = followRepository.findStartupIdsFollowedByUser(viewerId, ids).stream().collect(Collectors.toSet());
+        Map<String, StartupTeamMember> myMembershipByStartupId = teamMemberRepository.findByStartupIdInAndUserId(ids, viewerId).stream()
+                .collect(Collectors.toMap(StartupTeamMember::getStartupId, m -> m));
+        return page.map(s -> {
+            StartupTeamMember membership = myMembershipByStartupId.get(s.getId());
+            boolean isActiveMember = membership != null && membership.getStatus() == StartupTeamMember.Status.ACTIVE;
+            boolean canManage = isActiveMember && membership.canManage();
+            boolean canViewFundraising = s.isFundraisingVisible() || isActiveMember;
+            return startupMapper.toDto(s, followedStartupIds.contains(s.getId()), canManage, canViewFundraising,
+                    followers.getOrDefault(s.getId(), 0L));
+        });
     }
 
     /** The startup as its managers (and admins) see it, with its real follower count. */
@@ -378,7 +396,14 @@ public class StartupService {
         if (request.keywords() != null) startup.setKeywords(normalizeKeywords(request.keywords()));
         if (request.visibility() != null) startup.setVisibility(parseVisibility(request.visibility()));
         if (request.fundraisingVisible() != null) startup.setFundraisingVisible(request.fundraisingVisible());
-        if (request.isRaising() != null) startup.setRaising(request.isRaising());
+        if (request.isRaising() != null) {
+            // "Raising" is what an open fundraise says (FundraiseService keeps the flag in step with it), so a profile
+            // edit can clear a stale flag but never switch it on: that would list a startup as raising with no round.
+            if (request.isRaising() && !startup.isRaising()) {
+                throw new BadRequestException("A startup is marked as raising by opening a fundraise, not by editing its profile");
+            }
+            startup.setRaising(request.isRaising());
+        }
         if (request.stage() != null) startup.setStage(StartupStage.fromLabel(request.stage()));
         if (request.needs() != null) startup.setNeeds(new java.util.HashSet<>(request.needs()));
 
@@ -503,6 +528,9 @@ public class StartupService {
             if (member.getStatus() == StartupTeamMember.Status.PENDING) {
                 throw new ConflictException("You already have a pending request to join this startup");
             }
+            if (member.getStatus() == StartupTeamMember.Status.INVITED) {
+                throw new ConflictException("You've been invited to this team. Accept the invitation to join");
+            }
             // Previously REJECTED — allow a fresh request, reusing the row.
             member.setStatus(StartupTeamMember.Status.PENDING);
             member.setRoleId(roleId);
@@ -519,7 +547,9 @@ public class StartupService {
         }
         member = teamMemberRepository.saveAndFlush(member);
 
-        teamMemberRepository.findByStartupIdAndTeamRoleIn(startupId, MANAGER_ROLES).forEach(manager ->
+        teamMemberRepository.findByStartupIdAndTeamRoleIn(startupId, MANAGER_ROLES).stream()
+                .filter(manager -> manager.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .forEach(manager ->
                 notificationService.notify(manager.getUserId(), NotificationType.startup,
                         "New join request", "Someone wants to join " + startup.getName(), startupId, userId));
 
@@ -594,27 +624,73 @@ public class StartupService {
         if (member != null && member.getStatus() == StartupTeamMember.Status.ACTIVE) {
             throw new ConflictException("Already a member of this startup");
         }
+        if (member != null && member.getStatus() == StartupTeamMember.Status.INVITED) {
+            throw new ConflictException("This person has already been invited");
+        }
+        // Someone who asked to join has already said yes, so a manager adding them is accepting their request.
+        // Anyone else has to agree first: they are invited, and nothing about the team applies to them until they do.
+        boolean askedToJoin = member != null && member.getStatus() == StartupTeamMember.Status.PENDING;
+        StartupTeamMember.Status newStatus = askedToJoin ? StartupTeamMember.Status.ACTIVE : StartupTeamMember.Status.INVITED;
         if (member != null) {
-            member.setStatus(StartupTeamMember.Status.ACTIVE);
+            member.setStatus(newStatus);
             member.setRoleId(roleId);
             member.setTeamRole(teamRole);
-            member.setReviewedAt(Instant.now());
+            member.setReviewedAt(askedToJoin ? Instant.now() : null);
         } else {
             member = StartupTeamMember.builder()
                     .startupId(startupId)
                     .userId(userId)
-                    .status(StartupTeamMember.Status.ACTIVE)
+                    .status(newStatus)
                     .roleId(roleId)
                     .teamRole(teamRole)
-                    .reviewedAt(Instant.now())
                     .build();
         }
         member = teamMemberRepository.saveAndFlush(member);
 
-        notificationService.notify(userId, NotificationType.startup,
-                "You're on the team", "You were added to the team for " + startup.getName(), startupId, actingUserId);
+        if (askedToJoin) {
+            notificationService.notify(userId, NotificationType.startup,
+                    "You're on the team", startup.getName() + " accepted your request to join", startupId, actingUserId);
+        } else {
+            notificationService.notify(userId, NotificationType.startup,
+                    "You're invited to join a team", "You were invited to join the team for " + startup.getName()
+                            + ". Open the startup to accept or decline.", startupId, actingUserId);
+        }
 
         return startupMapper.toDto(member);
+    }
+
+    /** The person invited accepts: only now do they become part of the team. */
+    @Transactional
+    public StartupTeamMemberDto acceptInvitation(String userId, String startupId) {
+        Startup startup = getEntityOrThrow(startupId);
+        requireNotRemoved(startupId);
+        StartupTeamMember member = invitationOrThrow(userId, startupId);
+        member.setStatus(StartupTeamMember.Status.ACTIVE);
+        member.setReviewedAt(Instant.now());
+        member = teamMemberRepository.saveAndFlush(member);
+
+        String who = userRepository.findById(userId).map(User::getName).orElse("Someone");
+        teamMemberRepository.findByStartupIdAndTeamRoleIn(startupId, MANAGER_ROLES).stream()
+                .filter(manager -> manager.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .forEach(manager -> notificationService.notify(manager.getUserId(), NotificationType.startup,
+                        "Invitation accepted", who + " joined the team for " + startup.getName(), startupId, userId));
+
+        return startupMapper.toDto(member);
+    }
+
+    /** The person invited declines: the invitation is simply withdrawn, and nobody is told. */
+    @Transactional
+    public void declineInvitation(String userId, String startupId) {
+        getEntityOrThrow(startupId);
+        requireNotRemoved(startupId);
+        teamMemberRepository.delete(invitationOrThrow(userId, startupId));
+    }
+
+    /** The pending invitation, or the same not-found for "no such startup", "no invitation" and "already decided". */
+    private StartupTeamMember invitationOrThrow(String userId, String startupId) {
+        return teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
+                .filter(m -> m.getStatus() == StartupTeamMember.Status.INVITED)
+                .orElseThrow(() -> new ResourceNotFoundException("Invitation not found"));
     }
 
     @Transactional
@@ -660,8 +736,9 @@ public class StartupService {
         if (userId.equals(actingUserId)) {
             throw new BadRequestException("Use leave team to remove yourself");
         }
+        // A person who has been invited but hasn't answered can be un-invited the same way a member is removed.
         StartupTeamMember member = teamMemberRepository.findByStartupIdAndUserId(startupId, userId)
-                .filter(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE)
+                .filter(m -> m.getStatus() == StartupTeamMember.Status.ACTIVE || m.getStatus() == StartupTeamMember.Status.INVITED)
                 .orElseThrow(() -> new BadRequestException("This user is not a member of this startup"));
         if (member.isFounder()) {
             throw new BadRequestException("Founders can't be removed");
@@ -671,8 +748,10 @@ public class StartupService {
         }
         teamMemberRepository.delete(member);
 
-        notificationService.notify(userId, NotificationType.startup,
-                "Removed from the team", "You were removed from the team for " + startup.getName(), startupId, actingUserId);
+        if (member.getStatus() == StartupTeamMember.Status.ACTIVE) {
+            notificationService.notify(userId, NotificationType.startup,
+                    "Removed from the team", "You were removed from the team for " + startup.getName(), startupId, actingUserId);
+        }
     }
 
     public record FollowResult(boolean following) {}

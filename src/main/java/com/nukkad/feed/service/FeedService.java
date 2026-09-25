@@ -5,6 +5,7 @@ import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.feed.dto.AttachmentDto;
 import com.nukkad.feed.dto.AttachmentRef;
@@ -113,7 +114,7 @@ public class FeedService {
 
     @Transactional(readOnly = true)
     public Page<PostDto> list(String viewerId, String authorId, String type, String tag, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
         String author = (authorId == null || authorId.isBlank()) ? null : authorId;
         Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
         // Only posts this viewer may read (public, their own, or connections-only from a connection).
@@ -147,7 +148,7 @@ public class FeedService {
     @Transactional(readOnly = true)
     public Page<PostDto> listSaved(String viewerId, String type, String sort, int page, int size) {
         Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
 
         Page<PostSave> saves = switch (parseSavedSort(sort)) {
             case OLDEST_SAVED -> postSaveRepository.findByUserOrderBySavedAtAsc(viewerId, typeFilter, pageable);
@@ -375,7 +376,7 @@ public class FeedService {
     // between "everything" and "only what's currently live", mirroring the other Admin*Controllers.
     @Transactional(readOnly = true)
     public Page<PostDto> listForAdmin(boolean includeRemoved, int page, int size) {
-        Pageable pageable = PageRequest.of(page, size);
+        Pageable pageable = PageRequests.of(page, size);
         Page<Post> posts = includeRemoved
                 ? postRepository.findAllByOrderByCreatedAtDesc(pageable)
                 : postRepository.findByRemovedByAdminFalseOrderByCreatedAtDesc(pageable);
@@ -504,7 +505,7 @@ public class FeedService {
     public Page<CommentDto> listComments(String viewerId, String postId, int page, int size) {
         requireVisiblePost(viewerId, postId);
         Page<PostComment> comments = postCommentRepository
-                .findByPostIdAndParentCommentIdIsNullOrderByCreatedAtAsc(postId, PageRequest.of(page, size));
+                .findByPostIdAndParentCommentIdIsNullOrderByCreatedAtAsc(postId, PageRequests.of(page, size));
 
         List<String> ids = comments.getContent().stream().map(PostComment::getId).toList();
         Map<String, Integer> replyCounts = ids.isEmpty() ? Map.of() : postCommentRepository
@@ -523,7 +524,7 @@ public class FeedService {
         if (parent.getParentCommentId() != null) {
             throw new BadRequestException("Cannot list replies of a reply");
         }
-        return postCommentRepository.findByParentCommentIdOrderByCreatedAtAsc(commentId, PageRequest.of(page, size))
+        return postCommentRepository.findByParentCommentIdOrderByCreatedAtAsc(commentId, PageRequests.of(page, size))
                 .map(c -> toCommentDto(c, 0));
     }
 
@@ -588,7 +589,7 @@ public class FeedService {
     @Transactional(readOnly = true)
     public Page<PostLikeDto> listLikers(String viewerId, String postId, int page, int size) {
         requireVisiblePost(viewerId, postId);
-        return postLikeRepository.findByPostIdOrderByCreatedAtDesc(postId, PageRequest.of(page, size))
+        return postLikeRepository.findByPostIdOrderByCreatedAtDesc(postId, PageRequests.of(page, size))
                 .map(l -> new PostLikeDto(l.getUserId(), l.getCreatedAt()));
     }
 

@@ -128,7 +128,8 @@ public class StartupMapper {
                 member.getTeamRole().name(),
                 member.isFounder(),
                 member.isAdmin(),
-                member.canManage(),
+                // An invitation to be an Admin (or a request that was never accepted) manages nothing yet.
+                member.canManage() && member.getStatus() == StartupTeamMember.Status.ACTIVE,
                 member.getStatus().name(),
                 member.getRoleId(),
                 member.getCreatedAt(),
