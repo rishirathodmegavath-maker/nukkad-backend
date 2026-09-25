@@ -273,13 +273,13 @@ class FeedServiceTest {
     }
 
     @Test
-    void aPostBuiltWithoutAnExplicitPublisherIdentityDefaultsToPlainBuildAdda() {
-        // Mirrors the V109 migration's column default — an entity built (or a pre-migration row
-        // loaded) without setting publisherIdentity reads as plain BuildAdda, same as it always
-        // displayed before this feature existed.
+    void aPostBuiltWithoutAnExplicitPublisherIdentityDefaultsToTheFirstIdentity() {
+        // An entity built (or a pre-migration row loaded) without setting publisherIdentity reads
+        // as the enum's first constant — meaningless for a member post since display logic always
+        // gates on postedAsPlatform first.
         Post post = Post.builder().id("post-1").authorId("admin-1").content("hello").build();
 
-        assertThat(post.getPublisherIdentity()).isEqualTo(Post.PublisherIdentity.BUILDADDA);
+        assertThat(post.getPublisherIdentity()).isEqualTo(Post.PublisherIdentity.ARJUN_MEHTA);
         assertThat(post.getPlatformEngagementCount()).isZero();
     }
 
@@ -490,7 +490,7 @@ class FeedServiceTest {
 
         assertThat(dto.authorId()).isEqualTo("admin-1");
         assertThat(dto.postedAsPlatform()).isTrue();
-        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.publisherIdentity()).isEqualTo("ARJUN_MEHTA");
         assertThat(dto.platformEngagementCount()).isZero();
         verify(auditService).log(eq("admin-1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_POST_CREATED),
                 eq("Post"), any(), eq("1.2.3.4"), any());
@@ -542,10 +542,10 @@ class FeedServiceTest {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
-                null, "buildadda_insights", null, "1.2.3.4");
+                null, "karan_shah", null, "1.2.3.4");
 
         assertThat(dto.postedAsPlatform()).isTrue();
-        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA_INSIGHTS");
+        assertThat(dto.publisherIdentity()).isEqualTo("KARAN_SHAH");
     }
 
     @Test
@@ -557,28 +557,28 @@ class FeedServiceTest {
     }
 
     @Test
-    void anEmptyPublisherIdentityDefaultsToPlainBuildAdda() {
+    void anEmptyPublisherIdentityDefaultsToTheFirstIdentity() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
                 null, "  ", null, "1.2.3.4");
 
-        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.publisherIdentity()).isEqualTo("ARJUN_MEHTA");
     }
 
     @Test
     void attributingToARealMemberIgnoresPublisherIdentityAndEngagement() {
-        // publisherIdentity/platformEngagementCount describe how BuildAdda-as-publisher should look;
-        // once a real member is the author, neither applies — the post is that member's own.
+        // publisherIdentity/platformEngagementCount describe how the platform-as-publisher should
+        // look; once a real member is the author, neither applies — the post is that member's own.
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(userRepository.findByEmail("author@example.com"))
                 .thenReturn(Optional.of(User.builder().id("author-9").email("author@example.com").status(AccountStatus.ACTIVE).build()));
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
-                "author@example.com", "buildadda_insights", 15, "1.2.3.4");
+                "author@example.com", "karan_shah", 15, "1.2.3.4");
 
         assertThat(dto.postedAsPlatform()).isFalse();
-        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.publisherIdentity()).isEqualTo("ARJUN_MEHTA");
         assertThat(dto.platformEngagementCount()).isZero();
     }
 
@@ -593,7 +593,7 @@ class FeedServiceTest {
         PostDto dto = service().create("member-1", request("hello", "text", null, null));
 
         assertThat(dto.postedAsPlatform()).isFalse();
-        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.publisherIdentity()).isEqualTo("ARJUN_MEHTA");
         assertThat(dto.platformEngagementCount()).isZero();
     }
 
@@ -610,7 +610,7 @@ class FeedServiceTest {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
-                null, "buildadda_grants", 15, "1.2.3.4");
+                null, "neel_kapoor", 15, "1.2.3.4");
 
         assertThat(dto.platformEngagementCount()).isEqualTo(15);
         assertThat(dto.likesCount()).isZero();

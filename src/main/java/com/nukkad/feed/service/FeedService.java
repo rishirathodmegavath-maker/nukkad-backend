@@ -190,7 +190,7 @@ public class FeedService {
 
     @Transactional
     public PostDto create(String authorId, CreatePostRequest request) {
-        return create(authorId, request, false, Post.PublisherIdentity.BUILDADDA, 0);
+        return create(authorId, request, false, Post.PublisherIdentity.ARJUN_MEHTA, 0);
     }
 
     @Transactional
@@ -247,10 +247,10 @@ public class FeedService {
     /**
      * An admin publishing a post from the admin panel. With {@code authorEmail}, that member becomes the
      * author (and is told, since it now appears as theirs); without it the admin's own account is the author
-     * and the post is a platform post, displayed under {@code publisherIdentityRaw} (or plain "BuildAdda" if
-     * blank/omitted) instead of that admin's real name. {@code publisherIdentityRaw}/{@code platformEngagementCount}
+     * and the post is a platform post, displayed under {@code publisherIdentityRaw} (or the default identity
+     * if blank/omitted) instead of that admin's real name. {@code publisherIdentityRaw}/{@code platformEngagementCount}
      * are only ever applied for a platform post — attributing to a real member ignores both, since they
-     * describe how BuildAdda-as-publisher should look, not that member's own post. Reuses {@link #create}
+     * describe how the platform-as-publisher should look, not that member's own post. Reuses {@link #create}
      * exactly as a member's own post would — no separate moderation gate exists for Feed posts to bypass.
      */
     @Transactional
@@ -263,7 +263,7 @@ public class FeedService {
         boolean postedAsPlatform = authorId.equals(adminId);
         Post.PublisherIdentity publisherIdentity = postedAsPlatform
                 ? parsePublisherIdentity(publisherIdentityRaw)
-                : Post.PublisherIdentity.BUILDADDA;
+                : Post.PublisherIdentity.ARJUN_MEHTA;
         int engagement = postedAsPlatform && platformEngagementCount != null ? platformEngagementCount : 0;
         PostDto created = create(authorId, request, postedAsPlatform, publisherIdentity, engagement);
 
@@ -277,7 +277,7 @@ public class FeedService {
     }
 
     private static Post.PublisherIdentity parsePublisherIdentity(String raw) {
-        if (raw == null || raw.isBlank()) return Post.PublisherIdentity.BUILDADDA;
+        if (raw == null || raw.isBlank()) return Post.PublisherIdentity.ARJUN_MEHTA;
         try {
             return Post.PublisherIdentity.valueOf(raw.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {

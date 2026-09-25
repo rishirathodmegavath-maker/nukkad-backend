@@ -12,7 +12,7 @@ import java.util.List;
  * appears as theirs; without it, the admin's own account is the author and the post is a platform post.
  * {@code publisherIdentity} and {@code platformEngagementCount} only apply to a platform post — see
  * FeedService#createAsAdmin. {@code publisherIdentity} must name one of {@link com.nukkad.feed.entity.Post.PublisherIdentity}'s
- * constants (case-insensitive) or is rejected; blank/omitted defaults to plain "BuildAdda".
+ * constants (case-insensitive) or is rejected; blank/omitted falls back to the enum's first constant.
  */
 public record AdminCreatePostRequest(
         @Size(max = 4000) String content,
