@@ -294,6 +294,90 @@ class InvestorCatalogServiceTest {
                 eq("Investor"), eq("inv1"), eq("127.0.0.1"), any());
     }
 
+    // ---- website/social link fields reject a non-http(s) scheme instead of storing it raw ----
+
+    @Test
+    void creatingWithAJavascriptSchemeWebsiteIsRejected() {
+        var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", null, null, "javascript:alert(1)",
+                Set.of(), Set.of(), null, null, true, true, null,
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> service().create("admin1", in, null, "127.0.0.1")).isInstanceOf(BadRequestException.class);
+        verify(investorRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void creatingWithADataSchemeSocialLinkIsRejected() {
+        var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", null, null, null,
+                Set.of(), Set.of(), null, null, true, true, null,
+                null, null, Set.of(), Set.of(), null, null,
+                "data:text/html,<script>alert(1)</script>", null, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> service().create("admin1", in, null, "127.0.0.1")).isInstanceOf(BadRequestException.class);
+        verify(investorRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void creatingWithABareDomainWebsiteGetsHttpsPutInFrontOfIt() {
+        when(investorRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", null, null, "peak.vc",
+                Set.of(), Set.of(), null, null, true, true, null,
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
+
+        AdminInvestorDto dto = service().create("admin1", in, null, "127.0.0.1");
+
+        assertThat(dto.website()).isEqualTo("https://peak.vc");
+    }
+
+    @Test
+    void creatingWithABlankWebsiteLeavesItNullRatherThanRejectingTheRow() {
+        when(investorRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        var in = new InvestorCatalogService.NewInvestor("Peak Capital", "VC", null, null, "   ",
+                Set.of(), Set.of(), null, null, true, true, null,
+                null, null, Set.of(), Set.of(), null, null, null, null, null, null, null, null, null, null);
+
+        AdminInvestorDto dto = service().create("admin1", in, null, "127.0.0.1");
+
+        assertThat(dto.website()).isNull();
+    }
+
+    @Test
+    void updatingWebsiteToAVbscriptSchemeIsRejected() {
+        Investor existing = investor("inv1", true, true, null);
+        when(investorRepository.findById("inv1")).thenReturn(Optional.of(existing));
+
+        var request = new UpdateInvestorRequest(null, null, null, null, null, "vbscript:msgbox(1)", null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> service().update("admin1", "inv1", request, null)).isInstanceOf(BadRequestException.class);
+        verify(investorRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatingASocialLinkToAProtocolRelativeUrlIsRejected() {
+        Investor existing = investor("inv1", true, true, null);
+        when(investorRepository.findById("inv1")).thenReturn(Optional.of(existing));
+
+        var request = new UpdateInvestorRequest(null, null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, "//evil.example/x", null, null, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> service().update("admin1", "inv1", request, null)).isInstanceOf(BadRequestException.class);
+        verify(investorRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updatingWebsiteToAValidUrlNormalizesAndSavesIt() {
+        Investor existing = investor("inv1", true, true, null);
+        when(investorRepository.findById("inv1")).thenReturn(Optional.of(existing));
+        when(investorRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        var request = new UpdateInvestorRequest(null, null, null, null, null, "peak.vc", null, null, null, null, null,
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        AdminInvestorDto dto = service().update("admin1", "inv1", request, null);
+
+        assertThat(dto.website()).isEqualTo("https://peak.vc");
+    }
+
     @Test
     void updatingLeavesFieldsThatWerentSentUnchanged() {
         Investor existing = investor("inv1", true, true, null);

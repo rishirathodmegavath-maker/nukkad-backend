@@ -10,6 +10,7 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.storage.FileStorageService;
+import com.nukkad.common.validation.LinkSanitizer;
 import com.nukkad.investor.dto.CreateIntroRequestRequest;
 import com.nukkad.investor.dto.InvestorCatalogFacetsDto;
 import com.nukkad.investor.dto.InvestorDto;
@@ -246,7 +247,7 @@ public class InvestorCatalogService {
                 .description(blankToNull(in.description()))
                 .location(blankToNull(in.location()))
                 .country(blankToNull(in.country()))
-                .website(blankToNull(in.website()))
+                .website(LinkSanitizer.normalizeHttpUrl(in.website(), "Website"))
                 .domain(blankToNull(in.domain()))
                 .logoUrl(logoUrl)
                 .sectors(in.sectors() == null ? new HashSet<>() : new HashSet<>(in.sectors()))
@@ -259,10 +260,10 @@ public class InvestorCatalogService {
                 .chequeMax(in.chequeMax())
                 .active(in.active())
                 .visible(in.visible())
-                .facebookUrl(blankToNull(in.facebookUrl()))
-                .instagramUrl(blankToNull(in.instagramUrl()))
-                .linkedinUrl(blankToNull(in.linkedinUrl()))
-                .twitterUrl(blankToNull(in.twitterUrl()))
+                .facebookUrl(LinkSanitizer.normalizeHttpUrl(in.facebookUrl(), "Facebook link"))
+                .instagramUrl(LinkSanitizer.normalizeHttpUrl(in.instagramUrl(), "Instagram link"))
+                .linkedinUrl(LinkSanitizer.normalizeHttpUrl(in.linkedinUrl(), "LinkedIn link"))
+                .twitterUrl(LinkSanitizer.normalizeHttpUrl(in.twitterUrl(), "Twitter/X link"))
                 .contactEmail(blankToNull(in.contactEmail()))
                 .contactEmailVerified(in.contactEmailVerified())
                 .secondaryEmail(blankToNull(in.secondaryEmail()))
@@ -288,7 +289,7 @@ public class InvestorCatalogService {
         if (request.description() != null) investor.setDescription(blankToNull(request.description()));
         if (request.location() != null) investor.setLocation(blankToNull(request.location()));
         if (request.country() != null) investor.setCountry(blankToNull(request.country()));
-        if (request.website() != null) investor.setWebsite(blankToNull(request.website()));
+        if (request.website() != null) investor.setWebsite(LinkSanitizer.normalizeHttpUrl(request.website(), "Website"));
         if (request.domain() != null) investor.setDomain(blankToNull(request.domain()));
         if (request.sectors() != null) investor.setSectors(new HashSet<>(request.sectors()));
         if (request.stages() != null) investor.setStages(new HashSet<>(request.stages()));
@@ -301,10 +302,10 @@ public class InvestorCatalogService {
         validateChequeRange(investor.getChequeMin(), investor.getChequeMax());
         if (request.active() != null) investor.setActive(request.active());
         if (request.visible() != null) investor.setVisible(request.visible());
-        if (request.facebookUrl() != null) investor.setFacebookUrl(blankToNull(request.facebookUrl()));
-        if (request.instagramUrl() != null) investor.setInstagramUrl(blankToNull(request.instagramUrl()));
-        if (request.linkedinUrl() != null) investor.setLinkedinUrl(blankToNull(request.linkedinUrl()));
-        if (request.twitterUrl() != null) investor.setTwitterUrl(blankToNull(request.twitterUrl()));
+        if (request.facebookUrl() != null) investor.setFacebookUrl(LinkSanitizer.normalizeHttpUrl(request.facebookUrl(), "Facebook link"));
+        if (request.instagramUrl() != null) investor.setInstagramUrl(LinkSanitizer.normalizeHttpUrl(request.instagramUrl(), "Instagram link"));
+        if (request.linkedinUrl() != null) investor.setLinkedinUrl(LinkSanitizer.normalizeHttpUrl(request.linkedinUrl(), "LinkedIn link"));
+        if (request.twitterUrl() != null) investor.setTwitterUrl(LinkSanitizer.normalizeHttpUrl(request.twitterUrl(), "Twitter/X link"));
         if (request.contactEmail() != null) investor.setContactEmail(blankToNull(request.contactEmail()));
         if (request.contactEmailVerified() != null) investor.setContactEmailVerified(request.contactEmailVerified());
         if (request.secondaryEmail() != null) investor.setSecondaryEmail(blankToNull(request.secondaryEmail()));

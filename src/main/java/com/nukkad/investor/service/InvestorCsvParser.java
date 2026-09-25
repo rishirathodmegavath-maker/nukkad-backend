@@ -1,6 +1,7 @@
 package com.nukkad.investor.service;
 
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.validation.LinkSanitizer;
 import com.nukkad.investor.entity.InvestorType;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
@@ -378,6 +379,12 @@ public class InvestorCsvParser {
         Integer exitCount = parseIntOrWarn(get(src, fieldToHeader, Field.EXIT_COUNT), "number_of_exits", warnings);
         Boolean contactEmailVerified = parseBooleanOrWarn(get(src, fieldToHeader, Field.CONTACT_EMAIL_VERIFIED), warnings);
 
+        String website = normalizeUrlOrWarn(get(src, fieldToHeader, Field.WEBSITE), "Website", warnings);
+        String facebookUrl = normalizeUrlOrWarn(get(src, fieldToHeader, Field.FACEBOOK), "Facebook link", warnings);
+        String instagramUrl = normalizeUrlOrWarn(get(src, fieldToHeader, Field.INSTAGRAM), "Instagram link", warnings);
+        String linkedinUrl = normalizeUrlOrWarn(get(src, fieldToHeader, Field.LINKEDIN), "LinkedIn link", warnings);
+        String twitterUrl = normalizeUrlOrWarn(get(src, fieldToHeader, Field.TWITTER), "Twitter/X link", warnings);
+
         return new InvestorCsvRow(
                 rowNumber,
                 blankToNull(get(src, fieldToHeader, Field.ID)),
@@ -387,17 +394,17 @@ public class InvestorCsvParser {
                 blankToNull(get(src, fieldToHeader, Field.DESCRIPTION)),
                 blankToNull(get(src, fieldToHeader, Field.LOCATION)),
                 blankToNull(get(src, fieldToHeader, Field.COUNTRY)),
-                normalizeUrl(get(src, fieldToHeader, Field.WEBSITE)),
+                website,
                 normalizeDomain(get(src, fieldToHeader, Field.DOMAIN)),
                 splitList(get(src, fieldToHeader, Field.INDUSTRIES)),
                 splitList(get(src, fieldToHeader, Field.PROGRAM)),
                 investmentCount,
                 exitCount,
                 splitList(get(src, fieldToHeader, Field.KEY_PEOPLE)),
-                normalizeUrl(get(src, fieldToHeader, Field.FACEBOOK)),
-                normalizeUrl(get(src, fieldToHeader, Field.INSTAGRAM)),
-                normalizeUrl(get(src, fieldToHeader, Field.LINKEDIN)),
-                normalizeUrl(get(src, fieldToHeader, Field.TWITTER)),
+                facebookUrl,
+                instagramUrl,
+                linkedinUrl,
+                twitterUrl,
                 blankToNull(get(src, fieldToHeader, Field.CONTACT_EMAIL)),
                 contactEmailVerified,
                 blankToNull(get(src, fieldToHeader, Field.SECONDARY_EMAIL)),
@@ -444,6 +451,22 @@ public class InvestorCsvParser {
         return null;
     }
 
+    /** Same validation {@link LinkSanitizer} enforces everywhere else a person can type a link (only
+     *  http(s), with a real host) — but a bad row here must never abort the whole import, so a rejected
+     *  value becomes a warning and a blank field instead of a thrown exception. Replaces this file's
+     *  former standalone normalizeUrl, which only forced an "https://" prefix and never actually
+     *  rejected a non-http(s) scheme such as javascript: or a malformed value. */
+    private static String normalizeUrlOrWarn(String raw, String fieldLabel, List<String> warnings) {
+        String value = blankToNull(raw);
+        if (value == null) return null;
+        try {
+            return LinkSanitizer.normalizeHttpUrl(value, fieldLabel);
+        } catch (BadRequestException e) {
+            warnings.add("\"" + value + "\" in " + fieldLabel + " is not a valid link — left blank");
+            return null;
+        }
+    }
+
     /** Splits on comma, semicolon or pipe (source datasets vary), trims each item, drops empties, and
      *  de-duplicates while preserving first-seen order. */
     private static Set<String> splitList(String raw) {
@@ -455,13 +478,6 @@ public class InvestorCsvParser {
             if (!trimmed.isEmpty()) result.add(trimmed);
         }
         return result;
-    }
-
-    private static String normalizeUrl(String raw) {
-        String value = blankToNull(raw);
-        if (value == null) return null;
-        if (value.matches("(?i)^https?://.*")) return value;
-        return "https://" + value;
     }
 
     private static String normalizeDomain(String raw) {

@@ -91,6 +91,59 @@ class InvestorCsvParserTest {
         assertThat(row.warnings()).isEmpty();
     }
 
+    // ---- a bad-scheme URL is dropped with a warning, never a thrown exception or a hard row error ----
+
+    @Test
+    void aJavascriptSchemeWebsiteIsClearedWithAWarningNotAHardError() {
+        String content = "company_name,company_url\nAcme Ventures,javascript:alert(1)\n";
+        InvestorCsvParseResult result = parser.parse(csv(content));
+
+        InvestorCsvRow row = result.rows().get(0);
+        assertThat(row.hasHardError()).isFalse();
+        assertThat(row.website()).isNull();
+        assertThat(row.warnings()).anyMatch(w -> w.contains("javascript:alert(1)"));
+    }
+
+    @Test
+    void aDataSchemeSocialLinkIsClearedWithAWarning() {
+        String content = "company_name,facebook\nAcme Ventures,\"data:text/html,<script>alert(1)</script>\"\n";
+        InvestorCsvParseResult result = parser.parse(csv(content));
+
+        InvestorCsvRow row = result.rows().get(0);
+        assertThat(row.facebookUrl()).isNull();
+        assertThat(row.warnings()).anyMatch(w -> w.contains("Facebook link"));
+    }
+
+    @Test
+    void aProtocolRelativeSocialLinkIsClearedWithAWarning() {
+        String content = "company_name,twitter\nAcme Ventures,//evil.example/x\n";
+        InvestorCsvParseResult result = parser.parse(csv(content));
+
+        InvestorCsvRow row = result.rows().get(0);
+        assertThat(row.twitterUrl()).isNull();
+        assertThat(row.warnings()).anyMatch(w -> w.contains("Twitter/X link"));
+    }
+
+    @Test
+    void aBlankWebsiteStaysNullWithNoWarning() {
+        String content = "company_name,company_url\nAcme Ventures,\n";
+        InvestorCsvParseResult result = parser.parse(csv(content));
+
+        InvestorCsvRow row = result.rows().get(0);
+        assertThat(row.website()).isNull();
+        assertThat(row.warnings()).isEmpty();
+    }
+
+    @Test
+    void aBareDomainSocialLinkGetsHttpsPutInFrontOfIt() {
+        String content = "company_name,linkedin\nAcme Ventures,linkedin.com/company/acme\n";
+        InvestorCsvParseResult result = parser.parse(csv(content));
+
+        InvestorCsvRow row = result.rows().get(0);
+        assertThat(row.linkedinUrl()).isEqualTo("https://linkedin.com/company/acme");
+        assertThat(row.warnings()).isEmpty();
+    }
+
     @Test
     void headerMatchingIgnoresCaseSpacingAndPunctuation() {
         String content = "Company Name,Investor Type\nAcme Ventures,Family Office\n";
