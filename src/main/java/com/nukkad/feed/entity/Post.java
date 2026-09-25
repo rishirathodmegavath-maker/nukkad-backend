@@ -44,16 +44,17 @@ public class Post {
     public enum Visibility { PUBLIC, CONNECTIONS }
 
     /**
-     * Which BuildAdda editorial identity to show as the author of a platform post — meaningful only
-     * when {@code postedAsPlatform} is true. Still exactly one real admin account behind every one of
-     * these (see {@code authorId}); no separate User row is ever created per identity. A fixed,
-     * code-curated list on purpose (same idea as {@link Topic} above) — an admin cannot type an
-     * arbitrary publisher name.
+     * Which named publisher to show as the author of a platform post — meaningful only when
+     * {@code postedAsPlatform} is true. Still exactly one real admin account behind every one of
+     * these (see {@code authorId}); no separate User row is ever created per identity, and the
+     * BuildAdda logo stays the avatar for all four (see PostCard.tsx) — only the displayed name
+     * changes. A fixed, code-curated list on purpose (same idea as {@link Topic} above) — an admin
+     * cannot type an arbitrary publisher name. Replaces the earlier BUILDADDA/BUILDADDA_INSIGHTS/...
+     * department-style names outright (V112 remaps every existing row, platform or member, to one of
+     * these four — see that migration for why a member post's meaningless default also has to move).
      */
     public enum PublisherIdentity {
-        BUILDADDA("BuildAdda"), BUILDADDA_INSIGHTS("BuildAdda Insights"), BUILDADDA_GRANTS("BuildAdda Grants"),
-        BUILDADDA_COMMUNITY("BuildAdda Community"), BUILDADDA_STARTUP_DESK("BuildAdda Startup Desk"),
-        BUILDADDA_EDITORIAL("BuildAdda Editorial");
+        ARJUN_MEHTA("Arjun Mehta"), KARAN_SHAH("Karan Shah"), NEEL_KAPOOR("Neel Kapoor"), VIKRAM_RAO("Vikram Rao");
 
         private final String label;
 
@@ -106,20 +107,23 @@ public class Post {
     @Builder.Default
     private boolean postedAsPlatform = false;
 
-    /** Which BuildAdda identity to display for a platform post; ignored (left at its default) for
+    /** Which publisher identity to display for a platform post; ignored (left at its default) for
      *  every ordinary member post since display logic always gates on {@code postedAsPlatform} first. */
     @Enumerated(EnumType.STRING)
     @Column(name = "publisher_identity", nullable = false, length = 30)
     @Builder.Default
-    private PublisherIdentity publisherIdentity = PublisherIdentity.BUILDADDA;
+    private PublisherIdentity publisherIdentity = PublisherIdentity.ARJUN_MEHTA;
 
-    /** Seeded/platform-level engagement shown alongside real likes so a freshly-published platform
-     *  post doesn't look empty (displayed count = likesCount + platformEngagementCount). Never backed
-     *  by a PostLike row: never returned by the liker list ({@link com.nukkad.feed.repository.PostLikeRepository}
-     *  is the only source for that), never touched by {@code toggleLike}, and deliberately excluded
-     *  from feed-ranking's engagement-velocity signal (see PersonalizedFeedService, which reads only
-     *  the real likesCount) so seeded engagement can never inflate what a real user's like earns a
-     *  post in ranking. Meaningful only for a platform post; stays 0 for every member post. */
+    /** Seeded/platform-level engagement ADDED to the real likesCount internally so a freshly-
+     *  published platform post doesn't start from zero — never rendered as a number anywhere in
+     *  member-facing UI (see PostCard.tsx), never called "likes" in any label or comment, since it
+     *  isn't real users liking anything. Never backed by a PostLike row: never returned by the liker
+     *  list ({@link com.nukkad.feed.repository.PostLikeRepository} is the only source for that), never
+     *  touched by {@code toggleLike}, and deliberately excluded from feed-ranking's engagement-velocity
+     *  signal (see PersonalizedFeedService, which reads only the real likesCount) so seeded engagement
+     *  can never inflate what a real user's like earns a post in ranking. Meaningful only for a
+     *  platform post; stays 0 for every member post. Every eligible platform post is floored at 15
+     *  (see V111). */
     @Column(name = "platform_engagement_count", nullable = false)
     @Builder.Default
     private int platformEngagementCount = 0;
