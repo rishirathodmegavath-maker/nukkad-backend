@@ -31,9 +31,16 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -46,6 +53,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -71,6 +79,10 @@ class ConversationServiceTest {
     @Mock private UserPrivacySettingsService privacySettingsService;
     @Mock private FeedService feedService;
     @Mock private FileStorageService fileStorageService;
+
+    /** A chat-attachment key exactly as {@code uploadAttachment} mints it for conv1, and the older flat layout. */
+    private static final String KEY = "messages/conv1/3f2b8c1e-1111-4222-8333-444455556666.png";
+    private static final String LEGACY_KEY = "messages/3f2b8c1e-1111-4222-8333-444455556666.png";
 
     private ConversationService service() {
         return new ConversationService(conversationRepository, participantRepository, messageRepository, messageDeletionRepository,
@@ -451,7 +463,7 @@ class ConversationServiceTest {
         when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
 
         assertThatThrownBy(() -> service().hideMessagesForViewer("conv1", "mallory", List.of("msg1")))
-                .isInstanceOf(ForbiddenException.class);
+                .isInstanceOf(ResourceNotFoundException.class);
 
         verify(messageRepository, never()).findAllById(any());
         verify(messageDeletionRepository, never()).saveAll(any());
@@ -542,7 +554,7 @@ class ConversationServiceTest {
         when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "mallory")).thenReturn(false);
 
         assertThatThrownBy(() -> service().sendMessage("conv1", "mallory", "Hi", null, null))
-                .isInstanceOf(ForbiddenException.class);
+                .isInstanceOf(ResourceNotFoundException.class);
 
         verify(messageRepository, never()).saveAndFlush(any());
     }
@@ -768,25 +780,39 @@ class ConversationServiceTest {
         MultipartFile file = mock(MultipartFile.class);
 
         assertThatThrownBy(() -> service().uploadAttachment("conv1", "mallory", file))
-                .isInstanceOf(ForbiddenException.class);
+                .isInstanceOf(ResourceNotFoundException.class);
 
         verify(fileStorageService, never()).storeConversationAttachment(any(), anyString());
     }
 
     @Test
-    void uploadingAnAttachmentStoresItPrivatelyAndReturnsAKeyNotAUrl() {
+    void uploadingAnAttachmentStoresItPrivatelyUnderThisConversationsPrefixAndReturnsAKeyNotAUrl() {
         Conversation conv = conversation("alice", "bob");
         when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
         MultipartFile file = mock(MultipartFile.class);
         when(file.getOriginalFilename()).thenReturn("photo.png");
-        when(fileStorageService.storeConversationAttachment(file, "messages"))
-                .thenReturn(new FileStorageService.StoredPrivateMedia("messages/x.png", FileStorageService.AttachmentKind.IMAGE));
+        when(fileStorageService.storeConversationAttachment(file, "messages/conv1"))
+                .thenReturn(new FileStorageService.StoredPrivateMedia(KEY, FileStorageService.AttachmentKind.IMAGE));
 
         ConversationAttachmentRef ref = service().uploadAttachment("conv1", "alice", file);
 
-        assertThat(ref.key()).isEqualTo("messages/x.png");
+        assertThat(ref.key()).isEqualTo(KEY);
         assertThat(ref.kind()).isEqualTo("IMAGE");
         assertThat(ref.fileName()).isEqualTo("photo.png");
+    }
+
+    @Test
+    void theFileNameHandedBackAfterAnUploadIsSanitizedNotTheRawClientString() {
+        Conversation conv = conversation("alice", "bob");
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
+        MultipartFile file = mock(MultipartFile.class);
+        when(file.getOriginalFilename()).thenReturn("C:\\fakepath\\..\\..\\holiday\u202Egpj.exe");
+        when(fileStorageService.storeConversationAttachment(file, "messages/conv1"))
+                .thenReturn(new FileStorageService.StoredPrivateMedia(KEY, FileStorageService.AttachmentKind.IMAGE));
+
+        ConversationAttachmentRef ref = service().uploadAttachment("conv1", "alice", file);
+
+        assertThat(ref.fileName()).isEqualTo("holidaygpj.exe");
     }
 
     @Test
@@ -798,22 +824,23 @@ class ConversationServiceTest {
         when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
         stubMessagePersistenceAndEncryption();
         stubConversationDtoLookups("bob", "alice");
-        when(fileStorageService.presignGet(eq("messages/x.png"), any(java.time.Duration.class)))
-                .thenReturn("https://cdn.example.com/messages/x.png?X-Amz-Signature=abc");
-        ConversationAttachmentRef attachment = new ConversationAttachmentRef("messages/x.png", "IMAGE", "photo.png");
+        when(fileStorageService.describePrivateObject(KEY)).thenReturn(Optional.of(FileStorageService.AttachmentKind.IMAGE));
+        when(fileStorageService.presignGet(eq(KEY), any(java.time.Duration.class)))
+                .thenReturn("https://cdn.example.com/" + KEY + "?X-Amz-Signature=abc");
+        ConversationAttachmentRef attachment = new ConversationAttachmentRef(KEY, "IMAGE", "photo.png");
 
         MessageDto dto = service().sendMessage("conv1", "alice", "", null, null, attachment);
 
         assertThat(dto.type()).isEqualTo("IMAGE");
         assertThat(dto.attachment()).isNotNull();
         // The DTO carries a presigned URL, never the raw key — that never leaves the backend.
-        assertThat(dto.attachment().url()).isEqualTo("https://cdn.example.com/messages/x.png?X-Amz-Signature=abc");
+        assertThat(dto.attachment().url()).isEqualTo("https://cdn.example.com/" + KEY + "?X-Amz-Signature=abc");
         assertThat(dto.attachment().fileName()).isEqualTo("photo.png");
 
         ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
         verify(messageRepository).saveAndFlush(captor.capture());
         assertThat(captor.getValue().getMessageType()).isEqualTo(Message.Type.IMAGE);
-        assertThat(captor.getValue().getAttachmentKey()).isEqualTo("messages/x.png");
+        assertThat(captor.getValue().getAttachmentKey()).isEqualTo(KEY);
     }
 
     @Test
@@ -825,17 +852,18 @@ class ConversationServiceTest {
         when(messageRepository.findVisibleForViewer(eq("conv1"), eq("alice"), any()))
                 .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(
                         Message.builder().id("msg1").conversationId("conv1").senderId("bob")
-                                .messageType(Message.Type.IMAGE).attachmentKey("messages/x.png").attachmentKind("IMAGE")
+                                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE")
                                 .contentCiphertext("ciphertext").build())));
         when(encryptionService.decrypt("ciphertext")).thenReturn("");
-        when(fileStorageService.presignGet(eq("messages/x.png"), any(java.time.Duration.class)))
-                .thenReturn("https://cdn.example.com/messages/x.png?X-Amz-Signature=fresh");
+        when(fileStorageService.presignGet(eq(KEY), any(java.time.Duration.class)))
+                .thenReturn("https://cdn.example.com/" + KEY + "?X-Amz-Signature=fresh");
 
         var page = service().getMessages("conv1", "alice", 0, 20);
 
         assertThat(page.getContent()).hasSize(1);
-        assertThat(page.getContent().get(0).attachment().url()).isEqualTo("https://cdn.example.com/messages/x.png?X-Amz-Signature=fresh");
-        verify(fileStorageService).presignGet("messages/x.png", java.time.Duration.ofHours(6));
+        assertThat(page.getContent().get(0).attachment().url()).isEqualTo("https://cdn.example.com/" + KEY + "?X-Amz-Signature=fresh");
+        // Short-lived by design: an expired URL is re-minted on demand (getAttachment), not held open for hours.
+        verify(fileStorageService).presignGet(KEY, java.time.Duration.ofHours(1));
     }
 
     @Test
@@ -856,7 +884,7 @@ class ConversationServiceTest {
     void unsendingAMessageWithAnAttachmentDeletesItFromStorageAndClearsTheAttachmentFields() {
         Conversation conv = conversation("alice", "bob");
         Message msg = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
-                .messageType(Message.Type.IMAGE).attachmentKey("messages/x.png")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY)
                 .attachmentKind("IMAGE").attachmentFileName("photo.png").contentCiphertext("ciphertext").build();
         when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conv));
         when(messageRepository.findById("msg1")).thenReturn(Optional.of(msg));
@@ -868,7 +896,7 @@ class ConversationServiceTest {
         assertThat(msg.getAttachmentKey()).isNull();
         assertThat(msg.getAttachmentKind()).isNull();
         assertThat(msg.getAttachmentFileName()).isNull();
-        verify(fileStorageService).deleteByKey("messages/x.png");
+        verify(fileStorageService).deleteByKey(KEY);
         verify(fileStorageService, never()).deleteIfHosted(any());
     }
 
@@ -891,5 +919,352 @@ class ConversationServiceTest {
 
         assertThat(dto.replyTo()).isNotNull();
         assertThat(dto.replyTo().contentSnippet()).isEqualTo("Photo");
+    }
+
+    // =====================================================================================================
+    // Security regression tests: conversation / message / attachment authorization
+    // =====================================================================================================
+
+    /** Every operation that takes a conversation id, called as {@code userId} — the full surface a hostile
+     * client can reach by swapping the id in the URL. */
+    private Map<String, ThrowingCallable> conversationScopedOperations(String conversationId, String userId) {
+        MultipartFile file = mock(MultipartFile.class);
+        Map<String, ThrowingCallable> ops = new LinkedHashMap<>();
+        ops.put("getMessages", () -> service().getMessages(conversationId, userId, 0, 20));
+        ops.put("sendMessage", () -> service().sendMessage(conversationId, userId, "hi", null, null));
+        ops.put("uploadAttachment", () -> service().uploadAttachment(conversationId, userId, file));
+        ops.put("markRead", () -> service().markRead(conversationId, userId));
+        ops.put("toggleMute", () -> service().toggleMute(conversationId, userId));
+        ops.put("setNickname", () -> service().setNickname(conversationId, userId, "nick"));
+        ops.put("deleteConversation", () -> service().deleteConversation(conversationId, userId));
+        ops.put("hideMessagesForViewer", () -> service().hideMessagesForViewer(conversationId, userId, List.of("msg1")));
+        ops.put("editMessage", () -> service().editMessage(conversationId, userId, "msg1", "edited"));
+        ops.put("unsendMessage", () -> service().unsendMessage(conversationId, userId, "msg1"));
+        ops.put("getAttachment", () -> service().getAttachment(conversationId, userId, "msg1"));
+        return ops;
+    }
+
+    @Test
+    void everyConversationScopedOperationTreatsANonParticipantExactlyLikeAMissingConversation() {
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(conversationRepository.findById("missing")).thenReturn(Optional.empty());
+
+        // Same exception type AND same message for "exists but not yours" and "doesn't exist": a 403 for one and
+        // a 404 for the other would let anyone enumerate real conversation ids by trying them.
+        conversationScopedOperations("conv1", "mallory").forEach((name, operation) ->
+                assertThatThrownBy(operation).as(name).isInstanceOf(ResourceNotFoundException.class).hasMessage("Conversation not found"));
+        conversationScopedOperations("missing", "mallory").forEach((name, operation) ->
+                assertThatThrownBy(operation).as(name).isInstanceOf(ResourceNotFoundException.class).hasMessage("Conversation not found"));
+
+        // Nothing past the participant check was ever reached — no data read, no write, no storage, no broadcast.
+        verifyNoInteractions(messageRepository, messageDeletionRepository, fileStorageService, messagingTemplate, encryptionService);
+    }
+
+    @Test
+    void aFormerGroupMemberIsTreatedLikeAStrangerForEveryOperation() {
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(groupConversation()));
+        when(participantRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull("conv1", "left-the-group")).thenReturn(false);
+
+        conversationScopedOperations("conv1", "left-the-group").forEach((name, operation) ->
+                assertThatThrownBy(operation).as(name).isInstanceOf(ResourceNotFoundException.class).hasMessage("Conversation not found"));
+
+        verifyNoInteractions(messageRepository, messageDeletionRepository, fileStorageService, messagingTemplate);
+    }
+
+    @Test
+    void aParticipantOfAnotherConversationCannotEditUnsendHideOrFetchAMessageByGuessingItsId() {
+        // Mallory legitimately belongs to conv2 — and tries to act on alice's message in conv1 through it.
+        when(conversationRepository.findById("conv2")).thenReturn(Optional.of(
+                Conversation.builder().id("conv2").userAId("carol").userBId("mallory").build()));
+        Message alicesMessage = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").contentCiphertext("ciphertext").build();
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(alicesMessage));
+        when(messageRepository.findAllById(any())).thenReturn(List.of(alicesMessage));
+
+        assertThatThrownBy(() -> service().editMessage("conv2", "mallory", "msg1", "pwned")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().unsendMessage("conv2", "mallory", "msg1")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().hideMessagesForViewer("conv2", "mallory", List.of("msg1"))).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().getAttachment("conv2", "mallory", "msg1")).isInstanceOf(ResourceNotFoundException.class);
+
+        assertThat(alicesMessage.getUnsentAt()).isNull();
+        assertThat(alicesMessage.getAttachmentKey()).isEqualTo(KEY);
+        verify(messageRepository, never()).save(any());
+        verify(messageDeletionRepository, never()).saveAll(any());
+        verify(fileStorageService, never()).deleteByKey(any());
+        verify(fileStorageService, never()).presignGet(any(), any());
+        verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    void aParticipantCannotUnsendOrEditTheOtherParticipantsMessageAndItsFileIsLeftAlone() {
+        Message bobsMessage = Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").contentCiphertext("ciphertext").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(bobsMessage));
+
+        assertThatThrownBy(() -> service().unsendMessage("conv1", "alice", "msg1")).isInstanceOf(ForbiddenException.class);
+        assertThatThrownBy(() -> service().editMessage("conv1", "alice", "msg1", "x")).isInstanceOf(ForbiddenException.class);
+
+        assertThat(bobsMessage.getUnsentAt()).isNull();
+        verify(fileStorageService, never()).deleteByKey(any());
+        verify(messageRepository, never()).save(any());
+    }
+
+    // ---- Presigned URLs are only ever minted for an authorized viewer, from ids, never from a client key ----
+
+    @Test
+    void anAuthorizedParticipantGetsAFreshShortLivedUrlForAMessagesAttachment() {
+        Message message = Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").attachmentFileName("photo.png")
+                .contentCiphertext("ciphertext").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(message));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(Set.of());
+        when(fileStorageService.presignGet(KEY, java.time.Duration.ofHours(1))).thenReturn("https://media.example.com/" + KEY + "?X-Amz-Expires=3600");
+
+        var attachment = service().getAttachment("conv1", "alice", "msg1");
+
+        assertThat(attachment.url()).isEqualTo("https://media.example.com/" + KEY + "?X-Amz-Expires=3600");
+        assertThat(attachment.fileName()).isEqualTo("photo.png");
+    }
+
+    @Test
+    void noUrlIsMintedForAMessageTheViewerHasHiddenThatWasUnsentOrThatHasNoAttachment() {
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+
+        Message hidden = Message.builder().id("hidden").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").contentCiphertext("c").build();
+        when(messageRepository.findById("hidden")).thenReturn(Optional.of(hidden));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("hidden"))).thenReturn(Set.of("hidden"));
+
+        Message unsent = Message.builder().id("unsent").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").contentCiphertext("c").build();
+        unsent.setUnsentAt(Instant.now());
+        when(messageRepository.findById("unsent")).thenReturn(Optional.of(unsent));
+
+        Message textOnly = message("text", "conv1", "bob");
+        when(messageRepository.findById("text")).thenReturn(Optional.of(textOnly));
+
+        assertThatThrownBy(() -> service().getAttachment("conv1", "alice", "hidden")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().getAttachment("conv1", "alice", "unsent")).isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> service().getAttachment("conv1", "alice", "text")).isInstanceOf(ResourceNotFoundException.class);
+        verify(fileStorageService, never()).presignGet(any(), any());
+    }
+
+    @Test
+    void aMessageRowWhoseKeyIsOutsideTheChatAttachmentLayoutNeverGetsASignedUrl() {
+        // Rows written before keys were validated could point anywhere in the bucket. Reading one back must not
+        // sign whatever the key names — it gets no URL, and the on-demand endpoint says "not found".
+        Message poisoned = Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey("startup-materials/3f2b8c1e-1111-4222-8333-444455556666.pdf")
+                .attachmentKind("PDF").attachmentFileName("deck.pdf").contentCiphertext("ciphertext").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findVisibleForViewer(eq("conv1"), eq("alice"), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(poisoned)));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(poisoned));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(Set.of());
+        when(encryptionService.decrypt("ciphertext")).thenReturn("");
+
+        var page = service().getMessages("conv1", "alice", 0, 20);
+        assertThat(page.getContent().get(0).attachment().url()).isNull();
+        assertThatThrownBy(() -> service().getAttachment("conv1", "alice", "msg1")).isInstanceOf(ResourceNotFoundException.class);
+
+        verify(fileStorageService, never()).presignGet(any(), any());
+    }
+
+    @Test
+    void aChatAttachmentFromTheOlderFlatLayoutStillOpens() {
+        Message legacy = Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey(LEGACY_KEY).attachmentKind("IMAGE").contentCiphertext("c").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(legacy));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(Set.of());
+        when(fileStorageService.presignGet(eq(LEGACY_KEY), any(java.time.Duration.class))).thenReturn("https://media.example.com/legacy");
+
+        assertThat(service().getAttachment("conv1", "alice", "msg1").url()).isEqualTo("https://media.example.com/legacy");
+    }
+
+    // ---- The attachment key a client sends back is never trusted (arbitrary-object presign / delete) ----
+
+    private void stubAliceMayMessageBob() {
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(userBlockRepository.existsBetween("alice", "bob")).thenReturn(false);
+        when(connectionRepository.existsAcceptedBetween("alice", "bob")).thenReturn(true);
+        when(privacySettingsService.canMessage("bob", true)).thenReturn(true);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            // another conversation's file
+            "messages/conv2/3f2b8c1e-1111-4222-8333-444455556666.png",
+            // every other prefix in the bucket: private feed/startup files, public avatars and resources
+            "feed/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "startup-materials/3f2b8c1e-1111-4222-8333-444455556666.pdf",
+            "avatars/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "resources/3f2b8c1e-1111-4222-8333-444455556666.pdf",
+            // the old flat layout can't be tied to this conversation, so it can never be ATTACHED (only read)
+            "messages/3f2b8c1e-1111-4222-8333-444455556666.png",
+            // traversal / prefix-escape / absolute path / full URL
+            "messages/conv1/../../feed/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "messages/../feed/x.png",
+            "/messages/conv1/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "messages/conv1/3f2b8c1e-1111-4222-8333-444455556666.png/../../x",
+            "messages//conv1/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "https://evil.example.com/x.png",
+            // not a key this service mints
+            "messages/conv1/3F2B8C1E-1111-4222-8333-444455556666.png",
+            "messages/conv1/3f2b8c1e-1111-4222-8333-444455556666",
+            "messages/conv1/photo.png",
+    })
+    void aKeyThatIsNotAFileThisServiceStoredForThisConversationCanNeverBeAttached(String hostileKey) {
+        stubAliceMayMessageBob();
+        ConversationAttachmentRef attachment = new ConversationAttachmentRef(hostileKey, "IMAGE", "photo.png");
+
+        assertThatThrownBy(() -> service().sendMessage("conv1", "alice", "look", null, null, attachment))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessage("This attachment can't be sent. Please upload it again.");
+
+        // Refused on the key's SHAPE alone — storage is never even asked about it, nothing is saved, nothing signed.
+        verify(fileStorageService, never()).describePrivateObject(any());
+        verify(fileStorageService, never()).presignGet(any(), any());
+        verify(messageRepository, never()).saveAndFlush(any());
+        verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
+    }
+
+    @Test
+    void aFileAlreadyAttachedToAnotherMessageCannotBeAttachedAgain() {
+        stubAliceMayMessageBob();
+        when(messageRepository.existsByAttachmentKey(KEY)).thenReturn(true);
+
+        assertThatThrownBy(() -> service().sendMessage("conv1", "alice", "", null, null, new ConversationAttachmentRef(KEY, "IMAGE", "p.png")))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(fileStorageService, never()).describePrivateObject(any());
+        verify(messageRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void aWellFormedKeyThatIsNotActuallyInStorageCannotBeAttached() {
+        stubAliceMayMessageBob();
+        when(fileStorageService.describePrivateObject(KEY)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().sendMessage("conv1", "alice", "", null, null, new ConversationAttachmentRef(KEY, "IMAGE", "p.png")))
+                .isInstanceOf(BadRequestException.class);
+
+        verify(messageRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void theMessageTypeComesFromWhatStorageHoldsNotFromWhatTheClientClaimed() {
+        stubAliceMayMessageBob();
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("bob", "alice");
+        when(fileStorageService.describePrivateObject(KEY)).thenReturn(Optional.of(FileStorageService.AttachmentKind.IMAGE));
+        when(fileStorageService.presignGet(eq(KEY), any(java.time.Duration.class))).thenReturn("https://media.example.com/x");
+
+        // The client says PDF; the stored object is an image.
+        MessageDto dto = service().sendMessage("conv1", "alice", "", null, null, new ConversationAttachmentRef(KEY, "PDF", "report.pdf"));
+
+        assertThat(dto.type()).isEqualTo("IMAGE");
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(messageRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getMessageType()).isEqualTo(Message.Type.IMAGE);
+        assertThat(captor.getValue().getAttachmentKind()).isEqualTo("IMAGE");
+    }
+
+    @Test
+    void theStoredFileNameIsTheSanitizedOneNeverTheRawClientString() {
+        stubAliceMayMessageBob();
+        stubMessagePersistenceAndEncryption();
+        stubConversationDtoLookups("bob", "alice");
+        when(fileStorageService.describePrivateObject(KEY)).thenReturn(Optional.of(FileStorageService.AttachmentKind.IMAGE));
+        when(fileStorageService.presignGet(eq(KEY), any(java.time.Duration.class))).thenReturn("https://media.example.com/x");
+
+        service().sendMessage("conv1", "alice", "", null, null, new ConversationAttachmentRef(KEY, "IMAGE", "../../etc/passwd‮.png"));
+
+        ArgumentCaptor<Message> captor = ArgumentCaptor.forClass(Message.class);
+        verify(messageRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getAttachmentFileName()).isEqualTo("passwd.png");
+    }
+
+    // ---- Unsend only ever deletes a chat file that is this conversation's own, and unshared ----
+
+    @Test
+    void unsendingDeletesTheFileOnlyWhenNoOtherMessageStillUsesIt() {
+        Message shared = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").contentCiphertext("c").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(shared));
+        when(messageRepository.existsByAttachmentKeyAndIdNot(KEY, "msg1")).thenReturn(true);
+        when(encryptionService.encrypt("")).thenReturn("empty");
+
+        MessageDto dto = service().unsendMessage("conv1", "alice", "msg1");
+
+        assertThat(dto.unsentAt()).isNotNull();          // the unsend itself still succeeds
+        assertThat(shared.getAttachmentKey()).isNull();
+        verify(fileStorageService, never()).deleteByKey(any()); // ...but the file another message still shows stays
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "avatars/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "resources/3f2b8c1e-1111-4222-8333-444455556666.pdf",
+            "feed/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "startup-materials/3f2b8c1e-1111-4222-8333-444455556666.pdf",
+            "messages/conv2/3f2b8c1e-1111-4222-8333-444455556666.png",
+            "messages/../feed/x.png",
+    })
+    void unsendingNeverDeletesAnObjectThatIsNotThisConversationsChatFile(String foreignKey) {
+        // A row that already points somewhere it shouldn't (written before key validation existed): unsending it
+        // must not become a way to delete that other object from the bucket.
+        Message poisoned = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
+                .messageType(Message.Type.IMAGE).attachmentKey(foreignKey).attachmentKind("IMAGE").contentCiphertext("c").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(poisoned));
+        when(encryptionService.encrypt("")).thenReturn("empty");
+
+        MessageDto dto = service().unsendMessage("conv1", "alice", "msg1");
+
+        assertThat(dto.unsentAt()).isNotNull();
+        assertThat(poisoned.getAttachmentKey()).isNull();
+        verify(fileStorageService, never()).deleteByKey(any());
+        verify(fileStorageService, never()).deleteIfHosted(any());
+    }
+
+    @Test
+    void unsendingAChatFileFromTheOlderFlatLayoutStillDeletesIt() {
+        Message legacy = Message.builder().id("msg1").conversationId("conv1").senderId("alice")
+                .messageType(Message.Type.IMAGE).attachmentKey(LEGACY_KEY).attachmentKind("IMAGE").contentCiphertext("c").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findById("msg1")).thenReturn(Optional.of(legacy));
+        when(encryptionService.encrypt("")).thenReturn("empty");
+
+        service().unsendMessage("conv1", "alice", "msg1");
+
+        verify(fileStorageService).deleteByKey(LEGACY_KEY);
+    }
+
+    // ---- "Delete for me" changes only the caller's own view ----
+
+    @Test
+    void deleteForMeRecordsADeletionForTheCallerOnlyAndNeverTouchesTheMessageOrTheStoredFile() {
+        Message bobsMessage = Message.builder().id("msg1").conversationId("conv1").senderId("bob")
+                .messageType(Message.Type.IMAGE).attachmentKey(KEY).attachmentKind("IMAGE").contentCiphertext("c").build();
+        when(conversationRepository.findById("conv1")).thenReturn(Optional.of(conversation("alice", "bob")));
+        when(messageRepository.findAllById(List.of("msg1"))).thenReturn(List.of(bobsMessage));
+        when(messageDeletionRepository.findDeletedMessageIds("alice", List.of("msg1"))).thenReturn(Set.of());
+
+        service().hideMessagesForViewer("conv1", "alice", List.of("msg1"));
+
+        ArgumentCaptor<List<MessageDeletion>> captor = ArgumentCaptor.forClass(List.class);
+        verify(messageDeletionRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).hasSize(1);
+        assertThat(captor.getValue().get(0).getUserId()).isEqualTo("alice");
+        assertThat(captor.getValue().get(0).getMessageId()).isEqualTo("msg1");
+        // bob's (the sender's) view, the row itself and the stored file are all untouched.
+        assertThat(bobsMessage.getUnsentAt()).isNull();
+        assertThat(bobsMessage.getAttachmentKey()).isEqualTo(KEY);
+        verify(messageRepository, never()).save(any());
+        verify(fileStorageService, never()).deleteByKey(any());
     }
 }

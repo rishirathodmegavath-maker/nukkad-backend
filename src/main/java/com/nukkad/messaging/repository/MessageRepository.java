@@ -18,6 +18,12 @@ public interface MessageRepository extends JpaRepository<Message, String> {
     long countByConversationIdAndSenderIdNotAndIsReadFalse(String conversationId, String senderId);
     List<Message> findByConversationId(String conversationId);
 
+    /** A stored chat file may back exactly one message — see ConversationService#validateAttachment. */
+    boolean existsByAttachmentKey(String attachmentKey);
+
+    /** Whether ANY OTHER message still points at this file (unsending one must not delete a shared object). */
+    boolean existsByAttachmentKeyAndIdNot(String attachmentKey, String id);
+
     @Modifying
     @Query("UPDATE Message m SET m.isRead = true, m.readAt = :readAt WHERE m.conversationId = :conversationId AND m.senderId <> :viewerId AND m.isRead = false")
     int markConversationRead(@Param("conversationId") String conversationId, @Param("viewerId") String viewerId, @Param("readAt") Instant readAt);

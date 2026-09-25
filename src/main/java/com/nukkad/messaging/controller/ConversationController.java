@@ -6,6 +6,7 @@ import com.nukkad.messaging.dto.AddGroupMembersRequest;
 import com.nukkad.messaging.dto.ConversationAttachmentRef;
 import com.nukkad.messaging.dto.ConversationDto;
 import com.nukkad.messaging.dto.CreateGroupRequest;
+import com.nukkad.messaging.dto.MessageAttachmentDto;
 import com.nukkad.messaging.dto.MessageDto;
 import com.nukkad.messaging.dto.SendMessageRequest;
 import com.nukkad.messaging.dto.SetNicknameRequest;
@@ -99,6 +100,14 @@ public class ConversationController {
                                                          @PathVariable String id,
                                                          @RequestParam("file") MultipartFile file) {
         return ApiResponse.ok(conversationService.uploadAttachment(id, principal.id(), file));
+    }
+
+    /** A fresh presigned URL for one message's attachment, for a client whose earlier one expired. Takes only
+     * ids — never a key — and runs the full participant/message/attachment ownership chain in the service. */
+    @GetMapping("/{id}/messages/{messageId}/attachment")
+    public ApiResponse<MessageAttachmentDto> getAttachment(@AuthenticationPrincipal AuthenticatedUser principal,
+                                                            @PathVariable String id, @PathVariable String messageId) {
+        return ApiResponse.ok(conversationService.getAttachment(id, principal.id(), messageId));
     }
 
     @PatchMapping("/{id}/read")

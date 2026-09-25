@@ -16,6 +16,8 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
@@ -59,12 +61,29 @@ class FileStorageServiceTest {
     private static final byte[] JPEG_HEADER = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0, 0, 0, 0, 0, 0, 0, 0, 0};
     private static final byte[] GIF_HEADER = "GIF89a-----".getBytes();
     private static final byte[] WEBP_HEADER = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'};
-    private static final byte[] MP4_HEADER = {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'};
-    private static final byte[] WEBM_HEADER = {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, 0, 0, 0, 0, 0, 0, 0, 0};
+    // A whole (24-byte) ftyp box, not just its first 12 bytes: the validator checks the declared box fits the file.
+    private static final byte[] MP4_HEADER = {0, 0, 0, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'm', 'p', '4', '1'};
+    // EBML magic + a DocType element reading "webm" (generic Matroska is not accepted).
+    private static final byte[] WEBM_HEADER = {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3, (byte) 0x9F, 0x42, (byte) 0x86, (byte) 0x81, 0x01,
+            0x42, (byte) 0xF7, (byte) 0x81, 0x01, 0x42, (byte) 0xF2, (byte) 0x81, 0x04, 0x42, (byte) 0xF3, (byte) 0x81, 0x08,
+            0x42, (byte) 0x82, (byte) 0x84, 'w', 'e', 'b', 'm'};
     private static final byte[] PDF_HEADER = "%PDF-1.4\n\n\n\n".getBytes();
     private static final byte[] OLE2_HEADER = {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0, (byte) 0xA1, (byte) 0xB1, 0x1A, (byte) 0xE1, 0, 0, 0, 0};
-    private static final byte[] ZIP_HEADER = {0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0};
+    // The start of a real .docx/.xlsx/.pptx: a ZIP whose first entry is the OOXML package's [Content_Types].xml.
+    private static final byte[] ZIP_HEADER = zipStartingWith("[Content_Types].xml");
     private static final byte[] EXE_HEADER = {'M', 'Z', (byte) 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0};
+
+    private static byte[] zipStartingWith(String firstEntry) {
+        byte[] name = firstEntry.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] header = new byte[30 + name.length];
+        header[0] = 0x50;
+        header[1] = 0x4B;
+        header[2] = 0x03;
+        header[3] = 0x04;
+        header[26] = (byte) name.length;
+        System.arraycopy(name, 0, header, 30, name.length);
+        return header;
+    }
 
     @Test
     void storingAValidImageUploadsItAndReturnsAPublicUrl() {
@@ -449,6 +468,229 @@ class FileStorageServiceTest {
         assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages"))
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("No file was uploaded");
+    }
+
+    // ---- size: enforced by the server itself, before a byte is read or stored ----
+
+    /** A real (valid PNG) upload that reports {@code size} — so the size rule can be exercised without allocating 50MB. */
+    private static MockMultipartFile pngReportingSize(long size) {
+        return new MockMultipartFile("file", "big.png", "image/png", PNG_HEADER) {
+            @Override
+            public long getSize() {
+                return size;
+            }
+        };
+    }
+
+    @Test
+    void aConversationAttachmentOverTheServerSideLimitIsRejectedBeforeAnythingIsReadOrStored() throws Exception {
+        MockMultipartFile file = spyOnStream(pngReportingSize(FileStorageService.MAX_CONVERSATION_ATTACHMENT_BYTES + 1));
+
+        assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages/conv1"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("too large")
+                .hasMessageContaining("50MB");
+
+        verify(s3Client, never()).putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class));
+        assertThat(streamOpened[0]).as("the upload's bytes were never even opened").isFalse();
+    }
+
+    @Test
+    void aConversationAttachmentExactlyAtTheLimitIsAccepted() {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+
+        FileStorageService.StoredPrivateMedia stored = fileStorageService.storeConversationAttachment(
+                pngReportingSize(FileStorageService.MAX_CONVERSATION_ATTACHMENT_BYTES), "messages/conv1");
+
+        assertThat(stored.kind()).isEqualTo(FileStorageService.AttachmentKind.IMAGE);
+    }
+
+    @Test
+    void theServerSideLimitMatchesTheFrontendsFiftyMegabytes() {
+        assertThat(FileStorageService.MAX_CONVERSATION_ATTACHMENT_BYTES).isEqualTo(50L * 1024 * 1024);
+    }
+
+    private final boolean[] streamOpened = {false};
+
+    private MockMultipartFile spyOnStream(MockMultipartFile delegate) {
+        return new MockMultipartFile("file", "big.png", "image/png", PNG_HEADER) {
+            @Override
+            public long getSize() {
+                return delegate.getSize();
+            }
+
+            @Override
+            public java.io.InputStream getInputStream() throws java.io.IOException {
+                streamOpened[0] = true;
+                return super.getInputStream();
+            }
+        };
+    }
+
+    // ---- storage keys are generated by the server; nothing the client sends can shape one ----
+
+    private static final String GENERATED_KEY = "^messages/conv1/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.[a-z0-9]+$";
+
+    @Test
+    void aHostileFileNameNeverInfluencesTheStorageKey() {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+        for (String hostileName : new String[] {"../../../etc/passwd.png", "..\\..\\windows\\system32\\x.png", "/absolute/path/x.png",
+                "messages/other-conversation/x.png", "photo.png/../../feed/x.png", "x.png%00.php", "evil.php", "evil.png.exe", ".png", "png"}) {
+            MockMultipartFile file = new MockMultipartFile("file", hostileName, "image/png", PNG_HEADER);
+
+            FileStorageService.StoredPrivateMedia stored = fileStorageService.storeConversationAttachment(file, "messages/conv1");
+
+            assertThat(stored.key()).as("key for file named %s", hostileName).matches(GENERATED_KEY);
+        }
+    }
+
+    @Test
+    void theStoredContentTypeForADocumentComesFromTheServersTableNotTheClient() {
+        when(s3Client.putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class)))
+                .thenReturn(PutObjectResponse.builder().build());
+        MockMultipartFile file = new MockMultipartFile("file", "resume.docx", "text/html", ZIP_HEADER);
+
+        fileStorageService.storeConversationAttachment(file, "messages/conv1");
+
+        ArgumentCaptor<PutObjectRequest> captor = ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(s3Client).putObject(captor.capture(), any(software.amazon.awssdk.core.sync.RequestBody.class));
+        assertThat(captor.getValue().contentType())
+                .isEqualTo("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    }
+
+    @Test
+    void htmlOrScriptContentIsRefusedEvenWithAnImageContentTypeAndExtension() {
+        for (String content : new String[] {"<html><script>alert(1)</script></html>", "<svg onload=alert(1)/>", "#!/bin/sh\nid\n"}) {
+            MockMultipartFile file = new MockMultipartFile("file", "photo.jpg", "image/jpeg", content.getBytes());
+
+            assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages/conv1"))
+                    .isInstanceOf(BadRequestException.class)
+                    .hasMessageContaining("don't match its declared type");
+        }
+        verify(s3Client, never()).putObject(any(PutObjectRequest.class), any(software.amazon.awssdk.core.sync.RequestBody.class));
+    }
+
+    @Test
+    void aTypeThatIsNotOnTheChatAllowListIsRefusedEvenIfItsBytesAreValid() {
+        // SVG/HTML/JS/exe by extension or claimed type never reach byte sniffing.
+        for (String[] c : new String[][] {{"x.svg", "image/svg+xml"}, {"x.html", "text/html"}, {"x.js", "application/javascript"},
+                {"x.exe", "application/x-msdownload"}, {"x.zip", "application/zip"}, {"x.sh", "application/x-sh"}}) {
+            MockMultipartFile file = new MockMultipartFile("file", c[0], c[1], PNG_HEADER);
+            assertThatThrownBy(() -> fileStorageService.storeConversationAttachment(file, "messages/conv1"))
+                    .as(c[0]).isInstanceOf(BadRequestException.class);
+        }
+    }
+
+    @Test
+    void conversationAttachmentKeysAreRecognizedOnlyInTheExactShapeThisServiceMints() {
+        String uuid = "3f2b8c1e-1111-4222-8333-444455556666";
+        assertThat(FileStorageService.isConversationAttachmentKey("messages/conv1/" + uuid + ".png", "conv1")).isTrue();
+        assertThat(FileStorageService.isConversationAttachmentKey("messages/conv1/" + uuid + ".quicktime", "conv1")).isTrue();
+
+        for (String bad : new String[] {
+                "messages/conv2/" + uuid + ".png",             // another conversation
+                "messages/" + uuid + ".png",                   // flat layout: not tied to any conversation
+                "feed/" + uuid + ".png", "startup-materials/" + uuid + ".pdf", "avatars/" + uuid + ".png",
+                "messages/conv1/../conv2/" + uuid + ".png",    // traversal
+                "messages/conv1/../../feed/" + uuid + ".png",
+                "messages/conv1//" + uuid + ".png",
+                "/messages/conv1/" + uuid + ".png", "messages/conv1/" + uuid + ".png/", "messages/conv1/" + uuid + ".png/x",
+                "messages/conv1/" + uuid.toUpperCase() + ".png",
+                "messages/conv1/" + uuid, "messages/conv1/" + uuid + ".", "messages/conv1/" + uuid + ".PNG",
+                "messages/conv1/" + uuid + ".averyveryverylongextension",
+                "messages/conv1/photo.png", "messages/conv1/", "messages/conv1", "", "  "}) {
+            assertThat(FileStorageService.isConversationAttachmentKey(bad, "conv1")).as(bad).isFalse();
+        }
+        assertThat(FileStorageService.isConversationAttachmentKey(null, "conv1")).isFalse();
+        assertThat(FileStorageService.isConversationAttachmentKey("messages/conv1/" + uuid + ".png", null)).isFalse();
+        // A conversation id that itself tries to smuggle in a path can never produce a matching key.
+        assertThat(FileStorageService.isConversationAttachmentKey("messages/a/b/" + uuid + ".png", "a/b")).isFalse();
+        assertThat(FileStorageService.isConversationAttachmentKey("messages/../" + uuid + ".png", "..")).isFalse();
+        assertThat(FileStorageService.isConversationAttachmentKey("messages/conv1/" + uuid + ".png", "")).isFalse();
+    }
+
+    @Test
+    void theOlderFlatKeyLayoutIsRecognizedForReadingOnly() {
+        String uuid = "3f2b8c1e-1111-4222-8333-444455556666";
+        assertThat(FileStorageService.isLegacyConversationAttachmentKey("messages/" + uuid + ".png")).isTrue();
+        assertThat(FileStorageService.isLegacyConversationAttachmentKey("messages/conv1/" + uuid + ".png")).isFalse();
+        assertThat(FileStorageService.isLegacyConversationAttachmentKey("feed/" + uuid + ".png")).isFalse();
+        assertThat(FileStorageService.isLegacyConversationAttachmentKey("messages/../" + uuid + ".png")).isFalse();
+        assertThat(FileStorageService.isLegacyConversationAttachmentKey("messages/x.png")).isFalse();
+        assertThat(FileStorageService.isLegacyConversationAttachmentKey(null)).isFalse();
+    }
+
+    // ---- display names: a label only, sanitized, never part of a key ----
+
+    @Test
+    void safeDisplayNameStripsPathsControlCharactersAndBidiOverridesAndBoundsLength() {
+        assertThat(FileStorageService.safeDisplayName("photo.png")).isEqualTo("photo.png");
+        assertThat(FileStorageService.safeDisplayName("C:\\Users\\me\\photo.png")).isEqualTo("photo.png");
+        assertThat(FileStorageService.safeDisplayName("../../etc/passwd")).isEqualTo("passwd");
+        assertThat(FileStorageService.safeDisplayName("a\u0000b\nc\td.pdf")).isEqualTo("abcd.pdf");
+        // U+202E (right-to-left override) makes "annexe\u202Egpj.exe" DISPLAY as "annexeexe.jpg".
+        assertThat(FileStorageService.safeDisplayName("annexe\u202Egpj.exe")).isEqualTo("annexegpj.exe");
+        assertThat(FileStorageService.safeDisplayName("  spaced name.docx  ")).isEqualTo("spaced name.docx");
+        assertThat(FileStorageService.safeDisplayName(null)).isNull();
+        assertThat(FileStorageService.safeDisplayName("")).isNull();
+        assertThat(FileStorageService.safeDisplayName("   ")).isNull();
+        assertThat(FileStorageService.safeDisplayName("../")).isNull();
+
+        String longName = "a".repeat(500) + ".pdf";
+        String bounded = FileStorageService.safeDisplayName(longName);
+        assertThat(bounded).hasSize(200).endsWith(".pdf");
+    }
+
+    // ---- describing a stored private object: what storage recorded, never what a client claims ----
+
+    @Test
+    void aStoredObjectsKindComesFromTheContentTypeStorageRecordedForIt() {
+        record Case(String contentType, FileStorageService.AttachmentKind kind) {}
+        for (Case c : new Case[] {
+                new Case("image/png", FileStorageService.AttachmentKind.IMAGE),
+                new Case("IMAGE/JPEG", FileStorageService.AttachmentKind.IMAGE),
+                new Case("video/mp4", FileStorageService.AttachmentKind.VIDEO),
+                new Case("video/quicktime", FileStorageService.AttachmentKind.VIDEO),
+                new Case("application/pdf", FileStorageService.AttachmentKind.PDF),
+                new Case("application/vnd.openxmlformats-officedocument.wordprocessingml.document", FileStorageService.AttachmentKind.FILE),
+                new Case("application/msword", FileStorageService.AttachmentKind.FILE)}) {
+            when(s3Client.headObject(any(HeadObjectRequest.class))).thenReturn(HeadObjectResponse.builder().contentType(c.contentType()).build());
+            assertThat(fileStorageService.describePrivateObject("messages/conv1/x.bin")).as(c.contentType()).contains(c.kind());
+        }
+    }
+
+    @Test
+    void anObjectOfAnyOtherTypeOrWithNoTypeIsNotAnAttachableKind() {
+        for (String contentType : new String[] {"text/html", "image/svg+xml", "application/octet-stream", "application/zip", "text/plain", null}) {
+            when(s3Client.headObject(any(HeadObjectRequest.class))).thenReturn(HeadObjectResponse.builder().contentType(contentType).build());
+            assertThat(fileStorageService.describePrivateObject("messages/conv1/x.bin")).as(String.valueOf(contentType)).isEmpty();
+        }
+    }
+
+    @Test
+    void describingAMissingObjectIsEmptyAndAnyOtherStorageFailureIsNotSwallowed() {
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenThrow(NoSuchKeyException.builder().message("nope").build());
+        assertThat(fileStorageService.describePrivateObject("messages/conv1/x.png")).isEmpty();
+
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenThrow(S3Exception.builder().statusCode(404).message("nope").build());
+        assertThat(fileStorageService.describePrivateObject("messages/conv1/x.png")).isEmpty();
+
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenThrow(S3Exception.builder().statusCode(500).message("boom").build());
+        assertThatThrownBy(() -> fileStorageService.describePrivateObject("messages/conv1/x.png")).isInstanceOf(RuntimeException.class);
+    }
+
+    @Test
+    void describingAnObjectAsksStorageAboutExactlyThatBucketAndKey() {
+        when(s3Client.headObject(any(HeadObjectRequest.class))).thenReturn(HeadObjectResponse.builder().contentType("image/png").build());
+
+        fileStorageService.describePrivateObject("messages/conv1/x.png");
+
+        ArgumentCaptor<HeadObjectRequest> captor = ArgumentCaptor.forClass(HeadObjectRequest.class);
+        verify(s3Client).headObject(captor.capture());
+        assertThat(captor.getValue().bucket()).isEqualTo("test-bucket");
+        assertThat(captor.getValue().key()).isEqualTo("messages/conv1/x.png");
     }
 
     // ---- presigned URLs: the only way to read a private (chat) object back ----
