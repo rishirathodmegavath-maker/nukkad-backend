@@ -1,6 +1,7 @@
 package com.nukkad.chapter.controller;
 
 import com.nukkad.chapter.dto.ChapterActivityDto;
+import com.nukkad.chapter.dto.ChapterCoverImageDto;
 import com.nukkad.chapter.dto.ChapterDto;
 import com.nukkad.chapter.dto.CreateChapterRequest;
 import com.nukkad.chapter.dto.UpdateChapterRequest;
@@ -62,6 +63,17 @@ public class ChapterController {
     public ApiResponse<ChapterDto> create(@AuthenticationPrincipal AuthenticatedUser principal,
                                            @Valid @RequestBody CreateChapterRequest request) {
         return ApiResponse.ok(chapterService.createChapter(principal.id(), request));
+    }
+
+    /**
+     * Uploads an image to use as a chapter cover and returns its URL. It is separate from create/update so a
+     * cover can be picked while the chapter is still being written; the client sends the URL back as
+     * {@code coverImageUrl}. Anyone signed in can upload one — the same as starting a new chapter.
+     */
+    @PostMapping("/cover-images")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<ChapterCoverImageDto> uploadCoverImage(@RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(chapterService.uploadCoverImage(file));
     }
 
     @PutMapping("/{id}")

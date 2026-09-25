@@ -3,12 +3,14 @@ package com.nukkad.chapter.service;
 import com.nukkad.common.validation.LikePatterns;
 
 import com.nukkad.chapter.dto.ChapterActivityDto;
+import com.nukkad.chapter.dto.ChapterCoverImageDto;
 import com.nukkad.chapter.dto.ChapterDto;
 import com.nukkad.chapter.dto.CreateChapterRequest;
 import com.nukkad.chapter.dto.UpdateChapterRequest;
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
@@ -106,6 +108,21 @@ public class ChapterService {
         }
         Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Direction.ASC, "name"));
         return chapterRepository.findAll(spec, pageable).map(this::toDtoWithCounts);
+    }
+
+    /** Largest cover image accepted. Matches the event cover limit. */
+    static final long MAX_COVER_IMAGE_BYTES = 8L * 1024 * 1024;
+
+    /**
+     * Stores an image chosen as a chapter's cover and returns its public URL. The caller then sends that URL
+     * as the chapter's {@code coverImageUrl} when creating or saving it, so this works before the chapter
+     * exists yet. Image type and emptiness are checked by {@link FileStorageService#storeImage}.
+     */
+    public ChapterCoverImageDto uploadCoverImage(MultipartFile file) {
+        if (file != null && file.getSize() > MAX_COVER_IMAGE_BYTES) {
+            throw new BadRequestException("Cover image is too large. The maximum size is 8 MB.");
+        }
+        return new ChapterCoverImageDto(fileStorageService.storeImage(file, "chapter-covers"));
     }
 
     @Transactional
