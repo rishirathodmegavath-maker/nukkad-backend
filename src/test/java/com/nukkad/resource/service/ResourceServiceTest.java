@@ -555,6 +555,87 @@ class ResourceServiceTest {
         verify(resourceSaveRepository).delete(any(ResourceSave.class));
     }
 
+    // ---- browse: "All" (unfiltered) vs a category/type-filtered view --------------------------------
+
+    @Test
+    void categoryAllBehavesTheSameAsNoCategoryFilterInsteadOfBeingRejected() {
+        when(resourceRepository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(page(item("v1", ResourceCategory.VIDEOS, ResourceType.VIDEO, 1, false)));
+
+        Page<ResourceDto> result = service().listResources(null, null, "all", null, null, "u1", 0, 20);
+
+        assertThat(result.getContent()).extracting(ResourceDto::id).containsExactly("v1");
+    }
+
+    @Test
+    void anUnknownCategoryFilterIsStillRejected() {
+        assertThatThrownBy(() -> service().listResources(null, null, "not-a-shelf", null, null, "u1", 0, 20))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void anUnknownTypeFilterIsRejectedAsABadRequestNotARawIllegalArgument() {
+        assertThatThrownBy(() -> service().listResources(null, "Podcast", null, null, null, "u1", 0, 20))
+                .isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void theUnfilteredAllBrowseInterleavesTypesInsteadOfShowingOneTypeAtATime() {
+        // Plain newest-first alone would be l1, l2, l3, v1, d1 — three links, then everything else.
+        when(resourceRepository.findAll(any(Specification.class), any(Pageable.class))).thenReturn(page(
+                item("l1", null, ResourceType.LINK, 1, false),
+                item("l2", null, ResourceType.LINK, 2, false),
+                item("l3", null, ResourceType.LINK, 3, false),
+                item("v1", null, ResourceType.VIDEO, 4, false),
+                item("d1", null, ResourceType.DECK, 5, false)));
+
+        Page<ResourceDto> result = service().listResources(null, null, null, null, null, "u1", 0, 20);
+
+        assertThat(result.getContent()).extracting(ResourceDto::id).containsExactly("l1", "v1", "d1", "l2", "l3");
+        assertThat(result.getTotalElements()).isEqualTo(5);
+    }
+
+    @Test
+    void aCategoryFilteredBrowseKeepsPlainNewestFirstOrderNotInterleaved() {
+        when(resourceRepository.findAll(any(Specification.class), any(Pageable.class))).thenReturn(page(
+                item("v1", ResourceCategory.VIDEOS, ResourceType.VIDEO, 1, false),
+                item("v2", ResourceCategory.VIDEOS, ResourceType.VIDEO, 2, false)));
+
+        Page<ResourceDto> result = service().listResources(null, null, "videos", null, null, "u1", 0, 20);
+
+        assertThat(result.getContent()).extracting(ResourceDto::id).containsExactly("v1", "v2");
+    }
+
+    @Test
+    void aTypeFilteredBrowseKeepsPlainNewestFirstOrderNotInterleaved() {
+        when(resourceRepository.findAll(any(Specification.class), any(Pageable.class))).thenReturn(page(
+                item("l1", null, ResourceType.LINK, 1, false),
+                item("l2", null, ResourceType.LINK, 2, false)));
+
+        Page<ResourceDto> result = service().listResources(null, "Link", null, null, null, "u1", 0, 20);
+
+        assertThat(result.getContent()).extracting(ResourceDto::id).containsExactly("l1", "l2");
+    }
+
+    @Test
+    void pagingTheInterleavedAllBrowseNeverRepeatsOrSkipsAResource() {
+        when(resourceRepository.findAll(any(Specification.class), any(Pageable.class))).thenReturn(page(
+                item("l1", null, ResourceType.LINK, 1, false),
+                item("l2", null, ResourceType.LINK, 2, false),
+                item("l3", null, ResourceType.LINK, 3, false),
+                item("v1", null, ResourceType.VIDEO, 4, false),
+                item("d1", null, ResourceType.DECK, 5, false)));
+
+        Page<ResourceDto> page1 = service().listResources(null, null, null, null, null, "u1", 0, 2);
+        Page<ResourceDto> page2 = service().listResources(null, null, null, null, null, "u1", 1, 2);
+        Page<ResourceDto> page3 = service().listResources(null, null, null, null, null, "u1", 2, 2);
+
+        List<String> seenInOrder = new java.util.ArrayList<>();
+        List.of(page1, page2, page3).forEach(p -> p.getContent().forEach(dto -> seenInOrder.add(dto.id())));
+        assertThat(seenInOrder).containsExactly("l1", "v1", "d1", "l2", "l3");
+        assertThat(new java.util.HashSet<>(seenInOrder)).hasSize(5);
+    }
+
     // ---- front-page mix -----------------------------------------------------------------------------
 
     private static Resource item(String id, ResourceCategory category, ResourceType type, long ageMinutes, boolean featured) {

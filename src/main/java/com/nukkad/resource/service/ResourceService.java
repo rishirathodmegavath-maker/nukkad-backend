@@ -20,6 +20,7 @@ import com.nukkad.resource.repository.ResourceRepository;
 import com.nukkad.resource.repository.ResourceSaveRepository;
 import com.nukkad.resource.repository.ResourceSpecifications;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -32,6 +33,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -83,19 +85,87 @@ public class ResourceService {
         return resourceRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Resource not found: " + id));
     }
 
+    /** "All" is a legitimate public URL/UI concept (the unfiltered browse), not a real shelf — treat it the
+     *  same as no category filter instead of rejecting it as an unknown slug. */
+    private static String normalizeCategoryFilter(String category) {
+        return "all".equalsIgnoreCase(category) ? null : category;
+    }
+
     @Transactional(readOnly = true)
     public Page<ResourceDto> listResources(String q, String type, String category, Boolean featured, String chapterId,
                                             String viewerId, int page, int size) {
+        String normalizedCategory = normalizeCategoryFilter(category);
+        // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
+        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+
+        // The unfiltered "All" browse: newest-first alone buries every other type behind whichever one was
+        // added most recently in bulk. A type or category filter already narrows to one kind of content
+        // (or one shelf), so those keep the plain recency order unchanged.
+        boolean unfiltered = (type == null || type.isBlank()) && (normalizedCategory == null || normalizedCategory.isBlank());
+        if (unfiltered) {
+            return listAllInterleavedByType(q, featured, chapterId, viewerId, pageable);
+        }
+
         Specification<Resource> spec = ResourceSpecifications.combine(
                 ResourceSpecifications.search(q),
                 ResourceSpecifications.type(type),
-                ResourceSpecifications.category(category),
+                ResourceSpecifications.category(normalizedCategory),
                 ResourceSpecifications.featured(featured),
                 ResourceSpecifications.chapterId(chapterId)
         );
-        // createdAt only has second precision, so break ties on id — otherwise rows created together can repeat or vanish between pages.
-        Pageable pageable = PageRequests.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
         return resourceRepository.findAll(spec, pageable).map(r -> toDto(r, viewerId));
+    }
+
+    /** The most the unfiltered "All" browse will pull into memory to interleave — a defensive ceiling this
+     *  admin-curated library is not expected to reach; a match beyond it keeps its recency position instead
+     *  of taking part in the interleave. */
+    private static final int MAX_INTERLEAVE_FETCH = 2000;
+
+    /**
+     * Every matching resource, newest first within its own type, then taken one type at a time in turn
+     * (round-robin) so a page makes it obvious multiple types exist instead of showing one type at a time.
+     * Same shape as {@link #mix}'s shelf-and-type lanes, but over the whole matching set and sliced with
+     * ordinary page/size instead of a capped one-shot front-page sample.
+     */
+    private Page<ResourceDto> listAllInterleavedByType(String q, Boolean featured, String chapterId,
+                                                         String viewerId, Pageable pageable) {
+        Specification<Resource> baseSpec = ResourceSpecifications.combine(
+                ResourceSpecifications.search(q),
+                ResourceSpecifications.featured(featured),
+                ResourceSpecifications.chapterId(chapterId)
+        );
+        Sort newestFirst = Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"));
+        List<Resource> matches = resourceRepository.findAll(baseSpec, PageRequest.of(0, MAX_INTERLEAVE_FETCH, newestFirst)).getContent();
+
+        List<Resource> interleaved = interleaveByType(matches);
+        int total = interleaved.size();
+        int from = Math.min(pageable.getPageNumber() * pageable.getPageSize(), total);
+        int to = Math.min(from + pageable.getPageSize(), total);
+        List<ResourceDto> content = interleaved.subList(from, to).stream().map(r -> toDto(r, viewerId)).toList();
+        return new PageImpl<>(content, pageable, total);
+    }
+
+    /** Groups (already-newest-first) resources by type, then takes one from each group in turn. Fully
+     *  deterministic — the grouping and the round order both come from the input's own order — so paging
+     *  over the result never repeats or skips a resource. */
+    private static List<Resource> interleaveByType(List<Resource> newestFirst) {
+        Map<ResourceType, List<Resource>> byType = new LinkedHashMap<>();
+        for (Resource resource : newestFirst) {
+            byType.computeIfAbsent(resource.getType(), t -> new ArrayList<>()).add(resource);
+        }
+        List<List<Resource>> lanes = new ArrayList<>(byType.values());
+        List<Resource> result = new ArrayList<>(newestFirst.size());
+        for (int round = 0; result.size() < newestFirst.size(); round++) {
+            boolean tookAny = false;
+            for (List<Resource> lane : lanes) {
+                if (round < lane.size()) {
+                    result.add(lane.get(round));
+                    tookAny = true;
+                }
+            }
+            if (!tookAny) break;
+        }
+        return result;
     }
 
     /** The most a front-page mix can ask for. */
