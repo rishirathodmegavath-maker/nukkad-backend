@@ -820,12 +820,13 @@ public class StartupService {
     }
 
     /** {@code dto.url()} is either a real external link (materials whose type {@link
-     *  StartupMaterialType#isExternalLink()}, e.g. Website — never our storage, passed through as-is),
-     *  a legacy full public URL (from before uploaded materials were made private — left exactly as
-     *  stored, see FeedService#resolveAttachmentUrl for why), or the private key an upload since minted,
-     *  which needs a fresh presigned URL on every read. */
+     *  StartupMaterialType#isExternalLink()}, e.g. Website — never our storage, passed through as-is,
+     *  and never a hosted URL to begin with), a legacy full public URL (from before uploaded materials
+     *  were made private — the live bucket policy since blocked anonymous reads of
+     *  {@code startup-materials/*}, so that URL now 403s unless re-presigned the same as a private key
+     *  below — see FeedService#resolveAttachmentUrl for the same fix), or the private key an upload
+     *  since minted, which needs a fresh presigned URL on every read. */
     private StartupMaterialDto resolveMaterialUrl(StartupMaterialDto dto) {
-        if (fileStorageService.isHostedUrl(dto.url())) return dto;
         boolean isExternalLink;
         try {
             isExternalLink = StartupMaterialType.fromLabel(dto.materialType()).isExternalLink();
@@ -833,7 +834,8 @@ public class StartupService {
             isExternalLink = false;
         }
         if (isExternalLink) return dto;
-        String presigned = fileStorageService.presignGet(dto.url(), MATERIAL_URL_TTL);
+        String key = fileStorageService.isHostedUrl(dto.url()) ? fileStorageService.keyFromHostedUrl(dto.url()) : dto.url();
+        String presigned = fileStorageService.presignGet(key, MATERIAL_URL_TTL);
         return new StartupMaterialDto(dto.id(), dto.startupId(), dto.materialType(), dto.title(), presigned,
                 dto.originalFileName(), dto.contentType(), dto.sortOrder(), dto.canManage(), dto.createdAt(), dto.updatedAt());
     }

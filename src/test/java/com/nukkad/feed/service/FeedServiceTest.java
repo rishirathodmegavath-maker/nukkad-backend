@@ -698,15 +698,19 @@ class FeedServiceTest {
     // ---- reading a post presigns each private attachment key; a legacy full URL passes through as-is ----
 
     @Test
-    void aLegacyFullUrlAttachmentIsReturnedUnchanged() {
+    void aLegacyFullUrlAttachmentIsPresignedOnRead() {
+        // The live bucket policy blocks anonymous reads of feed/*, so a pre-migration row's full
+        // public URL 403s in the browser unless it's re-presigned exactly like a private key.
         Post post = post("post-1");
         post.getAttachments().add(PostAttachment.builder().url("https://storage.example/feed/legacy.png").kind(PostAttachment.Kind.IMAGE).build());
         when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
         when(fileStorageService.isHostedUrl("https://storage.example/feed/legacy.png")).thenReturn(true);
+        when(fileStorageService.keyFromHostedUrl("https://storage.example/feed/legacy.png")).thenReturn("feed/legacy.png");
+        when(fileStorageService.presignGet(eq("feed/legacy.png"), any())).thenReturn("https://storage.example/feed/legacy.png?sig=fresh");
 
         PostDto dto = service().get("author-1", "post-1");
 
-        assertThat(dto.attachments().get(0).url()).isEqualTo("https://storage.example/feed/legacy.png");
+        assertThat(dto.attachments().get(0).url()).isEqualTo("https://storage.example/feed/legacy.png?sig=fresh");
     }
 
     @Test

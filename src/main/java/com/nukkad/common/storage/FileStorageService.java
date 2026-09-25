@@ -410,6 +410,15 @@ public class FileStorageService {
         return url != null && url.startsWith(properties.publicBaseUrl() + "/");
     }
 
+    /** The object key a {@link #isHostedUrl} URL points at — the exact inverse of what {@link
+     *  #uploadToS3} minted for it. Callers use this to re-presign a legacy "full public URL" row
+     *  (from before its prefix's bucket policy made anonymous GETs stop working) the same way they
+     *  already presign a bare private key — see FeedService#resolveAttachmentUrl and
+     *  StartupService#resolveMaterialUrl. */
+    public String keyFromHostedUrl(String url) {
+        return url.substring(properties.publicBaseUrl().length() + 1);
+    }
+
     /** Streams back a file previously stored by this service, identified by the public URL it returned. */
     public StoredObject open(String url) {
         if (!isHostedUrl(url)) {
