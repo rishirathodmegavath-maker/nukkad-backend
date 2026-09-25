@@ -51,6 +51,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /** Covers the like toggle's exactly-once semantics: create on first like, remove on second, never a duplicate row. */
@@ -252,6 +253,34 @@ class FeedServiceTest {
 
         assertThatThrownBy(() -> service().listLikers("user-1", "missing", 0, 50))
                 .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void listLikersOnAHeavilySeededPlatformPostStillReturnsOnlyTheOneRealLiker() {
+        // 15 seeded platform engagement, but only one real PostLike row — the liker list must never
+        // synthesize the other 14; listLikers doesn't even take platformEngagementCount as input.
+        Post seeded = Post.builder().id("post-1").authorId("admin-1").content("hello")
+                .postedAsPlatform(true).platformEngagementCount(15).likesCount(1).build();
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(seeded));
+        PostLike like = PostLike.builder().id("like-1").postId("post-1").userId("user-1").build();
+        when(postLikeRepository.findByPostIdOrderByCreatedAtDesc(eq("post-1"), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(like)));
+
+        var page = service().listLikers("viewer-1", "post-1", 0, 50);
+
+        assertThat(page.getContent()).hasSize(1);
+        assertThat(page.getContent().get(0).userId()).isEqualTo("user-1");
+    }
+
+    @Test
+    void aPostBuiltWithoutAnExplicitPublisherIdentityDefaultsToPlainBuildAdda() {
+        // Mirrors the V109 migration's column default — an entity built (or a pre-migration row
+        // loaded) without setting publisherIdentity reads as plain BuildAdda, same as it always
+        // displayed before this feature existed.
+        Post post = Post.builder().id("post-1").authorId("admin-1").content("hello").build();
+
+        assertThat(post.getPublisherIdentity()).isEqualTo(Post.PublisherIdentity.BUILDADDA);
+        assertThat(post.getPlatformEngagementCount()).isZero();
     }
 
     private PostSave save(String id, String postId, String userId, Instant createdAt) {
@@ -457,10 +486,12 @@ class FeedServiceTest {
     void anAdminCanPublishAPostUnderTheirOwnAccount() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null), "  ", "1.2.3.4");
+        PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null), "  ", null, null, "1.2.3.4");
 
         assertThat(dto.authorId()).isEqualTo("admin-1");
         assertThat(dto.postedAsPlatform()).isTrue();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.platformEngagementCount()).isZero();
         verify(auditService).log(eq("admin-1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_POST_CREATED),
                 eq("Post"), any(), eq("1.2.3.4"), any());
         verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
@@ -473,7 +504,7 @@ class FeedServiceTest {
                 .thenReturn(Optional.of(User.builder().id("author-9").email("author@example.com").status(AccountStatus.ACTIVE).build()));
 
         PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null),
-                "  Author@Example.com ", "1.2.3.4");
+                "  Author@Example.com ", null, null, "1.2.3.4");
 
         assertThat(dto.authorId()).isEqualTo("author-9");
         assertThat(dto.postedAsPlatform()).isFalse();
@@ -486,7 +517,7 @@ class FeedServiceTest {
     void anUnknownAuthorEmailIsRejectedAndNothingIsCreated() {
         when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "nobody@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "nobody@example.com", null, null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(postRepository, never()).save(any());
@@ -498,10 +529,113 @@ class FeedServiceTest {
         when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
                 User.builder().id("sus-1").email("sus@example.com").status(AccountStatus.SUSPENDED).build()));
 
-        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "sus@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "sus@example.com", null, null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(postRepository, never()).save(any());
+    }
+
+    // ---- publisher identity + platform (seeded) engagement ----
+
+    @Test
+    void aPlatformPostCanUseAnApprovedPublisherIdentity() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
+                null, "buildadda_insights", null, "1.2.3.4");
+
+        assertThat(dto.postedAsPlatform()).isTrue();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA_INSIGHTS");
+    }
+
+    @Test
+    void aPlatformPostCannotUseAnUnknownPublisherIdentity() {
+        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("News", "announcement", null, null),
+                null, "buildadda_marketing", null, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void anEmptyPublisherIdentityDefaultsToPlainBuildAdda() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
+                null, "  ", null, "1.2.3.4");
+
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+    }
+
+    @Test
+    void attributingToARealMemberIgnoresPublisherIdentityAndEngagement() {
+        // publisherIdentity/platformEngagementCount describe how BuildAdda-as-publisher should look;
+        // once a real member is the author, neither applies — the post is that member's own.
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userRepository.findByEmail("author@example.com"))
+                .thenReturn(Optional.of(User.builder().id("author-9").email("author@example.com").status(AccountStatus.ACTIVE).build()));
+
+        PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
+                "author@example.com", "buildadda_insights", 15, "1.2.3.4");
+
+        assertThat(dto.postedAsPlatform()).isFalse();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.platformEngagementCount()).isZero();
+    }
+
+    @Test
+    void aMembersOwnPostIsNeverAPlatformPostAndNeverCarriesPlatformEngagement() {
+        // Confirms both "normal user cannot set postedAsPlatform=true" and "member posts don't
+        // receive platform engagement": FeedController's member endpoint only ever reaches the 2-arg
+        // create(authorId, request) overload, which hardcodes postedAsPlatform=false and 0 engagement
+        // — there is no member-reachable parameter for either.
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().create("member-1", request("hello", "text", null, null));
+
+        assertThat(dto.postedAsPlatform()).isFalse();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        assertThat(dto.platformEngagementCount()).isZero();
+    }
+
+    @Test
+    void negativePlatformEngagementIsRejected() {
+        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("News", "announcement", null, null),
+                null, null, -1, "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+        verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void seedingPlatformEngagementCreatesNoLikeRowNoNotificationAndNoAffinityEvent() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
+                null, "buildadda_grants", 15, "1.2.3.4");
+
+        assertThat(dto.platformEngagementCount()).isEqualTo(15);
+        assertThat(dto.likesCount()).isZero();
+        verifyNoInteractions(postLikeRepository);
+        verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(postInteractionRepository);
+        verifyNoInteractions(userTopicAffinityService);
+    }
+
+    @Test
+    void unlikingARealLikeLeavesPlatformEngagementUntouched() {
+        Post post = Post.builder().id("post-1").authorId("admin-1").content("hello").likesCount(1)
+                .postedAsPlatform(true).platformEngagementCount(15).build();
+        when(postLikeRepository.findByPostIdAndUserId("post-1", "user-1"))
+                .thenReturn(Optional.of(PostLike.builder().id("like-1").postId("post-1").userId("user-1").build()));
+        when(postRepository.findById("post-1")).thenReturn(Optional.of(post));
+        when(postSaveRepository.findByPostIdAndUserId("post-1", "user-1")).thenReturn(Optional.empty());
+
+        var dto = service().toggleLike("user-1", "post-1");
+
+        assertThat(dto.isLiked()).isFalse();
+        // decrementLikesCount is a targeted single-column UPDATE (see PostRepository) — it has no way
+        // to touch platform_engagement_count, and toggleLike never otherwise writes to the entity.
+        assertThat(dto.platformEngagementCount()).isEqualTo(15);
+        verify(postRepository).decrementLikesCount("post-1");
     }
 
     @Test

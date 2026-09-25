@@ -59,7 +59,8 @@ public class AdminFeedController {
                                         HttpServletRequest httpRequest) {
         CreatePostRequest post = new CreatePostRequest(request.content(), request.type(), request.relatedId(),
                 request.attachments(), request.visibility(), request.linkUrl());
-        return ApiResponse.ok(feedService.createAsAdmin(principal.id(), post, request.authorEmail(), httpRequest.getRemoteAddr()));
+        return ApiResponse.ok(feedService.createAsAdmin(principal.id(), post, request.authorEmail(),
+                request.publisherIdentity(), request.platformEngagementCount(), httpRequest.getRemoteAddr()));
     }
 
     /** Same upload the member composer uses (FeedService#uploadAttachment isn't scoped to a caller), just

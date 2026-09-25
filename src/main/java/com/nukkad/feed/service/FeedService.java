@@ -51,6 +51,7 @@ import java.net.URISyntaxException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -189,11 +190,12 @@ public class FeedService {
 
     @Transactional
     public PostDto create(String authorId, CreatePostRequest request) {
-        return create(authorId, request, false);
+        return create(authorId, request, false, Post.PublisherIdentity.BUILDADDA, 0);
     }
 
     @Transactional
-    public PostDto create(String authorId, CreatePostRequest request, boolean postedAsPlatform) {
+    public PostDto create(String authorId, CreatePostRequest request, boolean postedAsPlatform,
+                           Post.PublisherIdentity publisherIdentity, int platformEngagementCount) {
         String content = request.content() == null ? "" : request.content().trim();
         List<AttachmentRef> attachmentRefs = request.attachments() == null ? List.of() : request.attachments();
         String linkUrl = cleanLink(request.linkUrl());
@@ -207,6 +209,8 @@ public class FeedService {
         Post post = Post.builder()
                 .authorId(authorId)
                 .postedAsPlatform(postedAsPlatform)
+                .publisherIdentity(publisherIdentity)
+                .platformEngagementCount(platformEngagementCount)
                 .type(type)
                 .content(content)
                 .relatedId(request.relatedId())
@@ -242,15 +246,26 @@ public class FeedService {
 
     /**
      * An admin publishing a post from the admin panel. With {@code authorEmail}, that member becomes the
-     * author (and is told, since it now appears as theirs); without it the admin's own account is the author.
-     * Reuses {@link #create} exactly as a member's own post would — no separate moderation gate exists for
-     * Feed posts to bypass.
+     * author (and is told, since it now appears as theirs); without it the admin's own account is the author
+     * and the post is a platform post, displayed under {@code publisherIdentityRaw} (or plain "BuildAdda" if
+     * blank/omitted) instead of that admin's real name. {@code publisherIdentityRaw}/{@code platformEngagementCount}
+     * are only ever applied for a platform post — attributing to a real member ignores both, since they
+     * describe how BuildAdda-as-publisher should look, not that member's own post. Reuses {@link #create}
+     * exactly as a member's own post would — no separate moderation gate exists for Feed posts to bypass.
      */
     @Transactional
-    public PostDto createAsAdmin(String adminId, CreatePostRequest request, String authorEmail, String ip) {
+    public PostDto createAsAdmin(String adminId, CreatePostRequest request, String authorEmail,
+                                  String publisherIdentityRaw, Integer platformEngagementCount, String ip) {
+        if (platformEngagementCount != null && platformEngagementCount < 0) {
+            throw new BadRequestException("Platform engagement can't be negative");
+        }
         String authorId = resolveAuthorId(adminId, authorEmail);
         boolean postedAsPlatform = authorId.equals(adminId);
-        PostDto created = create(authorId, request, postedAsPlatform);
+        Post.PublisherIdentity publisherIdentity = postedAsPlatform
+                ? parsePublisherIdentity(publisherIdentityRaw)
+                : Post.PublisherIdentity.BUILDADDA;
+        int engagement = postedAsPlatform && platformEngagementCount != null ? platformEngagementCount : 0;
+        PostDto created = create(authorId, request, postedAsPlatform, publisherIdentity, engagement);
 
         auditService.log(adminId, AuditAction.ADMIN_POST_CREATED, "Post", created.id(), ip, Map.of());
 
@@ -259,6 +274,15 @@ public class FeedService {
                     "A post was added to BuildAdda for you.", created.id(), adminId);
         }
         return created;
+    }
+
+    private static Post.PublisherIdentity parsePublisherIdentity(String raw) {
+        if (raw == null || raw.isBlank()) return Post.PublisherIdentity.BUILDADDA;
+        try {
+            return Post.PublisherIdentity.valueOf(raw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) {
+            throw new BadRequestException("Unknown publisher identity: " + raw);
+        }
     }
 
     private String resolveAuthorId(String adminId, String authorEmail) {
@@ -672,7 +696,8 @@ public class FeedService {
         return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
                 post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason(),
-                post.getVisibility().name(), post.getLinkUrl(), post.isPostedAsPlatform());
+                post.getVisibility().name(), post.getLinkUrl(), post.isPostedAsPlatform(),
+                post.getPublisherIdentity().name(), post.getPlatformEngagementCount());
     }
 
     /** {@code stored} is either a legacy full public URL (from before attachments were made private —
