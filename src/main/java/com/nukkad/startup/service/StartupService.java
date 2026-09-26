@@ -8,6 +8,7 @@ import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
@@ -304,6 +305,11 @@ public class StartupService {
 
     @Transactional
     public StartupDto createStartup(String creatorId, CreateStartupRequest request) {
+        return createStartup(creatorId, request, false, PublisherIdentity.BUILDADDA);
+    }
+
+    @Transactional
+    public StartupDto createStartup(String creatorId, CreateStartupRequest request, boolean postedAsPlatform, PublisherIdentity publisherIdentity) {
         Startup startup = Startup.builder()
                 .name(request.name().trim())
                 .logoUrl(request.logoUrl())
@@ -327,6 +333,8 @@ public class StartupService {
                 .otherTraction(blankToNull(request.otherTraction()))
                 .visibility(request.visibility() == null || request.visibility().isBlank() ? StartupVisibility.PUBLIC : parseVisibility(request.visibility()))
                 .fundraisingVisible(request.fundraisingVisible() == null || request.fundraisingVisible())
+                .postedAsPlatform(postedAsPlatform)
+                .publisherIdentity(publisherIdentity)
                 .build();
         startup = startupRepository.saveAndFlush(startup);
 
@@ -342,10 +350,14 @@ public class StartupService {
 
     /**
      * An admin adding a startup. With {@code founderEmail}, that member becomes the founder (and is told, since they can
-     * now manage it); without it the admin's own account owns the startup. Like every startup it is live straight away.
+     * now manage it); without it the admin's own account owns the startup — and is treated as unattributed platform
+     * content, with {@code publisherIdentityRaw} picking which identity to show for it instead of that admin's real
+     * name (same idea as Post — see FeedService#createAsAdmin). The real FOUNDER team-member row is always the
+     * resolved user either way; this only changes the *displayed* name. Like every startup it is live straight away.
      */
     @Transactional
-    public StartupDto createStartupAsAdmin(String adminId, CreateStartupRequest request, String founderEmail, String ip) {
+    public StartupDto createStartupAsAdmin(String adminId, CreateStartupRequest request, String founderEmail,
+                                             String publisherIdentityRaw, String ip) {
         String founderId = adminId;
         if (founderEmail != null && !founderEmail.isBlank()) {
             User founder = userRepository.findByEmail(founderEmail.toLowerCase().trim())
@@ -355,8 +367,12 @@ public class StartupService {
             }
             founderId = founder.getId();
         }
+        boolean postedAsPlatform = founderId.equals(adminId);
+        PublisherIdentity publisherIdentity = postedAsPlatform
+                ? PublisherIdentity.parse(publisherIdentityRaw, PublisherIdentity.BUILDADDA)
+                : PublisherIdentity.BUILDADDA;
 
-        StartupDto created = createStartup(founderId, request);
+        StartupDto created = createStartup(founderId, request, postedAsPlatform, publisherIdentity);
 
         java.util.Map<String, Object> details = new java.util.HashMap<>();
         details.put("entityType", "Startup");

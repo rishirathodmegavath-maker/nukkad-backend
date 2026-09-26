@@ -38,6 +38,8 @@ public record StartupDto(
         String removalReason,
         String moderationStatus,
         String rejectionReason,
+        boolean postedAsPlatform,
+        String publisherIdentity,
         Instant createdAt,
         Instant updatedAt
 ) {

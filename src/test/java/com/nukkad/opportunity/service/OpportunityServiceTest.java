@@ -6,6 +6,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
@@ -513,11 +514,13 @@ class OpportunityServiceTest {
         when(userRepository.findById("admin1")).thenReturn(Optional.of(user("admin1", "Admin")));
         when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        service().postOpportunityAsAdmin("admin1", postRequest(), "  ", "1.2.3.4");
+        service().postOpportunityAsAdmin("admin1", postRequest(), "  ", "karan_shah", "1.2.3.4");
 
         ArgumentCaptor<Opportunity> saved = ArgumentCaptor.forClass(Opportunity.class);
         verify(opportunityRepository).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getPostedByUserId()).isEqualTo("admin1");
+        assertThat(saved.getValue().isPostedAsPlatform()).isTrue();
+        assertThat(saved.getValue().getPublisherIdentity()).isEqualTo(PublisherIdentity.KARAN_SHAH);
         assertThat(saved.getValue().getModerationStatus()).isEqualTo(com.nukkad.common.moderation.ModerationStatus.APPROVED);
         verify(auditService).log(eq("admin1"), eq(AuditAction.ADMIN_OPPORTUNITY_CREATED), eq("Opportunity"), any(), eq("1.2.3.4"), any());
         verify(notificationService, never()).notify(any(), any(), any(), any(), any(), any());
@@ -530,11 +533,13 @@ class OpportunityServiceTest {
                 .thenReturn(Optional.of(User.builder().id("poster-9").email("poster@example.com").status(com.nukkad.user.entity.AccountStatus.ACTIVE).build()));
         when(opportunityRepository.saveAndFlush(any(Opportunity.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        service().postOpportunityAsAdmin("admin1", postRequest(), "  Poster@Example.com ", "1.2.3.4");
+        service().postOpportunityAsAdmin("admin1", postRequest(), "  Poster@Example.com ", "karan_shah", "1.2.3.4");
 
         ArgumentCaptor<Opportunity> saved = ArgumentCaptor.forClass(Opportunity.class);
         verify(opportunityRepository).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getPostedByUserId()).isEqualTo("poster-9");
+        assertThat(saved.getValue().isPostedAsPlatform()).as("attributing to a real member is never platform content, whatever identity was sent").isFalse();
+        assertThat(saved.getValue().getPublisherIdentity()).isEqualTo(PublisherIdentity.BUILDADDA);
         verify(notificationService).notify(eq("poster-9"), any(), anyString(), anyString(), any(), eq("admin1"));
     }
 
@@ -542,7 +547,7 @@ class OpportunityServiceTest {
     void anUnknownPosterEmailIsRejectedAndNothingIsCreated() {
         when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequest(), "nobody@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequest(), "nobody@example.com", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(opportunityRepository, never()).saveAndFlush(any());
@@ -554,7 +559,7 @@ class OpportunityServiceTest {
         when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
                 User.builder().id("sus-1").email("sus@example.com").status(com.nukkad.user.entity.AccountStatus.SUSPENDED).build()));
 
-        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequest(), "sus@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequest(), "sus@example.com", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(opportunityRepository, never()).saveAndFlush(any());
@@ -667,6 +672,8 @@ class OpportunityServiceTest {
                         null,                          // experienceLevel
                         null,                          // applicationDeadline
                         closedOpp.getPostedByUserId(), // postedByUserId
+                        false,                         // postedAsPlatform
+                        "BUILDADDA",                   // publisherIdentity
                         null,                          // chapterId
                         List.of(),                     // requirements
                         List.of(),                     // requiredSkills
@@ -902,7 +909,8 @@ class OpportunityServiceTest {
                     return new OpportunityDto(o.getId(), o.getTitle(), null, o.isClosed(), o.isRemovedByAdmin(),
                             o.getRemovalReason(), o.getModerationStatus().name(), o.getRejectionReason(),
                             o.getStartupId(), o.getOrganizationName(), null, null, null, null, null, null, null, null,
-                            o.getPostedByUserId(), null, List.of(), List.of(), false, false, null, 0, 0, null, null, null);
+                            o.getPostedByUserId(), o.isPostedAsPlatform(), o.getPublisherIdentity().name(),
+                            null, List.of(), List.of(), false, false, null, 0, 0, null, null, null);
                 });
     }
 
@@ -1156,7 +1164,7 @@ class OpportunityServiceTest {
     void anAdminCannotPublishAPastDeadlineEither() {
         when(userRepository.findById("admin1")).thenReturn(Optional.of(user("admin1", "Admin")));
 
-        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequestWithDeadline(dateInputDaysFromToday(-3)), null, "1.2.3.4"))
+        assertThatThrownBy(() -> service().postOpportunityAsAdmin("admin1", postRequestWithDeadline(dateInputDaysFromToday(-3)), null, null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(opportunityRepository, never()).saveAndFlush(any());

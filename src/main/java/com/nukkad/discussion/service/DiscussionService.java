@@ -432,7 +432,8 @@ public class DiscussionService {
                 post.getTopic() == null ? Post.Topic.GENERAL.getLabel() : post.getTopic().getLabel(),
                 tags, base.likesCount(), base.isLiked(), base.isSaved(), base.commentsCount(), netScore, myVote,
                 views, participantIds.size(), following, base.commentsDisabled(), base.attachments(),
-                base.removedByAdmin(), base.removalReason(), base.createdAt(), lastActivity);
+                base.removedByAdmin(), base.removalReason(), base.createdAt(), lastActivity,
+                base.postedAsPlatform(), base.publisherIdentity());
     }
 
     /** Used only right after {@link #create}, where there's no PostDto yet to read isLiked/isSaved/etc. from
@@ -446,7 +447,8 @@ public class DiscussionService {
                 post.getTopic() == null ? Post.Topic.GENERAL.getLabel() : post.getTopic().getLabel(),
                 tags, post.getLikesCount(), isLiked, isSaved, post.getCommentsCount(), netScore, myVote,
                 views, participantCount, isFollowing, post.isCommentsDisabled(), attachments,
-                post.isRemovedByAdmin(), post.getRemovalReason(), post.getCreatedAt(), lastActivity);
+                post.isRemovedByAdmin(), post.getRemovalReason(), post.getCreatedAt(), lastActivity,
+                post.isPostedAsPlatform(), post.getPublisherIdentity().name());
     }
 
     private DiscussionCommentDto toCommentDto(CommentDto c, int likesCount, boolean isLiked) {

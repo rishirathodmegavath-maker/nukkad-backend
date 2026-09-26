@@ -1,6 +1,7 @@
 package com.nukkad.grant.entity;
 
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.startup.entity.StartupStage;
 import com.nukkad.startup.entity.StartupStageConverter;
 import jakarta.persistence.CollectionTable;
@@ -102,6 +103,22 @@ public class Grant {
 
     @Column(name = "created_by_user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String createdByUserId;
+
+    /** True only for a grant an admin published from the admin panel without attributing it to a
+     *  member — {@code createdByUserId} is then the admin's own account, but the public-facing
+     *  curator identity shown for it is {@code publisherIdentity} instead (same idea as Post — see
+     *  PostCard.tsx). Never set by AI discovery, CSV import, or a member's own submission — those
+     *  paths never choose an identity, so they stay FALSE/BUILDADDA. This is never the grant
+     *  <em>provider</em> (a government body or VC, shown separately via {@code provider}) — it only
+     *  represents who at BuildAdda curated the listing. */
+    @Column(name = "posted_as_platform", nullable = false)
+    @Builder.Default
+    private boolean postedAsPlatform = false;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "publisher_identity", nullable = false, length = 30)
+    @Builder.Default
+    private PublisherIdentity publisherIdentity = PublisherIdentity.BUILDADDA;
 
     @Column(name = "removed_by_admin", nullable = false)
     @Builder.Default

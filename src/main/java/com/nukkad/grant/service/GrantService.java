@@ -8,6 +8,7 @@ import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.grant.dto.CreateGrantRequest;
 import com.nukkad.grant.dto.DiscoveredGrantCandidate;
 import com.nukkad.grant.dto.GrantDto;
@@ -173,21 +174,28 @@ public class GrantService {
 
     @Transactional
     public GrantDto createGrant(String userId, CreateGrantRequest request) {
-        Grant grant = grantRepository.saveAndFlush(buildGrant(userId, request, ModerationStatus.PENDING));
+        Grant grant = grantRepository.saveAndFlush(buildGrant(userId, request, ModerationStatus.PENDING, false, PublisherIdentity.BUILDADDA));
         return grantMapper.toDto(grant, true);
     }
 
     /**
      * An admin publishing a grant listing from the admin panel. With {@code createdByEmail}, that member is
      * attributed as its creator (and is told, since it now appears as theirs); without it the admin's own
-     * account is. Unlike a member's own submission, this is live immediately rather than entering the
-     * pending-moderation queue.
+     * account is, and the listing is treated as unattributed platform content — {@code publisherIdentityRaw}
+     * picks which curator identity to show for it instead of that admin's real name (never the grant
+     * provider — see Grant#publisherIdentity). Unlike a member's own submission, this is live immediately
+     * rather than entering the pending-moderation queue.
      */
     @Transactional
-    public GrantDto createGrantAsAdmin(String adminId, CreateGrantRequest request, String createdByEmail, String ip) {
+    public GrantDto createGrantAsAdmin(String adminId, CreateGrantRequest request, String createdByEmail,
+                                        String publisherIdentityRaw, String ip) {
         String creatorId = resolveCreator(adminId, createdByEmail);
+        boolean postedAsPlatform = creatorId.equals(adminId);
+        PublisherIdentity publisherIdentity = postedAsPlatform
+                ? PublisherIdentity.parse(publisherIdentityRaw, PublisherIdentity.BUILDADDA)
+                : PublisherIdentity.BUILDADDA;
 
-        Grant grant = grantRepository.saveAndFlush(buildGrant(creatorId, request, ModerationStatus.APPROVED));
+        Grant grant = grantRepository.saveAndFlush(buildGrant(creatorId, request, ModerationStatus.APPROVED, postedAsPlatform, publisherIdentity));
 
         auditService.log(adminId, AuditAction.ADMIN_GRANT_CREATED, "Grant", grant.getId(), ip, Map.of());
 
@@ -274,7 +282,8 @@ public class GrantService {
         }
     }
 
-    private Grant buildGrant(String createdByUserId, CreateGrantRequest request, ModerationStatus status) {
+    private Grant buildGrant(String createdByUserId, CreateGrantRequest request, ModerationStatus status,
+                              boolean postedAsPlatform, PublisherIdentity publisherIdentity) {
         requireDeadlineNotInThePast(request.deadline());
         return Grant.builder()
                 .name(request.name().trim())
@@ -289,6 +298,8 @@ public class GrantService {
                 .applicationUrl(normalizeUrl(request.applicationUrl()))
                 .createdByUserId(createdByUserId)
                 .moderationStatus(status)
+                .postedAsPlatform(postedAsPlatform)
+                .publisherIdentity(publisherIdentity)
                 .build();
     }
 

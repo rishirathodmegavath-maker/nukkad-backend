@@ -16,6 +16,11 @@ import java.util.List;
  *                       frontend shows that as "General" rather than requiring a value.
  * @param lastActivityAt the later of the discussion's own createdAt and its most recent reply's createdAt.
  * @param myVote        -1, 0 or 1 — this viewer's own vote, never anyone else's.
+ * @param postedAsPlatform true for a discussion an admin published unattributed to any member — a discussion
+ *                       is just a {@code Post} with {@code type=discussion}, so this is the exact same flag
+ *                       Feed posts already carry (see {@code Post#postedAsPlatform}); {@code authorId} stays
+ *                       the admin's own account either way. {@code publisherIdentity} names which identity to
+ *                       show instead; ignored (left at its meaningless default) when this is false.
  */
 public record DiscussionDto(
         String id, String authorId, String content, String visibility, String linkUrl,
@@ -25,6 +30,7 @@ public record DiscussionDto(
         long viewsCount, int participantCount, boolean isFollowing,
         boolean commentsDisabled, List<AttachmentDto> attachments,
         boolean removedByAdmin, String removalReason,
-        Instant createdAt, Instant lastActivityAt
+        Instant createdAt, Instant lastActivityAt,
+        boolean postedAsPlatform, String publisherIdentity
 ) {
 }

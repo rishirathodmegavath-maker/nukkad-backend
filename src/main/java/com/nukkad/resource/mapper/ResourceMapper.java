@@ -22,6 +22,7 @@ public class ResourceMapper {
                 resource.isFeatured(),
                 resource.getUrl(),
                 resource.getUploaderUserId(),
+                resource.getPublisherIdentity().name(),
                 resource.getChapterId(),
                 chapterName,
                 new HashSet<>(resource.getTags()),

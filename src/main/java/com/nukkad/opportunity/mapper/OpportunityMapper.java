@@ -37,6 +37,8 @@ public class OpportunityMapper {
                 opportunity.getExperienceLevel(),
                 opportunity.getApplicationDeadline(),
                 opportunity.getPostedByUserId(),
+                opportunity.isPostedAsPlatform(),
+                opportunity.getPublisherIdentity().name(),
                 opportunity.getChapterId(),
                 new ArrayList<>(opportunity.getRequirements()),
                 new ArrayList<>(opportunity.getRequiredSkills()),

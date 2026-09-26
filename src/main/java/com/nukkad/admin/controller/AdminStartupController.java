@@ -74,7 +74,7 @@ public class AdminStartupController {
                 request.revenue(), request.customers(), request.users(), request.growth(), request.otherTraction(),
                 request.visibility(), request.fundraisingVisible());
         return ApiResponse.ok(startupService.createStartupAsAdmin(
-                principal.id(), startup, request.founderEmail(), httpRequest.getRemoteAddr()));
+                principal.id(), startup, request.founderEmail(), request.publisherIdentity(), httpRequest.getRemoteAddr()));
     }
 
     /** The logo goes through its own call once the startup exists — the same two-step shape (create,

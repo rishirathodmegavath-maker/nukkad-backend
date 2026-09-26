@@ -314,9 +314,11 @@ class StartupServiceTest {
     void anAdminWithNoFounderEmailOwnsTheStartupThemselves() {
         saveWithId();
 
-        StartupDto dto = service().createStartupAsAdmin("admin1", newStartupRequest(), "  ", "1.2.3.4");
+        StartupDto dto = service().createStartupAsAdmin("admin1", newStartupRequest(), "  ", "karan_shah", "1.2.3.4");
 
         assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        assertThat(dto.postedAsPlatform()).isTrue();
+        assertThat(dto.publisherIdentity()).isEqualTo("KARAN_SHAH");
         org.mockito.ArgumentCaptor<StartupTeamMember> member = org.mockito.ArgumentCaptor.forClass(StartupTeamMember.class);
         verify(teamMemberRepository).save(member.capture());
         assertThat(member.getValue().getUserId()).isEqualTo("admin1");
@@ -332,8 +334,10 @@ class StartupServiceTest {
         when(userRepository.findByEmail("founder@example.com"))
                 .thenReturn(Optional.of(User.builder().id("founder1").email("founder@example.com").build()));
 
-        service().createStartupAsAdmin("admin1", newStartupRequest(), "  Founder@Example.com ", "1.2.3.4");
+        StartupDto dto = service().createStartupAsAdmin("admin1", newStartupRequest(), "  Founder@Example.com ", "karan_shah", "1.2.3.4");
 
+        assertThat(dto.postedAsPlatform()).as("attributing to a real member is never platform content, whatever identity was sent").isFalse();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
         org.mockito.ArgumentCaptor<StartupTeamMember> member = org.mockito.ArgumentCaptor.forClass(StartupTeamMember.class);
         verify(teamMemberRepository).save(member.capture());
         assertThat(member.getValue().getUserId()).isEqualTo("founder1");
@@ -346,7 +350,7 @@ class StartupServiceTest {
     void anUnknownFounderEmailIsRejectedAndNothingIsCreated() {
         when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().createStartupAsAdmin("admin1", newStartupRequest(), "nobody@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().createStartupAsAdmin("admin1", newStartupRequest(), "nobody@example.com", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(startupRepository, never()).saveAndFlush(any(Startup.class));
@@ -358,7 +362,7 @@ class StartupServiceTest {
         when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
                 User.builder().id("sus1").email("sus@example.com").status(com.nukkad.user.entity.AccountStatus.SUSPENDED).build()));
 
-        assertThatThrownBy(() -> service().createStartupAsAdmin("admin1", newStartupRequest(), "sus@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().createStartupAsAdmin("admin1", newStartupRequest(), "sus@example.com", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(startupRepository, never()).saveAndFlush(any(Startup.class));

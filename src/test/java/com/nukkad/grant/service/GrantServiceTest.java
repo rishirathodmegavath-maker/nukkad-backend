@@ -106,7 +106,7 @@ class GrantServiceTest {
         CreateGrantRequest bad = new CreateGrantRequest("X", "Y", "Government", null, null, null, null, null,
                 java.time.Instant.now().minusSeconds(3600), "example.com");
 
-        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", bad, null, "1.2.3.4"))
+        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", bad, null, null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
         verify(grantRepository, never()).saveAndFlush(any());
     }
@@ -127,9 +127,11 @@ class GrantServiceTest {
     void createGrantAsAdminIsLiveImmediatelyUnderTheAdminsOwnAccount() {
         when(grantRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
-        GrantDto dto = service().createGrantAsAdmin("admin1", request("example.com"), "  ", "1.2.3.4");
+        GrantDto dto = service().createGrantAsAdmin("admin1", request("example.com"), "  ", "karan_shah", "1.2.3.4");
 
         assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        assertThat(dto.postedAsPlatform()).isTrue();
+        assertThat(dto.publisherIdentity()).isEqualTo("KARAN_SHAH");
         org.mockito.ArgumentCaptor<Grant> saved = org.mockito.ArgumentCaptor.forClass(Grant.class);
         verify(grantRepository).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getCreatedByUserId()).isEqualTo("admin1");
@@ -144,8 +146,10 @@ class GrantServiceTest {
         when(userRepository.findByEmail("creator@example.com"))
                 .thenReturn(Optional.of(User.builder().id("creator-9").email("creator@example.com").status(AccountStatus.ACTIVE).build()));
 
-        service().createGrantAsAdmin("admin1", request("example.com"), "  Creator@Example.com ", "1.2.3.4");
+        GrantDto dto = service().createGrantAsAdmin("admin1", request("example.com"), "  Creator@Example.com ", "karan_shah", "1.2.3.4");
 
+        assertThat(dto.postedAsPlatform()).as("attributing to a real member is never platform content, whatever identity was sent").isFalse();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
         org.mockito.ArgumentCaptor<Grant> saved = org.mockito.ArgumentCaptor.forClass(Grant.class);
         verify(grantRepository).saveAndFlush(saved.capture());
         assertThat(saved.getValue().getCreatedByUserId()).isEqualTo("creator-9");
@@ -156,7 +160,7 @@ class GrantServiceTest {
     void anUnknownCreatorEmailIsRejectedAndNothingIsCreated() {
         when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", request("example.com"), "nobody@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", request("example.com"), "nobody@example.com", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(grantRepository, never()).saveAndFlush(any());
@@ -168,7 +172,7 @@ class GrantServiceTest {
         when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
                 User.builder().id("sus-1").email("sus@example.com").status(AccountStatus.SUSPENDED).build()));
 
-        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", request("example.com"), "sus@example.com", "1.2.3.4"))
+        assertThatThrownBy(() -> service().createGrantAsAdmin("admin1", request("example.com"), "sus@example.com", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
 
         verify(grantRepository, never()).saveAndFlush(any());

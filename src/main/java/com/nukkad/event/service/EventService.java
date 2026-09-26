@@ -2,12 +2,16 @@ package com.nukkad.event.service;
 
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.audit.AuditAction;
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PlatformAuthorResolver;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.common.validation.LinkSanitizer;
 import com.nukkad.event.dto.CreateEventRequest;
@@ -77,6 +81,8 @@ public class EventService {
     private final NotificationService notificationService;
     private final FileStorageService fileStorageService;
     private final StartupAccessPolicy startupAccessPolicy;
+    private final AuditService auditService;
+    private final PlatformAuthorResolver platformAuthorResolver;
 
     public EventService(EventRepository eventRepository,
                          EventAttendeeRepository attendeeRepository,
@@ -89,7 +95,9 @@ public class EventService {
                          EventMapper eventMapper,
                          NotificationService notificationService,
                          FileStorageService fileStorageService,
-                         StartupAccessPolicy startupAccessPolicy) {
+                         StartupAccessPolicy startupAccessPolicy,
+                         AuditService auditService,
+                         PlatformAuthorResolver platformAuthorResolver) {
         this.eventRepository = eventRepository;
         this.attendeeRepository = attendeeRepository;
         this.eventStartupRepository = eventStartupRepository;
@@ -102,6 +110,8 @@ public class EventService {
         this.notificationService = notificationService;
         this.fileStorageService = fileStorageService;
         this.startupAccessPolicy = startupAccessPolicy;
+        this.auditService = auditService;
+        this.platformAuthorResolver = platformAuthorResolver;
     }
 
     public Event getEntityOrThrow(String id) {
@@ -190,6 +200,68 @@ public class EventService {
         }
 
         return toDto(event, userId);
+    }
+
+    /**
+     * An admin publishing an event from the admin panel. With {@code organizerEmail}, that member is
+     * attributed as the organizer (and is told, since it now appears as theirs); without it the admin's
+     * own account is, and the event is treated as unattributed platform content — {@code publisherIdentityRaw}
+     * picks which identity to show for it instead of that admin's real name (same idea as Post — see
+     * FeedService#createAsAdmin). Unlike a member's own event, this skips the chapter-president gate
+     * entirely (an admin-authored event is never gated by that self-service rule) and never links
+     * startups — that association still requires the linking user to manage each one, which an
+     * unattributed platform event has no real owner to satisfy.
+     */
+    @Transactional
+    public EventDto createEventAsAdmin(String adminId, CreateEventRequest request, String organizerEmail,
+                                         String publisherIdentityRaw, String ip) {
+        if (!request.endAt().isAfter(request.startAt())) {
+            throw new BadRequestException("Event end time must be after the start time");
+        }
+        if (request.endAt().isBefore(Instant.now())) {
+            throw new BadRequestException("An event can't end in the past");
+        }
+        String meetingUrl = LinkSanitizer.normalizeHttpUrl(request.meetingUrl(), "Meeting link");
+        String coverImageUrl = LinkSanitizer.normalizeHttpUrl(request.coverImageUrl(), "Cover image");
+        validateLocation(request.online(), request.location(), meetingUrl);
+
+        String chapterId = null;
+        if (request.chapterId() != null && !request.chapterId().isBlank()) {
+            chapterId = chapterRepository.findById(request.chapterId())
+                    .orElseThrow(() -> new ResourceNotFoundException("Chapter not found: " + request.chapterId()))
+                    .getId();
+        }
+
+        String organizerId = platformAuthorResolver.resolve(adminId, organizerEmail);
+        boolean postedAsPlatform = organizerId.equals(adminId);
+        PublisherIdentity publisherIdentity = postedAsPlatform
+                ? PublisherIdentity.parse(publisherIdentityRaw, PublisherIdentity.BUILDADDA)
+                : PublisherIdentity.BUILDADDA;
+
+        Event event = Event.builder()
+                .title(request.title().trim())
+                .description(request.description())
+                .chapterId(chapterId)
+                .organizerUserId(organizerId)
+                .postedAsPlatform(postedAsPlatform)
+                .publisherIdentity(publisherIdentity)
+                .startAt(request.startAt())
+                .endAt(request.endAt())
+                .online(request.online())
+                .location(request.location())
+                .meetingUrl(meetingUrl)
+                .coverImageUrl(coverImageUrl)
+                .capacity(request.capacity())
+                .build();
+        event = eventRepository.saveAndFlush(event);
+
+        auditService.log(adminId, AuditAction.ADMIN_EVENT_CREATED, "Event", event.getId(), ip, Map.of());
+
+        if (!organizerId.equals(adminId)) {
+            notificationService.notify(organizerId, NotificationType.event, "An event was added for you",
+                    "\"" + event.getTitle() + "\" was added to BuildAdda for you.", event.getId(), adminId);
+        }
+        return toDto(event, adminId);
     }
 
     @Transactional

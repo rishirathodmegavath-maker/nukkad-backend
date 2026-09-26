@@ -80,7 +80,7 @@ class ResourceServiceTest {
     private ResourceDto create(String title, String description, String type, String url,
                                org.springframework.web.multipart.MultipartFile file, String chapterId, Set<String> tags) {
         return service().createResource("admin1",
-                new ResourceService.NewResource(title, description, type, url, null, null, null, false, chapterId, tags),
+                new ResourceService.NewResource(title, description, type, url, null, null, null, false, chapterId, tags, null),
                 file, null, "1.2.3.4");
     }
 
@@ -95,7 +95,7 @@ class ResourceServiceTest {
 
     private static ResourceService.NewResource linkWith(String category, String provider, Integer minutes, boolean featured) {
         return new ResourceService.NewResource("How to Build an MVP", "desc", "Video", "https://youtube.com/watch?v=abc",
-                category, provider, minutes, featured, null, Set.of("Beginner"));
+                category, provider, minutes, featured, null, Set.of("Beginner"), null);
     }
 
     // ---- creation: exactly one of url/file ----
@@ -198,6 +198,36 @@ class ResourceServiceTest {
     }
 
     @Test
+    void aChosenPublisherIdentityIsStoredAndNeverConfusedWithProvider() {
+        when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        ResourceService.NewResource in = new ResourceService.NewResource("Deck", "d", "Document", "https://example.com",
+                "templates", "Sequoia", null, false, null, Set.of(), "karan_shah");
+
+        ResourceDto dto = createFull(in, null, null);
+
+        assertThat(dto.publisherIdentity()).isEqualTo("KARAN_SHAH");
+        assertThat(dto.provider()).isEqualTo("Sequoia");
+    }
+
+    @Test
+    void anUnspecifiedPublisherIdentityDefaultsToPlainBuildAdda() {
+        when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ResourceDto dto = createFull(linkWith("free-learning", null, null, false), null, null);
+
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+    }
+
+    @Test
+    void anUnknownPublisherIdentityIsRejected() {
+        ResourceService.NewResource in = new ResourceService.NewResource("Deck", "d", "Document", "https://example.com",
+                "templates", null, null, false, null, Set.of(), "not_a_real_identity");
+
+        assertThatThrownBy(() -> createFull(in, null, null)).isInstanceOf(BadRequestException.class);
+        verify(resourceRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
     void aResourceWithNoCategoryIsAllowed() {
         when(resourceRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
@@ -242,7 +272,7 @@ class ResourceServiceTest {
         when(fileStorageService.storeResourceFile(any(), eq("resources"))).thenReturn(HOSTED_PDF);
         when(fileStorageService.storeImage(any(), eq("resource-thumbnails"))).thenThrow(new BadRequestException("Only PNG, JPEG, WEBP or GIF images are allowed"));
 
-        ResourceService.NewResource in = new ResourceService.NewResource("Deck", "d", "Document", null, "templates", null, null, false, null, Set.of());
+        ResourceService.NewResource in = new ResourceService.NewResource("Deck", "d", "Document", null, "templates", null, null, false, null, Set.of(), null);
         assertThatThrownBy(() -> createFull(in, deck, badImage)).isInstanceOf(BadRequestException.class);
 
         verify(fileStorageService).deleteIfHosted(HOSTED_PDF);

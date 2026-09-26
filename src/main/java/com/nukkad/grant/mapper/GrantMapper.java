@@ -26,6 +26,8 @@ public class GrantMapper {
                 grant.getDiscoveryOrigin() == GrantDiscoveryOrigin.AI_DISCOVERY ? "AI Discovery" : "Manual",
                 grant.getLastVerifiedAt(),
                 grant.getCreatedByUserId(),
+                grant.isPostedAsPlatform(),
+                grant.getPublisherIdentity().name(),
                 grant.isRemovedByAdmin(),
                 grant.getRemovalReason(),
                 grant.getModerationStatus().name(),

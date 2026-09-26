@@ -11,7 +11,7 @@ import java.util.List;
  * CreatePostRequest). {@code authorEmail} is optional: with it, that member becomes the author and the post
  * appears as theirs; without it, the admin's own account is the author and the post is a platform post.
  * {@code publisherIdentity} and {@code platformEngagementCount} only apply to a platform post — see
- * FeedService#createAsAdmin. {@code publisherIdentity} must name one of {@link com.nukkad.feed.entity.Post.PublisherIdentity}'s
+ * FeedService#createAsAdmin. {@code publisherIdentity} must name one of {@link com.nukkad.common.publishing.PublisherIdentity}'s
  * constants (case-insensitive) or is rejected; blank/omitted falls back to the enum's first constant.
  */
 public record AdminCreatePostRequest(

@@ -7,6 +7,7 @@ import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.resource.dto.ResourceChapterOption;
 import com.nukkad.resource.dto.ResourceDto;
@@ -52,10 +53,13 @@ public class ResourceService {
     private static final Set<String> PREVIEWABLE_EXTENSIONS =
             Set.of("pdf", "png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov", "txt");
 
-    /** What an admin fills in to add a resource; exactly one of the url here or an uploaded file supplies its content. */
+    /** What an admin fills in to add a resource; exactly one of the url here or an uploaded file supplies its
+     *  content. {@code publisherIdentity} picks which curator identity to credit (must name one of
+     *  {@link PublisherIdentity}'s constants, case-insensitive, blank falls back to plain BuildAdda) — never
+     *  the {@code provider} field. */
     public record NewResource(String title, String description, String type, String url, String category,
                               String provider, Integer durationMinutes, boolean featured, String chapterId,
-                              Set<String> tags) {}
+                              Set<String> tags, String publisherIdentity) {}
 
     /** A hosted file opened for download. The caller must close {@code stream}. */
     public record Download(String fileName, String contentType, long contentLength, InputStream stream) {}
@@ -281,6 +285,7 @@ public class ResourceService {
                 .featured(in.featured())
                 .url(finalUrl)
                 .uploaderUserId(adminId)
+                .publisherIdentity(PublisherIdentity.parse(in.publisherIdentity(), PublisherIdentity.BUILDADDA))
                 .chapterId(resolvedChapterId)
                 .tags(in.tags() == null ? new HashSet<>() : new HashSet<>(in.tags()))
                 .build();

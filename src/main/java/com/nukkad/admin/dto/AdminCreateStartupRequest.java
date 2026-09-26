@@ -10,7 +10,8 @@ import java.util.Set;
  * (see CreateStartupRequest) is available here too — the logo is the one exception, since it goes through its own
  * upload call once the startup exists (POST /api/admin/startups/{id}/logo), exactly like the member flow.
  * {@code founderEmail} is optional: with it, that member becomes the founder and can manage the startup; without it,
- * the admin's own account owns it.
+ * the admin's own account owns it, and {@code publisherIdentity} picks which platform identity to display instead
+ * of that admin's real name — ignored when founderEmail is set.
  */
 public record AdminCreateStartupRequest(
         @NotBlank @Size(max = 200) String name,
@@ -33,6 +34,7 @@ public record AdminCreateStartupRequest(
         @Size(max = 5000) String otherTraction,
         String visibility,
         Boolean fundraisingVisible,
-        @Size(max = 255) String founderEmail
+        @Size(max = 255) String founderEmail,
+        String publisherIdentity
 ) {
 }

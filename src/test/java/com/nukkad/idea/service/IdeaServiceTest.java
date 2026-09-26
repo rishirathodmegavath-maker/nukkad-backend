@@ -6,6 +6,7 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
+import com.nukkad.common.publishing.PlatformAuthorResolver;
 import com.nukkad.idea.dto.ConvertToStartupRequest;
 import com.nukkad.idea.dto.ExpressInterestRequest;
 import com.nukkad.idea.dto.IdeaDto;
@@ -81,13 +82,14 @@ class IdeaServiceTest {
     @Mock private StartupMapper startupMapper;
     @Mock private NotificationService notificationService;
     @Mock private AuditService auditService;
+    @Mock private PlatformAuthorResolver platformAuthorResolver;
 
     private final IdeaMapper ideaMapper = new IdeaMapper();
 
     private IdeaService service() {
         return new IdeaService(ideaRepository, ideaInterestRepository, userRepository, userExperienceRepository,
                 userProjectRepository, startupRepository, startupTeamMemberRepository, ideaMapper, userMapper,
-                userService, startupMapper, notificationService, auditService);
+                userService, startupMapper, notificationService, auditService, platformAuthorResolver);
     }
 
     private Idea idea(String creatorId) {
@@ -150,7 +152,46 @@ class IdeaServiceTest {
 
         assertThat(dto.creatorId()).isEqualTo("creator1");
         assertThat(dto.teamMemberIds()).containsExactly("creator1");
+        assertThat(dto.postedAsPlatform()).isFalse();
         verify(auditService).log(eq("creator1"), eq(AuditAction.CREATE_IDEA), eq("Idea"), any(), isNull());
+    }
+
+    // ---- an admin publishing an idea from the admin panel ----
+
+    @Test
+    void anAdminCanPostAnIdeaUnderTheirOwnAccountAndPickAnIdentity() {
+        when(platformAuthorResolver.resolve("admin1", null)).thenReturn("admin1");
+        when(userRepository.findById("admin1")).thenReturn(Optional.of(user("admin1", "Admin")));
+        when(ideaRepository.saveAndFlush(any(Idea.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PostIdeaRequest request = new PostIdeaRequest("AI Tutor", "Students struggle", "Adaptive tutor",
+                "High schoolers", "Concept", "EdTech", Set.of("ai"), Set.of("Technology"));
+
+        IdeaDto dto = service().createIdeaAsAdmin("admin1", request, null, "karan_shah", "1.2.3.4");
+
+        assertThat(dto.creatorId()).isEqualTo("admin1");
+        assertThat(dto.postedAsPlatform()).isTrue();
+        assertThat(dto.publisherIdentity()).isEqualTo("KARAN_SHAH");
+        assertThat(dto.moderationStatus()).isEqualTo("APPROVED");
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_IDEA_CREATED), eq("Idea"), any(), eq("1.2.3.4"), any());
+        verify(notificationService, org.mockito.Mockito.never()).notify(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void anAdminCanAttributeAnIdeaToAMemberByEmailAndTheMemberIsTold() {
+        when(platformAuthorResolver.resolve("admin1", "creator@example.com")).thenReturn("creator-9");
+        when(userRepository.findById("creator-9")).thenReturn(Optional.of(user("creator-9", "Real Creator")));
+        when(ideaRepository.saveAndFlush(any(Idea.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PostIdeaRequest request = new PostIdeaRequest("AI Tutor", "Students struggle", "Adaptive tutor",
+                "High schoolers", "Concept", "EdTech", Set.of("ai"), Set.of("Technology"));
+
+        IdeaDto dto = service().createIdeaAsAdmin("admin1", request, "creator@example.com", "karan_shah", "1.2.3.4");
+
+        assertThat(dto.creatorId()).isEqualTo("creator-9");
+        assertThat(dto.postedAsPlatform()).as("attributing to a real member is never platform content, whatever identity was sent").isFalse();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        verify(notificationService).notify(eq("creator-9"), any(), any(), any(), any(), eq("admin1"));
     }
 
     // ---- Admin moderation ----

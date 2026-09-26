@@ -8,6 +8,7 @@ import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
 import com.nukkad.opportunity.dto.ApplicationDto;
@@ -349,7 +350,7 @@ public class OpportunityService {
         }
 
         Opportunity opportunity = opportunityRepository.saveAndFlush(
-                buildOpportunity(userId, poster.getChapterId(), request, ModerationStatus.PENDING));
+                buildOpportunity(userId, poster.getChapterId(), request, ModerationStatus.PENDING, false, PublisherIdentity.BUILDADDA));
         auditService.log(userId, AuditAction.CREATE_OPPORTUNITY, "Opportunity", opportunity.getId(), null);
         return opportunityMapper.toDto(opportunity);
     }
@@ -357,17 +358,24 @@ public class OpportunityService {
     /**
      * An admin publishing an opportunity from the admin panel. With {@code postedByEmail}, that member is
      * attributed as the poster (and is told, since it now appears as theirs); without it the admin's own
-     * account is. Unlike a member's own posting: skips the "must manage a startup on BuildAdda" gate
-     * entirely (an admin-authored posting is never gated by that self-service rule), is never attributed to
-     * a specific BuildAdda startup — {@code request.startupId()} is ignored — and is live immediately
-     * rather than entering the pending-moderation queue.
+     * account is, and the opportunity is treated as unattributed platform content — {@code publisherIdentityRaw}
+     * picks which identity to show for it instead of that admin's real name (same idea as Post — see
+     * FeedService#createAsAdmin). Unlike a member's own posting: skips the "must manage a startup on
+     * BuildAdda" gate entirely (an admin-authored posting is never gated by that self-service rule), is never
+     * attributed to a specific BuildAdda startup — {@code request.startupId()} is ignored — and is live
+     * immediately rather than entering the pending-moderation queue.
      */
     @Transactional
-    public OpportunityDto postOpportunityAsAdmin(String adminId, PostOpportunityRequest request, String postedByEmail, String ip) {
+    public OpportunityDto postOpportunityAsAdmin(String adminId, PostOpportunityRequest request, String postedByEmail,
+                                                   String publisherIdentityRaw, String ip) {
         User poster = resolvePoster(adminId, postedByEmail);
+        boolean postedAsPlatform = poster.getId().equals(adminId);
+        PublisherIdentity publisherIdentity = postedAsPlatform
+                ? PublisherIdentity.parse(publisherIdentityRaw, PublisherIdentity.BUILDADDA)
+                : PublisherIdentity.BUILDADDA;
 
         Opportunity opportunity = opportunityRepository.saveAndFlush(
-                buildOpportunity(poster.getId(), poster.getChapterId(), request, ModerationStatus.APPROVED));
+                buildOpportunity(poster.getId(), poster.getChapterId(), request, ModerationStatus.APPROVED, postedAsPlatform, publisherIdentity));
 
         auditService.log(adminId, AuditAction.ADMIN_OPPORTUNITY_CREATED, "Opportunity", opportunity.getId(), ip, java.util.Map.of());
 
@@ -391,7 +399,8 @@ public class OpportunityService {
         return poster;
     }
 
-    private Opportunity buildOpportunity(String postedByUserId, String chapterId, PostOpportunityRequest request, ModerationStatus status) {
+    private Opportunity buildOpportunity(String postedByUserId, String chapterId, PostOpportunityRequest request, ModerationStatus status,
+                                          boolean postedAsPlatform, PublisherIdentity publisherIdentity) {
         requireDeadlineNotInThePast(request.applicationDeadline());
         return Opportunity.builder()
                 .title(request.title().trim())
@@ -407,6 +416,8 @@ public class OpportunityService {
                 .experienceLevel(request.experienceLevel())
                 .applicationDeadline(request.applicationDeadline())
                 .postedByUserId(postedByUserId)
+                .postedAsPlatform(postedAsPlatform)
+                .publisherIdentity(publisherIdentity)
                 .chapterId(chapterId)
                 .requirements(request.requirements() == null ? new ArrayList<>() : new ArrayList<>(request.requirements()))
                 .requiredSkills(request.requiredSkills() == null ? new ArrayList<>() : new ArrayList<>(request.requiredSkills()))

@@ -2,6 +2,8 @@ package com.nukkad.feed.service;
 
 import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
+import com.nukkad.common.publishing.PlatformAuthorResolver;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.feed.dto.CreatePostRequest;
 import com.nukkad.feed.dto.PostDto;
 import com.nukkad.common.exception.ForbiddenException;
@@ -24,10 +26,7 @@ import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
 import com.nukkad.notification.service.NotificationService;
-import com.nukkad.user.entity.AccountStatus;
-import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
-import com.nukkad.user.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -69,14 +68,14 @@ class FeedServiceTest {
     @Mock private AuditService auditService;
     @Mock private ConnectionRepository connectionRepository;
     @Mock private PostHashtagRepository postHashtagRepository;
-    @Mock private UserRepository userRepository;
+    @Mock private PlatformAuthorResolver platformAuthorResolver;
     @Mock private NotificationService notificationService;
 
     private FeedService service() {
         return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
                 postHideRepository, postInteractionRepository, userTopicAffinityService,
                 fileStorageService, auditService, connectionRepository, postHashtagRepository,
-                userRepository, notificationService);
+                platformAuthorResolver, notificationService);
     }
 
     private Post post(String id) {
@@ -279,7 +278,7 @@ class FeedServiceTest {
         // gates on postedAsPlatform first.
         Post post = Post.builder().id("post-1").authorId("admin-1").content("hello").build();
 
-        assertThat(post.getPublisherIdentity()).isEqualTo(Post.PublisherIdentity.ARJUN_MEHTA);
+        assertThat(post.getPublisherIdentity()).isEqualTo(PublisherIdentity.ARJUN_MEHTA);
         assertThat(post.getPlatformEngagementCount()).isZero();
     }
 
@@ -485,6 +484,7 @@ class FeedServiceTest {
     @Test
     void anAdminCanPublishAPostUnderTheirOwnAccount() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(platformAuthorResolver.resolve("admin-1", "  ")).thenReturn("admin-1");
 
         PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null), "  ", null, null, "1.2.3.4");
 
@@ -500,8 +500,7 @@ class FeedServiceTest {
     @Test
     void anAdminCanPublishAPostAsAMemberByEmailAndTheMemberIsTold() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        when(userRepository.findByEmail("author@example.com"))
-                .thenReturn(Optional.of(User.builder().id("author-9").email("author@example.com").status(AccountStatus.ACTIVE).build()));
+        when(platformAuthorResolver.resolve("admin-1", "  Author@Example.com ")).thenReturn("author-9");
 
         PostDto dto = service().createAsAdmin("admin-1", request("Hello BuildAdda", "announcement", null, null),
                 "  Author@Example.com ", null, null, "1.2.3.4");
@@ -514,8 +513,11 @@ class FeedServiceTest {
     }
 
     @Test
-    void anUnknownAuthorEmailIsRejectedAndNothingIsCreated() {
-        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+    void aRejectedAuthorEmailStopsTheCreateAndCreatesNothing() {
+        // The actual email/status validation lives in PlatformAuthorResolver (see its own test) —
+        // this just confirms createAsAdmin propagates that rejection rather than swallowing it.
+        when(platformAuthorResolver.resolve("admin-1", "nobody@example.com"))
+                .thenThrow(new BadRequestException("No member has that email address"));
 
         assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "nobody@example.com", null, null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
@@ -524,22 +526,12 @@ class FeedServiceTest {
         verify(auditService, never()).log(any(), any(), any(), any(), any(), any());
     }
 
-    @Test
-    void aSuspendedMemberCannotBeMadeTheAuthor() {
-        when(userRepository.findByEmail("sus@example.com")).thenReturn(Optional.of(
-                User.builder().id("sus-1").email("sus@example.com").status(AccountStatus.SUSPENDED).build()));
-
-        assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("hi", "text", null, null), "sus@example.com", null, null, "1.2.3.4"))
-                .isInstanceOf(BadRequestException.class);
-
-        verify(postRepository, never()).save(any());
-    }
-
     // ---- publisher identity + platform (seeded) engagement ----
 
     @Test
     void aPlatformPostCanUseAnApprovedPublisherIdentity() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(platformAuthorResolver.resolve("admin-1", null)).thenReturn("admin-1");
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
                 null, "karan_shah", null, "1.2.3.4");
@@ -550,6 +542,8 @@ class FeedServiceTest {
 
     @Test
     void aPlatformPostCannotUseAnUnknownPublisherIdentity() {
+        when(platformAuthorResolver.resolve("admin-1", null)).thenReturn("admin-1");
+
         assertThatThrownBy(() -> service().createAsAdmin("admin-1", request("News", "announcement", null, null),
                 null, "buildadda_marketing", null, "1.2.3.4"))
                 .isInstanceOf(BadRequestException.class);
@@ -559,6 +553,7 @@ class FeedServiceTest {
     @Test
     void anEmptyPublisherIdentityDefaultsToTheFirstIdentity() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(platformAuthorResolver.resolve("admin-1", null)).thenReturn("admin-1");
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
                 null, "  ", null, "1.2.3.4");
@@ -571,8 +566,7 @@ class FeedServiceTest {
         // publisherIdentity/platformEngagementCount describe how the platform-as-publisher should
         // look; once a real member is the author, neither applies — the post is that member's own.
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        when(userRepository.findByEmail("author@example.com"))
-                .thenReturn(Optional.of(User.builder().id("author-9").email("author@example.com").status(AccountStatus.ACTIVE).build()));
+        when(platformAuthorResolver.resolve("admin-1", "author@example.com")).thenReturn("author-9");
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
                 "author@example.com", "karan_shah", 15, "1.2.3.4");
@@ -608,6 +602,7 @@ class FeedServiceTest {
     @Test
     void seedingPlatformEngagementCreatesNoLikeRowNoNotificationAndNoAffinityEvent() {
         when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(platformAuthorResolver.resolve("admin-1", null)).thenReturn("admin-1");
 
         PostDto dto = service().createAsAdmin("admin-1", request("News", "announcement", null, null),
                 null, "neel_kapoor", 15, "1.2.3.4");

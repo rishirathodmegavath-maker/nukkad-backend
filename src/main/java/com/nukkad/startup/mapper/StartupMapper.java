@@ -70,6 +70,8 @@ public class StartupMapper {
                 startup.getRemovalReason(),
                 startup.getModerationStatus().name(),
                 startup.getRejectionReason(),
+                startup.isPostedAsPlatform(),
+                startup.getPublisherIdentity().name(),
                 startup.getCreatedAt(),
                 startup.getUpdatedAt()
         );

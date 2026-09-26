@@ -8,6 +8,8 @@ import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.moderation.ModerationStatus;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PlatformAuthorResolver;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.idea.dto.ConvertToStartupRequest;
 import com.nukkad.idea.dto.ExpressInterestRequest;
 import com.nukkad.idea.dto.IdeaDto;
@@ -79,6 +81,7 @@ public class IdeaService {
     private final StartupMapper startupMapper;
     private final NotificationService notificationService;
     private final AuditService auditService;
+    private final PlatformAuthorResolver platformAuthorResolver;
 
     public IdeaService(IdeaRepository ideaRepository,
                         IdeaInterestRepository ideaInterestRepository,
@@ -92,7 +95,8 @@ public class IdeaService {
                         UserService userService,
                         StartupMapper startupMapper,
                         NotificationService notificationService,
-                        AuditService auditService) {
+                        AuditService auditService,
+                        PlatformAuthorResolver platformAuthorResolver) {
         this.ideaRepository = ideaRepository;
         this.ideaInterestRepository = ideaInterestRepository;
         this.userRepository = userRepository;
@@ -106,6 +110,7 @@ public class IdeaService {
         this.startupMapper = startupMapper;
         this.notificationService = notificationService;
         this.auditService = auditService;
+        this.platformAuthorResolver = platformAuthorResolver;
     }
 
     public Idea getEntityOrThrow(String id) {
@@ -268,6 +273,52 @@ public class IdeaService {
         // actually runs, and the audit log + response DTO both need those values immediately.
         idea = ideaRepository.saveAndFlush(idea);
         auditService.log(creatorId, AuditAction.CREATE_IDEA, "Idea", idea.getId(), null);
+        return toIdeaDto(idea);
+    }
+
+    /**
+     * An admin publishing an idea from the admin panel. With {@code creatorEmail}, that member is
+     * attributed as its creator (and is told, since it now appears as theirs); without it the admin's
+     * own account is, and the idea is treated as unattributed platform content — {@code publisherIdentityRaw}
+     * picks which identity to show for it instead of that admin's real name (same idea as Post — see
+     * FeedService#createAsAdmin). Unlike a member's own idea, this is live immediately (APPROVED)
+     * rather than entering the pending-moderation queue.
+     */
+    @Transactional
+    public IdeaDto createIdeaAsAdmin(String adminId, PostIdeaRequest request, String creatorEmail,
+                                       String publisherIdentityRaw, String ip) {
+        String creatorId = platformAuthorResolver.resolve(adminId, creatorEmail);
+        User creator = userRepository.findById(creatorId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found: " + creatorId));
+        boolean postedAsPlatform = creatorId.equals(adminId);
+        PublisherIdentity publisherIdentity = postedAsPlatform
+                ? PublisherIdentity.parse(publisherIdentityRaw, PublisherIdentity.BUILDADDA)
+                : PublisherIdentity.BUILDADDA;
+
+        Idea idea = Idea.builder()
+                .title(request.title().trim())
+                .problem(request.problem())
+                .solution(request.solution())
+                .targetCustomer(request.targetCustomer())
+                .stage(resolveStage(request.stage()))
+                .category(request.category())
+                .creatorId(creatorId)
+                .postedAsPlatform(postedAsPlatform)
+                .publisherIdentity(publisherIdentity)
+                .chapterId(creator.getChapterId())
+                .tags(request.tags() == null ? new HashSet<>() : new HashSet<>(request.tags()))
+                .helpNeeded(resolveHelpNeeded(request.helpNeeded()))
+                .teamMemberIds(new HashSet<>(Set.of(creatorId)))
+                .moderationStatus(ModerationStatus.APPROVED)
+                .build();
+
+        idea = ideaRepository.saveAndFlush(idea);
+        auditService.log(adminId, AuditAction.ADMIN_IDEA_CREATED, "Idea", idea.getId(), ip, Map.of());
+
+        if (!creatorId.equals(adminId)) {
+            notificationService.notify(creatorId, NotificationType.idea, "An idea was added for you",
+                    "\"" + idea.getTitle() + "\" was added to BuildAdda for you.", idea.getId(), adminId);
+        }
         return toIdeaDto(idea);
     }
 
