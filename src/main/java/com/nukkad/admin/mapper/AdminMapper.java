@@ -176,7 +176,9 @@ public class AdminMapper {
                 applicant != null ? applicant.getEmail() : null,
                 application.getProgram().name(),
                 application.getStatus().name(),
-                application.getAnswers(),
+                // Copied, not passed through: answers is a lazy @ElementCollection, serialized after
+                // this transaction's session has closed (same fix as ProgramMapper/ChapterMapper).
+                new java.util.HashMap<>(application.getAnswers()),
                 application.getSubmittedAt(),
                 application.getAdminNote(),
                 application.getReviewedBy(),
