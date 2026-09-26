@@ -25,17 +25,21 @@ public interface PostRepository extends JpaRepository<Post, String> {
 
     /**
      * The member feed: posts the viewer may read (see {@link PostVisibilityQuery}), minus anything an admin has
-     * taken down, newest first. {@code authorId}, {@code type} and {@code tag} (a lowercase hashtag) each narrow the list when non-null. The id is a
-     * second sort key because created_at is second-precision, so two posts in the same second still page stably.
+     * taken down, newest first. {@code authorId}, {@code type}, {@code tag} (a lowercase hashtag) and
+     * {@code chapterId} (a post's author's own chapter at the time of posting — see {@code Post#chapterId})
+     * each narrow the list when non-null. The id is a second sort key because created_at is second-precision,
+     * so two posts in the same second still page stably.
      */
     @Query("select p from Post p where p.removedByAdmin = false "
             + "and (:authorId is null or p.authorId = :authorId) "
             + "and (:type is null or p.type = :type) "
             + "and (:tag is null or exists (select h.id from PostHashtag h where h.postId = p.id and h.tag = :tag)) "
+            + "and (:chapterId is null or p.chapterId = :chapterId) "
             + "and " + PostVisibilityQuery.VISIBLE_TO_VIEWER + " "
             + "order by p.createdAt desc, p.id desc")
     Page<Post> findVisibleTo(@Param("viewerId") String viewerId, @Param("authorId") String authorId,
-                             @Param("type") Post.Type type, @Param("tag") String tag, Pageable pageable);
+                             @Param("type") Post.Type type, @Param("tag") String tag,
+                             @Param("chapterId") String chapterId, Pageable pageable);
 
     /**
      * Atomic single-statement counter updates. A read-modify-write via the loaded entity

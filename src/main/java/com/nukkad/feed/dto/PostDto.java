@@ -11,7 +11,7 @@ import java.util.List;
  * real, togglable count — {@code platformEngagementCount} is a separate seeded number kept internally
  * alongside it (never a real Like, never returned by the liker list, never labelled "likes" or shown
  * as a number in member-facing UI — see PostCard.tsx). */
-public record PostDto(String id, String authorId, String type, String content, String relatedId,
+public record PostDto(String id, String authorId, String chapterId, String type, String content, String relatedId,
                        int likesCount, int commentsCount, boolean isLiked, boolean isSaved,
                        boolean hideLikeCount, boolean commentsDisabled, Instant createdAt,
                        List<AttachmentDto> attachments, Instant savedAt,

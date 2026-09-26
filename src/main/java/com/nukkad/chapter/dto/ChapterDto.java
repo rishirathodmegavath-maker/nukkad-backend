@@ -1,6 +1,7 @@
 package com.nukkad.chapter.dto;
 
 import java.time.Instant;
+import java.util.Set;
 
 public record ChapterDto(
         String id,
@@ -10,6 +11,9 @@ public record ChapterDto(
         String description,
         String coverImageUrl,
         String presidentUserId,
+        String institution,
+        String type,
+        Set<String> focusAreas,
         long memberCount,
         long ideaCount,
         long startupCount,

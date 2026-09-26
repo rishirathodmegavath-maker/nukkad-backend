@@ -76,6 +76,12 @@ public class Post {
     @Column(name = "author_id", nullable = false, columnDefinition = "CHAR(36)")
     private String authorId;
 
+    /** The author's own chapter at the time of posting (null if they weren't in one) — derived
+     *  server-side, same as {@code Idea.chapterId}/{@code Opportunity.chapterId}, never a
+     *  client-supplied field. Lets a chapter's Feed tab show only its own members' posts. */
+    @Column(name = "chapter_id", columnDefinition = "CHAR(36)")
+    private String chapterId;
+
     /** True only for a post an admin published from the admin panel without attributing it to a
      *  member — {@code authorId} is then the admin's own account, but the public-facing author
      *  shown for it is the BuildAdda platform identity, not that admin account's name. False for

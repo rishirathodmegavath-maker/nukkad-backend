@@ -36,7 +36,9 @@ import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
+import com.nukkad.user.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -80,6 +82,7 @@ public class FeedService {
     private final PostHashtagRepository postHashtagRepository;
     private final PlatformAuthorResolver platformAuthorResolver;
     private final NotificationService notificationService;
+    private final UserRepository userRepository;
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
                         PostCommentRepository postCommentRepository, PostSaveRepository postSaveRepository,
@@ -87,7 +90,8 @@ public class FeedService {
                         UserTopicAffinityService userTopicAffinityService,
                         FileStorageService fileStorageService, AuditService auditService,
                         ConnectionRepository connectionRepository, PostHashtagRepository postHashtagRepository,
-                        PlatformAuthorResolver platformAuthorResolver, NotificationService notificationService) {
+                        PlatformAuthorResolver platformAuthorResolver, NotificationService notificationService,
+                        UserRepository userRepository) {
         this.postRepository = postRepository;
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
@@ -101,6 +105,7 @@ public class FeedService {
         this.postHashtagRepository = postHashtagRepository;
         this.platformAuthorResolver = platformAuthorResolver;
         this.notificationService = notificationService;
+        this.userRepository = userRepository;
     }
 
     /** Records a real behavioral-signal row and bumps the viewer's topic affinity — called after
@@ -112,13 +117,14 @@ public class FeedService {
     }
 
     @Transactional(readOnly = true)
-    public Page<PostDto> list(String viewerId, String authorId, String type, String tag, int page, int size) {
+    public Page<PostDto> list(String viewerId, String authorId, String type, String tag, String chapterId, int page, int size) {
         Pageable pageable = PageRequests.of(page, size);
         String author = (authorId == null || authorId.isBlank()) ? null : authorId;
         Post.Type typeFilter = (type == null || type.isBlank()) ? null : parseType(type);
         // Only posts this viewer may read (public, their own, or connections-only from a connection).
         String tagFilter = (tag == null || tag.isBlank()) ? null : normalizedTagOrNoMatch(tag);
-        Page<Post> posts = postRepository.findVisibleTo(viewerId, author, typeFilter, tagFilter, pageable);
+        String chapter = (chapterId == null || chapterId.isBlank()) ? null : chapterId;
+        Page<Post> posts = postRepository.findVisibleTo(viewerId, author, typeFilter, tagFilter, chapter, pageable);
         List<PostDto> dtos = toDtoList(posts.getContent(), viewerId);
         return new PageImpl<>(dtos, pageable, posts.getTotalElements());
     }
@@ -203,9 +209,14 @@ public class FeedService {
 
         Post.Type type = parseType(request.type());
         Post.Visibility visibility = parseVisibility(request.visibility());
+        // Best-effort: authorId is the authenticated principal, so this is never actually absent in
+        // practice — but a post's chapter tagging isn't worth hard-failing creation over, so a
+        // missing lookup just means "no chapter" rather than a thrown error.
+        String chapterId = userRepository.findById(authorId).map(User::getChapterId).orElse(null);
 
         Post post = Post.builder()
                 .authorId(authorId)
+                .chapterId(chapterId)
                 .postedAsPlatform(postedAsPlatform)
                 .publisherIdentity(publisherIdentity)
                 .platformEngagementCount(platformEngagementCount)
@@ -672,7 +683,7 @@ public class FeedService {
         List<AttachmentDto> attachments = post.getAttachments().stream()
                 .map(a -> new AttachmentDto(a.getId(), resolveAttachmentUrl(a.getUrl()), a.getKind().name(), a.getFileName()))
                 .toList();
-        return new PostDto(post.getId(), post.getAuthorId(), post.getType().name(), post.getContent(), post.getRelatedId(),
+        return new PostDto(post.getId(), post.getAuthorId(), post.getChapterId(), post.getType().name(), post.getContent(), post.getRelatedId(),
                 post.getLikesCount(), post.getCommentsCount(), isLiked, isSaved, post.isHideLikeCount(), post.isCommentsDisabled(),
                 post.getCreatedAt(), attachments, savedAt, post.isRemovedByAdmin(), post.getRemovalReason(),
                 post.getVisibility().name(), post.getLinkUrl(), post.isPostedAsPlatform(),
