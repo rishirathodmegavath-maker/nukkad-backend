@@ -44,6 +44,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -173,6 +174,9 @@ public class ChapterService {
         if (request.country() != null) chapter.setCountry(request.country());
         if (request.description() != null) chapter.setDescription(request.description());
         if (request.coverImageUrl() != null) chapter.setCoverImageUrl(request.coverImageUrl());
+        if (request.institution() != null) chapter.setInstitution(request.institution());
+        if (request.type() != null) chapter.setType(request.type());
+        if (request.focusAreas() != null) chapter.setFocusAreas(new HashSet<>(request.focusAreas()));
 
         return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
     }

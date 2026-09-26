@@ -26,7 +26,9 @@ import com.nukkad.feed.repository.PostLikeRepository;
 import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
 import com.nukkad.notification.service.NotificationService;
+import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
+import com.nukkad.user.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -70,12 +72,13 @@ class FeedServiceTest {
     @Mock private PostHashtagRepository postHashtagRepository;
     @Mock private PlatformAuthorResolver platformAuthorResolver;
     @Mock private NotificationService notificationService;
+    @Mock private UserRepository userRepository;
 
     private FeedService service() {
         return new FeedService(postRepository, postLikeRepository, postCommentRepository, postSaveRepository,
                 postHideRepository, postInteractionRepository, userTopicAffinityService,
                 fileStorageService, auditService, connectionRepository, postHashtagRepository,
-                platformAuthorResolver, notificationService);
+                platformAuthorResolver, notificationService, userRepository);
     }
 
     private Post post(String id) {
@@ -416,12 +419,12 @@ class FeedServiceTest {
 
     @Test
     void publicListingAsksForOnlyWhatTheViewerMayRead() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", null, null, null, 0, 20);
+        service().list("user-1", null, null, null, null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), isNull(), any());
         // The admin listings ignore visibility and must never be what a member's feed uses.
         verify(postRepository, never()).findAllByOrderByCreatedAtDesc(any());
         verify(postRepository, never()).findByRemovedByAdminFalseOrderByCreatedAtDesc(any());
@@ -429,37 +432,47 @@ class FeedServiceTest {
 
     @Test
     void listingByTypePassesTheTypeToTheVisibleQuery() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), isNull(), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", null, "discussion", null, 0, 20);
+        service().list("user-1", null, "discussion", null, null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), isNull(), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), eq(Post.Type.discussion), isNull(), isNull(), any());
     }
 
     @Test
     void listingByAuthorAndTypeCombinesBothFilters() {
-        when(postRepository.findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), isNull(), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", "a1", "question", null, 0, 20);
+        service().list("user-1", "a1", "question", null, null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), isNull(), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), eq("a1"), eq(Post.Type.question), isNull(), isNull(), any());
     }
 
     @Test
     void aBlankAuthorFilterMeansEveryone() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", "  ", "", null, 0, 20);
+        service().list("user-1", "  ", "", null, null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), isNull(), any());
     }
 
     @Test
     void listingWithAnUnknownTypeIsRejected() {
-        assertThatThrownBy(() -> service().list("user-1", null, "gossip", null, 0, 20)).isInstanceOf(BadRequestException.class);
+        assertThatThrownBy(() -> service().list("user-1", null, "gossip", null, null, 0, 20)).isInstanceOf(BadRequestException.class);
+    }
+
+    @Test
+    void listingByChapterIdPassesTheFilterToTheVisibleQuery() {
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), eq("chapter-1"), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        service().list("user-1", null, null, null, "chapter-1", 0, 20);
+
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), isNull(), eq("chapter-1"), any());
     }
 
     @Test
@@ -477,6 +490,26 @@ class FeedServiceTest {
         assertThatThrownBy(() -> service().create("author-1", request("hi", "gossip", null, null)))
                 .isInstanceOf(BadRequestException.class);
         verify(postRepository, never()).save(any());
+    }
+
+    @Test
+    void creatingAPostDerivesTheAuthorsOwnChapter() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userRepository.findById("author-1")).thenReturn(Optional.of(User.builder().id("author-1").chapterId("chapter-1").build()));
+
+        PostDto dto = service().create("author-1", request("hi", "text", null, null));
+
+        assertThat(dto.chapterId()).isEqualTo("chapter-1");
+    }
+
+    @Test
+    void creatingAPostForAnAuthorWithNoChapterLeavesItNull() {
+        when(postRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userRepository.findById("author-1")).thenReturn(Optional.of(User.builder().id("author-1").build()));
+
+        PostDto dto = service().create("author-1", request("hi", "text", null, null));
+
+        assertThat(dto.chapterId()).isNull();
     }
 
     // ---- an admin publishing a post from the admin panel ----
@@ -951,23 +984,23 @@ class FeedServiceTest {
 
     @Test
     void listingByATagAsksForTheNormalisedTag() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), eq("ai"), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), eq("ai"), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        service().list("user-1", null, null, "#AI", 0, 20);
+        service().list("user-1", null, null, "#AI", null, 0, 20);
 
-        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), eq("ai"), any());
+        verify(postRepository).findVisibleTo(eq("user-1"), isNull(), isNull(), eq("ai"), isNull(), any());
     }
 
     @Test
     void aTagThatCanNeverExistMatchesNothingInsteadOfMeaningNoFilter() {
-        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), eq("no such tag"), any()))
+        when(postRepository.findVisibleTo(eq("user-1"), isNull(), isNull(), eq("no such tag"), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of()));
 
-        var page = service().list("user-1", null, null, "not a tag!", 0, 20);
+        var page = service().list("user-1", null, null, "not a tag!", null, 0, 20);
 
         assertThat(page.getContent()).isEmpty();
-        verify(postRepository, never()).findVisibleTo(any(), any(), any(), isNull(), any());
+        verify(postRepository, never()).findVisibleTo(any(), any(), any(), isNull(), any(), any());
     }
 
     private PostHashtagRepository.TagCount tagCount(String tag, long count) {

@@ -52,9 +52,10 @@ public class FeedController {
                                                      @RequestParam(required = false) String authorId,
                                                      @RequestParam(required = false) String type,
                                                      @RequestParam(required = false) String tag,
+                                                     @RequestParam(required = false) String chapterId,
                                                      @RequestParam(defaultValue = "0") int page,
                                                      @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, type, tag, page, size)));
+        return ApiResponse.ok(PageResponse.from(feedService.list(principal.id(), authorId, type, tag, chapterId, page, size)));
     }
 
     /**

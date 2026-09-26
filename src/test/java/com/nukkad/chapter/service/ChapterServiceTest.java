@@ -146,9 +146,23 @@ class ChapterServiceTest {
         when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ChapterDto dto = service().updateChapter("u1", "c1",
-                new UpdateChapterRequest("New Name", null, null, null, null));
+                new UpdateChapterRequest("New Name", null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New Name");
+    }
+
+    @Test
+    void presidentCanUpdateTheAboutFields() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ChapterDto dto = service().updateChapter("u1", "c1",
+                new UpdateChapterRequest(null, null, null, null, null, "IIT Mandi", "University Chapter", Set.of("Startups", "Technology")));
+
+        assertThat(dto.institution()).isEqualTo("IIT Mandi");
+        assertThat(dto.type()).isEqualTo("University Chapter");
+        assertThat(dto.focusAreas()).containsExactlyInAnyOrder("Startups", "Technology");
     }
 
     @Test
@@ -157,7 +171,7 @@ class ChapterServiceTest {
         when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
 
         assertThatThrownBy(() -> service().updateChapter("u2", "c1",
-                new UpdateChapterRequest("Hijacked", null, null, null, null)))
+                new UpdateChapterRequest("Hijacked", null, null, null, null, null, null, null)))
                 .isInstanceOf(ForbiddenException.class);
 
         verify(chapterRepository, never()).saveAndFlush(any());
