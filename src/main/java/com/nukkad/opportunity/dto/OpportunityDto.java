@@ -23,6 +23,8 @@ public record OpportunityDto(
         String experienceLevel,
         Instant applicationDeadline,
         String postedByUserId,
+        boolean postedAsPlatform,
+        String publisherIdentity,
         String chapterId,
         List<String> requirements,
         List<String> requiredSkills,

@@ -21,6 +21,8 @@ public class EventMapper {
                 event.getChapterId(),
                 chapterName,
                 event.getOrganizerUserId(),
+                event.isPostedAsPlatform(),
+                event.getPublisherIdentity().name(),
                 event.getStartAt(),
                 event.getEndAt(),
                 EventStatus.of(event, Instant.now()),

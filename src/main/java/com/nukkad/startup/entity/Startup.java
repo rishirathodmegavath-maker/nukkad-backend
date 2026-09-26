@@ -1,6 +1,7 @@
 package com.nukkad.startup.entity;
 
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.publishing.PublisherIdentity;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
@@ -127,6 +128,21 @@ public class Startup {
 
     @Column(name = "removal_reason", length = 500)
     private String removalReason;
+
+    /** True only for a startup an admin added from the admin panel without attributing it to a
+     *  member — there's no separate "creator" column here (see StartupTeamMember, the only place
+     *  ownership actually lives), so this is true exactly when the admin's own account ends up as
+     *  the FOUNDER team member. The public-facing identity shown for it is {@code publisherIdentity}
+     *  instead of that admin's real name; the real FOUNDER row is untouched either way (same idea
+     *  as Post — see PostCard.tsx). */
+    @Column(name = "posted_as_platform", nullable = false)
+    @Builder.Default
+    private boolean postedAsPlatform = false;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "publisher_identity", nullable = false, length = 30)
+    @Builder.Default
+    private PublisherIdentity publisherIdentity = PublisherIdentity.BUILDADDA;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "moderation_status", nullable = false, length = 20)

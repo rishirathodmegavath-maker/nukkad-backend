@@ -51,7 +51,7 @@ public class AdminOpportunityController {
                 request.responsibilities(), request.requirements(), request.requiredSkills(), request.compensation(),
                 request.equity(), request.experienceLevel(), request.applicationDeadline());
         return ApiResponse.ok(opportunityService.postOpportunityAsAdmin(
-                principal.id(), opportunity, request.postedByEmail(), httpRequest.getRemoteAddr()));
+                principal.id(), opportunity, request.postedByEmail(), request.publisherIdentity(), httpRequest.getRemoteAddr()));
     }
 
     @GetMapping

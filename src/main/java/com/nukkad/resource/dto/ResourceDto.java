@@ -17,6 +17,7 @@ public record ResourceDto(
         boolean featured,
         String url,
         String uploaderUserId,
+        String publisherIdentity,
         String chapterId,
         String chapterName,
         Set<String> tags,

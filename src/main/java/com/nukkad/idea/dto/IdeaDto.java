@@ -12,6 +12,8 @@ public record IdeaDto(
         String stage,
         String category,
         String creatorId,
+        boolean postedAsPlatform,
+        String publisherIdentity,
         String chapterId,
         String startupId,
         Set<String> tags,

@@ -1,5 +1,5 @@
 package com.nukkad.notification.entity;
 
 public enum NotificationType {
-    connection, idea_interest, opportunity, event, reply, endorsement, recommendation, startup, chapter, investor, wallet, grant, investor_activation, post
+    connection, idea_interest, opportunity, event, reply, endorsement, recommendation, startup, chapter, investor, wallet, grant, investor_activation, post, idea
 }

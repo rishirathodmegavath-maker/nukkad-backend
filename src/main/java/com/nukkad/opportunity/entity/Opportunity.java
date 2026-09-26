@@ -1,6 +1,7 @@
 package com.nukkad.opportunity.entity;
 
 import com.nukkad.common.moderation.ModerationStatus;
+import com.nukkad.common.publishing.PublisherIdentity;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
@@ -106,6 +107,18 @@ public class Opportunity {
 
     @Column(name = "posted_by_user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String postedByUserId;
+
+    /** True only for an opportunity an admin published from the admin panel without attributing it
+     *  to a member — {@code postedByUserId} is then the admin's own account, but the public-facing
+     *  poster shown for it is {@code publisherIdentity} instead (same idea as Post — see PostCard.tsx). */
+    @Column(name = "posted_as_platform", nullable = false)
+    @Builder.Default
+    private boolean postedAsPlatform = false;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "publisher_identity", nullable = false, length = 30)
+    @Builder.Default
+    private PublisherIdentity publisherIdentity = PublisherIdentity.BUILDADDA;
 
     @Column(name = "chapter_id", columnDefinition = "CHAR(36)")
     private String chapterId;

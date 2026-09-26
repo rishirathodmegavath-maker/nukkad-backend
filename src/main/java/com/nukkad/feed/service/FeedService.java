@@ -6,6 +6,8 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.common.paging.PageRequests;
+import com.nukkad.common.publishing.PlatformAuthorResolver;
+import com.nukkad.common.publishing.PublisherIdentity;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.feed.dto.AttachmentDto;
 import com.nukkad.feed.dto.AttachmentRef;
@@ -34,10 +36,7 @@ import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.feed.repository.PostSaveRepository;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
-import com.nukkad.user.entity.AccountStatus;
-import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.ConnectionRepository;
-import com.nukkad.user.repository.UserRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -51,7 +50,6 @@ import java.net.URISyntaxException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -80,7 +78,7 @@ public class FeedService {
     private final AuditService auditService;
     private final ConnectionRepository connectionRepository;
     private final PostHashtagRepository postHashtagRepository;
-    private final UserRepository userRepository;
+    private final PlatformAuthorResolver platformAuthorResolver;
     private final NotificationService notificationService;
 
     public FeedService(PostRepository postRepository, PostLikeRepository postLikeRepository,
@@ -89,7 +87,7 @@ public class FeedService {
                         UserTopicAffinityService userTopicAffinityService,
                         FileStorageService fileStorageService, AuditService auditService,
                         ConnectionRepository connectionRepository, PostHashtagRepository postHashtagRepository,
-                        UserRepository userRepository, NotificationService notificationService) {
+                        PlatformAuthorResolver platformAuthorResolver, NotificationService notificationService) {
         this.postRepository = postRepository;
         this.postLikeRepository = postLikeRepository;
         this.postCommentRepository = postCommentRepository;
@@ -101,7 +99,7 @@ public class FeedService {
         this.auditService = auditService;
         this.connectionRepository = connectionRepository;
         this.postHashtagRepository = postHashtagRepository;
-        this.userRepository = userRepository;
+        this.platformAuthorResolver = platformAuthorResolver;
         this.notificationService = notificationService;
     }
 
@@ -190,12 +188,12 @@ public class FeedService {
 
     @Transactional
     public PostDto create(String authorId, CreatePostRequest request) {
-        return create(authorId, request, false, Post.PublisherIdentity.ARJUN_MEHTA, 0);
+        return create(authorId, request, false, PublisherIdentity.ARJUN_MEHTA, 0);
     }
 
     @Transactional
     public PostDto create(String authorId, CreatePostRequest request, boolean postedAsPlatform,
-                           Post.PublisherIdentity publisherIdentity, int platformEngagementCount) {
+                           PublisherIdentity publisherIdentity, int platformEngagementCount) {
         String content = request.content() == null ? "" : request.content().trim();
         List<AttachmentRef> attachmentRefs = request.attachments() == null ? List.of() : request.attachments();
         String linkUrl = cleanLink(request.linkUrl());
@@ -259,11 +257,11 @@ public class FeedService {
         if (platformEngagementCount != null && platformEngagementCount < 0) {
             throw new BadRequestException("Platform engagement can't be negative");
         }
-        String authorId = resolveAuthorId(adminId, authorEmail);
+        String authorId = platformAuthorResolver.resolve(adminId, authorEmail);
         boolean postedAsPlatform = authorId.equals(adminId);
-        Post.PublisherIdentity publisherIdentity = postedAsPlatform
-                ? parsePublisherIdentity(publisherIdentityRaw)
-                : Post.PublisherIdentity.ARJUN_MEHTA;
+        PublisherIdentity publisherIdentity = postedAsPlatform
+                ? PublisherIdentity.parse(publisherIdentityRaw, PublisherIdentity.ARJUN_MEHTA)
+                : PublisherIdentity.ARJUN_MEHTA;
         int engagement = postedAsPlatform && platformEngagementCount != null ? platformEngagementCount : 0;
         PostDto created = create(authorId, request, postedAsPlatform, publisherIdentity, engagement);
 
@@ -274,25 +272,6 @@ public class FeedService {
                     "A post was added to BuildAdda for you.", created.id(), adminId);
         }
         return created;
-    }
-
-    private static Post.PublisherIdentity parsePublisherIdentity(String raw) {
-        if (raw == null || raw.isBlank()) return Post.PublisherIdentity.ARJUN_MEHTA;
-        try {
-            return Post.PublisherIdentity.valueOf(raw.trim().toUpperCase(Locale.ROOT));
-        } catch (IllegalArgumentException e) {
-            throw new BadRequestException("Unknown publisher identity: " + raw);
-        }
-    }
-
-    private String resolveAuthorId(String adminId, String authorEmail) {
-        if (authorEmail == null || authorEmail.isBlank()) return adminId;
-        User author = userRepository.findByEmail(authorEmail.toLowerCase().trim())
-                .orElseThrow(() -> new BadRequestException("No member has that email address"));
-        if (author.getStatus() != AccountStatus.ACTIVE) {
-            throw new BadRequestException("That member's account is not active");
-        }
-        return author.getId();
     }
 
     @Transactional

@@ -1,10 +1,13 @@
 package com.nukkad.resource.entity;
 
+import com.nukkad.common.publishing.PublisherIdentity;
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
@@ -73,6 +76,16 @@ public class Resource {
 
     @Column(name = "uploader_user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String uploaderUserId;
+
+    /** Which public identity to credit as this resource's curator — every resource is admin-curated
+     *  (see the class-level ResourceService comment: there is no member-create path at all), so
+     *  unlike Post/Startup/Opportunity/Grant there's no separate "unattributed platform content"
+     *  flag here; this is always meaningful. Never the {@code provider} field (e.g. "Y Combinator",
+     *  who actually made the content) — see ResourceDetailPage's "Curated by" line. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "publisher_identity", nullable = false, length = 30)
+    @Builder.Default
+    private PublisherIdentity publisherIdentity = PublisherIdentity.BUILDADDA;
 
     /** Null means a platform-wide resource (no owning chapter). */
     @Column(name = "chapter_id", columnDefinition = "CHAR(36)")

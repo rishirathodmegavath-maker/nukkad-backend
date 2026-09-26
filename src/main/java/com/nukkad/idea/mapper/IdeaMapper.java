@@ -21,6 +21,8 @@ public class IdeaMapper {
                 idea.getStage().getLabel(),
                 idea.getCategory(),
                 idea.getCreatorId(),
+                idea.isPostedAsPlatform(),
+                idea.getPublisherIdentity().name(),
                 idea.getChapterId(),
                 idea.getStartupId(),
                 new HashSet<>(idea.getTags()),

@@ -59,7 +59,7 @@ public class AdminGrantController {
                 request.description(), request.fundingAmount(), request.eligibilityCriteria(), request.eligibleSectors(),
                 request.eligibleStages(), request.deadline(), request.applicationUrl());
         return ApiResponse.ok(grantService.createGrantAsAdmin(
-                principal.id(), grant, request.createdByEmail(), httpRequest.getRemoteAddr()));
+                principal.id(), grant, request.createdByEmail(), request.publisherIdentity(), httpRequest.getRemoteAddr()));
     }
 
     @GetMapping

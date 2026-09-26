@@ -12,6 +12,8 @@ public record EventDto(
         String chapterId,
         String chapterName,
         String organizerUserId,
+        boolean postedAsPlatform,
+        String publisherIdentity,
         Instant startAt,
         Instant endAt,
         /** Where the event is in time, worked out by the server from start and end (never stored, so never stale). */

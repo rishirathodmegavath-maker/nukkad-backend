@@ -87,9 +87,10 @@ public class AdminResourceController {
                                              @RequestParam(required = false) MultipartFile thumbnail,
                                              @RequestParam(required = false) String chapterId,
                                              @RequestParam(required = false) String tags,
+                                             @RequestParam(required = false) String publisherIdentity,
                                              HttpServletRequest httpRequest) {
         ResourceService.NewResource input = new ResourceService.NewResource(title, description, type, url, category,
-                provider, durationMinutes, featured, chapterId, parseTags(tags));
+                provider, durationMinutes, featured, chapterId, parseTags(tags), publisherIdentity);
         return ApiResponse.ok(resourceService.createResource(principal.id(), input, file, thumbnail, httpRequest.getRemoteAddr()));
     }
 

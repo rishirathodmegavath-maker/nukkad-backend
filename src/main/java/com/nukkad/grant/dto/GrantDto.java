@@ -19,6 +19,8 @@ public record GrantDto(
         String discoveryOrigin,
         Instant lastVerifiedAt,
         String createdByUserId,
+        boolean postedAsPlatform,
+        String publisherIdentity,
         boolean removedByAdmin,
         String removalReason,
         String moderationStatus,

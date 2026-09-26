@@ -2,9 +2,11 @@ package com.nukkad.event.service;
 
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
+import com.nukkad.common.publishing.PlatformAuthorResolver;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.dto.CreateEventRequest;
 import com.nukkad.event.dto.EventDto;
@@ -38,6 +40,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /** Covers Events authorization (chapter events are chapter-president-scoped; events created
@@ -56,13 +59,16 @@ class EventServiceTest {
     @Mock private UserService userService;
     @Mock private NotificationService notificationService;
     @Mock private FileStorageService fileStorageService;
+    @Mock private AuditService auditService;
+    @Mock private PlatformAuthorResolver platformAuthorResolver;
 
     private final EventMapper eventMapper = new EventMapper();
 
     private EventService service() {
         return new EventService(eventRepository, attendeeRepository, eventStartupRepository, chapterRepository,
                 startupRepository, startupTeamMemberRepository, userRepository, userService, eventMapper, notificationService, fileStorageService,
-                new com.nukkad.startup.service.StartupAccessPolicy(startupRepository, startupTeamMemberRepository));
+                new com.nukkad.startup.service.StartupAccessPolicy(startupRepository, startupTeamMemberRepository),
+                auditService, platformAuthorResolver);
     }
 
     private Chapter chapter(String id, String presidentUserId) {
@@ -160,6 +166,41 @@ class EventServiceTest {
         assertThat(dto.organizerUserId()).isEqualTo("regularUser");
         assertThat(dto.chapterId()).isNull();
         assertThat(dto.canManage()).isTrue();
+    }
+
+    // ---- an admin publishing an event from the admin panel ----
+
+    @Test
+    void anAdminCanPostAnEventUnderTheirOwnAccountAndPickAnIdentity() {
+        when(platformAuthorResolver.resolve("admin1", null)).thenReturn("admin1");
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId(any())).thenReturn(0L);
+
+        EventDto dto = service().createEventAsAdmin("admin1", validRequest(null), null, "karan_shah", "1.2.3.4");
+
+        assertThat(dto.organizerUserId()).isEqualTo("admin1");
+        assertThat(dto.postedAsPlatform()).isTrue();
+        assertThat(dto.publisherIdentity()).isEqualTo("KARAN_SHAH");
+        verify(auditService).log(org.mockito.ArgumentMatchers.eq("admin1"),
+                org.mockito.ArgumentMatchers.eq(com.nukkad.common.audit.AuditAction.ADMIN_EVENT_CREATED),
+                org.mockito.ArgumentMatchers.eq("Event"), any(), org.mockito.ArgumentMatchers.eq("1.2.3.4"), any());
+        verify(notificationService, org.mockito.Mockito.never()).notify(any(), any(), any(), any(), any(), any());
+        // Never gated by chapter-president, unlike a member's own event.
+        verify(chapterRepository, org.mockito.Mockito.never()).findById(any());
+    }
+
+    @Test
+    void anAdminCanAttributeAnEventToAMemberByEmailAndTheMemberIsTold() {
+        when(platformAuthorResolver.resolve("admin1", "organizer@example.com")).thenReturn("organizer-9");
+        when(eventRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(attendeeRepository.countByEventId(any())).thenReturn(0L);
+
+        EventDto dto = service().createEventAsAdmin("admin1", validRequest(null), "organizer@example.com", "karan_shah", "1.2.3.4");
+
+        assertThat(dto.organizerUserId()).isEqualTo("organizer-9");
+        assertThat(dto.postedAsPlatform()).as("attributing to a real member is never platform content, whatever identity was sent").isFalse();
+        assertThat(dto.publisherIdentity()).isEqualTo("BUILDADDA");
+        verify(notificationService).notify(org.mockito.ArgumentMatchers.eq("organizer-9"), any(), any(), any(), any(), org.mockito.ArgumentMatchers.eq("admin1"));
     }
 
     @Test

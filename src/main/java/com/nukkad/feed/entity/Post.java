@@ -1,5 +1,6 @@
 package com.nukkad.feed.entity;
 
+import com.nukkad.common.publishing.PublisherIdentity;
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -42,30 +43,6 @@ public class Post {
 
     /** Who may read a post: everyone, or only its author and the author's accepted connections. */
     public enum Visibility { PUBLIC, CONNECTIONS }
-
-    /**
-     * Which named publisher to show as the author of a platform post — meaningful only when
-     * {@code postedAsPlatform} is true. Still exactly one real admin account behind every one of
-     * these (see {@code authorId}); no separate User row is ever created per identity, and the
-     * BuildAdda logo stays the avatar for all four (see PostCard.tsx) — only the displayed name
-     * changes. A fixed, code-curated list on purpose (same idea as {@link Topic} above) — an admin
-     * cannot type an arbitrary publisher name. Replaces the earlier BUILDADDA/BUILDADDA_INSIGHTS/...
-     * department-style names outright (V112 remaps every existing row, platform or member, to one of
-     * these four — see that migration for why a member post's meaningless default also has to move).
-     */
-    public enum PublisherIdentity {
-        ARJUN_MEHTA("Arjun Mehta"), KARAN_SHAH("Karan Shah"), NEEL_KAPOOR("Neel Kapoor"), VIKRAM_RAO("Vikram Rao");
-
-        private final String label;
-
-        PublisherIdentity(String label) {
-            this.label = label;
-        }
-
-        public String getLabel() {
-            return label;
-        }
-    }
 
     /**
      * A curated category, meaningful only for {@code type = discussion} (null for every other kind).
