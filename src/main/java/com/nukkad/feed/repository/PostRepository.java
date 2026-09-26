@@ -127,6 +127,10 @@ public interface PostRepository extends JpaRepository<Post, String> {
 
     long countByTypeAndRemovedByAdminFalseAndVisibility(Post.Type type, Post.Visibility visibility);
 
+    /** A chapter's own "Discussions" stat — posts of type discussion whose author's chapter (at
+     *  posting time) was this one, minus anything an admin has taken down. */
+    long countByChapterIdAndTypeAndRemovedByAdminFalse(String chapterId, Post.Type type);
+
     // ---- Personalized feed candidate pool (com.nukkad.feed.recommendation.PostCandidatePoolService) ----
     // Every query here folds in PostVisibilityQuery.VISIBLE_TO_VIEWER and excludes already-shown/
     // hidden posts via one merged NOT IN parameter. excludeIds must never be an empty collection —

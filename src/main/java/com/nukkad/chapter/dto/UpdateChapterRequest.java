@@ -2,6 +2,7 @@ package com.nukkad.chapter.dto;
 
 import jakarta.validation.constraints.Size;
 
+import java.time.LocalDate;
 import java.util.Set;
 
 public record UpdateChapterRequest(
@@ -10,6 +11,8 @@ public record UpdateChapterRequest(
         @Size(max = 100) String country,
         String description,
         @Size(max = 500) String coverImageUrl,
+        @Size(max = 500) String logoUrl,
+        LocalDate foundedAt,
         @Size(max = 150) String institution,
         @Size(max = 50) String type,
         Set<@Size(max = 50) String> focusAreas

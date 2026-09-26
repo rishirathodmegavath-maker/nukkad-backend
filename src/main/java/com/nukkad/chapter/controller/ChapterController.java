@@ -76,6 +76,13 @@ public class ChapterController {
         return ApiResponse.ok(chapterService.uploadCoverImage(file));
     }
 
+    /** Same shape as {@link #uploadCoverImage} — a small square logo, distinct from the wide cover banner. */
+    @PostMapping("/logo-images")
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<ChapterCoverImageDto> uploadLogoImage(@RequestParam("file") MultipartFile file) {
+        return ApiResponse.ok(chapterService.uploadLogoImage(file));
+    }
+
     @PutMapping("/{id}")
     public ApiResponse<ChapterDto> update(@AuthenticationPrincipal AuthenticatedUser principal,
                                            @PathVariable String id,

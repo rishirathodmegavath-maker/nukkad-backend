@@ -1,0 +1,3 @@
+ALTER TABLE chapters
+  ADD COLUMN logo_url VARCHAR(500) NULL,
+  ADD COLUMN founded_at DATE NULL;
