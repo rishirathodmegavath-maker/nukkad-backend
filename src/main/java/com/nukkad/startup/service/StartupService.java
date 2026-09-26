@@ -483,11 +483,14 @@ public class StartupService {
                 .toList();
     }
 
-    /** A team member as the viewer may see them (privacy and blocks apply); null when they can't be shown, so the list still loads. */
+    /** A team member as the viewer may see them (privacy and blocks apply); null when they can't be shown, so the list
+     *  still loads. Catches any RuntimeException, not just the two expected ones: one team member with a broken or
+     *  incomplete profile (e.g. an account created outside the normal signup flow) must never 500 the whole team list
+     *  for every visitor to the startup. */
     private UserDto memberProfile(String userId, String viewerId) {
         try {
             return userService.getUser(userId, viewerId);
-        } catch (ResourceNotFoundException | ForbiddenException e) {
+        } catch (RuntimeException e) {
             return null;
         }
     }
