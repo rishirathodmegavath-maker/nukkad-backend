@@ -7,6 +7,8 @@ import com.nukkad.program.entity.ProgramApplication;
 import com.nukkad.program.entity.ProgramSettings;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
+
 @Component
 public class ProgramMapper {
 
@@ -34,7 +36,10 @@ public class ProgramMapper {
                 application.getId(),
                 application.getProgram().name(),
                 application.getStatus().name(),
-                application.getAnswers(),
+                // Copied, not passed through: answers is a lazy @ElementCollection and this DTO is
+                // serialized after the transaction's Hibernate session has closed (see ChapterMapper's
+                // identical fix for focusAreas, which crashed production the same way).
+                new HashMap<>(application.getAnswers()),
                 application.getSubmittedAt(),
                 application.getCreatedAt(),
                 application.getUpdatedAt());
