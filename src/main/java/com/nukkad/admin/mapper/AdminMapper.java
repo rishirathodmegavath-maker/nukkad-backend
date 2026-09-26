@@ -3,12 +3,14 @@ package com.nukkad.admin.mapper;
 import com.nukkad.admin.dto.AdminAuditLogDto;
 import com.nukkad.admin.dto.AdminInvestorActivationDto;
 import com.nukkad.admin.dto.AdminInvestorDto;
+import com.nukkad.admin.dto.AdminProgramApplicationDto;
 import com.nukkad.admin.dto.AdminReportDto;
 import com.nukkad.admin.dto.AdminUserDto;
 import com.nukkad.admin.dto.AdminWithdrawalDto;
 import com.nukkad.common.audit.AuditLog;
 import com.nukkad.investor.entity.Investor;
 import com.nukkad.investor.entity.InvestorActivationRequest;
+import com.nukkad.program.entity.ProgramApplication;
 import com.nukkad.report.entity.Report;
 import com.nukkad.user.entity.User;
 import com.nukkad.wallet.entity.WithdrawalRequest;
@@ -160,6 +162,28 @@ public class AdminMapper {
                 investor.getCreatedByAdminId(),
                 investor.getCreatedAt(),
                 investor.getUpdatedAt()
+        );
+    }
+
+    /** {@code users} should contain both the applicant id and (when reviewed) the reviewer id. */
+    public AdminProgramApplicationDto toDto(ProgramApplication application, Map<String, User> users) {
+        User applicant = users.get(application.getApplicantUserId());
+        User reviewer = application.getReviewedBy() == null ? null : users.get(application.getReviewedBy());
+        return new AdminProgramApplicationDto(
+                application.getId(),
+                application.getApplicantUserId(),
+                applicant != null ? applicant.getName() : null,
+                applicant != null ? applicant.getEmail() : null,
+                application.getProgram().name(),
+                application.getStatus().name(),
+                application.getAnswers(),
+                application.getSubmittedAt(),
+                application.getAdminNote(),
+                application.getReviewedBy(),
+                reviewer != null ? reviewer.getName() : null,
+                application.getReviewedAt(),
+                application.getCreatedAt(),
+                application.getUpdatedAt()
         );
     }
 }
