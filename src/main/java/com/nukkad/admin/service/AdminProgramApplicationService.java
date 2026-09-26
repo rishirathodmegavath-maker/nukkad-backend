@@ -11,12 +11,10 @@ import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ResourceNotFoundException;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
-import com.nukkad.program.entity.Program;
 import com.nukkad.program.entity.ProgramApplication;
 import com.nukkad.program.entity.ProgramApplicationStatus;
 import com.nukkad.program.repository.ProgramApplicationRepository;
 import com.nukkad.program.repository.ProgramApplicationSpecifications;
-import com.nukkad.program.service.ProgramService;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.repository.UserRepository;
 import com.nukkad.user.repository.UserSpecifications;
@@ -67,7 +65,7 @@ public class AdminProgramApplicationService {
 
     @Transactional(readOnly = true)
     public Page<AdminProgramApplicationDto> list(String programKey, String statusRaw, String q, int page, int size) {
-        Program program = programKey == null || programKey.isBlank() ? null : ProgramService.parseProgram(programKey);
+        String program = programKey == null || programKey.isBlank() ? null : programKey.trim();
         ProgramApplicationStatus status = parseOptionalStatus(statusRaw);
         Pageable pageable = PageRequest.of(page, AdminPaging.clampSize(size), Sort.by(Sort.Direction.DESC, "createdAt"));
 
@@ -114,8 +112,8 @@ public class AdminProgramApplicationService {
         auditService.log(adminId, AuditAction.ADMIN_ACTION, "ProgramApplication", id, ip,
                 Map.of("action", "PROGRAM_APPLICATION_STATUS_CHANGED", "status", newStatus.name()));
         notificationService.notify(application.getApplicantUserId(), NotificationType.program_application,
-                "Your " + application.getProgram().name() + " application was updated",
-                statusMessage(newStatus, application.getProgram().name()), application.getId(), adminId);
+                "Your " + application.getProgram() + " application was updated",
+                statusMessage(newStatus, application.getProgram()), application.getId(), adminId);
 
         return adminMapper.toDto(application, fetchReferencedUsers(List.of(application)));
     }

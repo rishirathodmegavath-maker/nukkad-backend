@@ -8,7 +8,6 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.notification.entity.NotificationType;
 import com.nukkad.notification.service.NotificationService;
-import com.nukkad.program.entity.Program;
 import com.nukkad.program.entity.ProgramApplication;
 import com.nukkad.program.entity.ProgramApplicationStatus;
 import com.nukkad.program.repository.ProgramApplicationRepository;
@@ -44,7 +43,7 @@ class AdminProgramApplicationServiceTest {
     }
 
     private ProgramApplication submitted(String id, String userId) {
-        return ProgramApplication.builder().id(id).applicantUserId(userId).program(Program.SPARK)
+        return ProgramApplication.builder().id(id).applicantUserId(userId).program("SPARK")
                 .status(ProgramApplicationStatus.SUBMITTED).answers(new java.util.HashMap<>()).build();
     }
 

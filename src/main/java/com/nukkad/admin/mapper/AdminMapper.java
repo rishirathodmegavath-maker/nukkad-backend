@@ -174,7 +174,7 @@ public class AdminMapper {
                 application.getApplicantUserId(),
                 applicant != null ? applicant.getName() : null,
                 applicant != null ? applicant.getEmail() : null,
-                application.getProgram().name(),
+                application.getProgram(),
                 application.getStatus().name(),
                 // Copied, not passed through: answers is a lazy @ElementCollection, serialized after
                 // this transaction's session has closed (same fix as ProgramMapper/ChapterMapper).

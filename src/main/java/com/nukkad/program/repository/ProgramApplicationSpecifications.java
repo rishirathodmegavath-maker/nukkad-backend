@@ -1,6 +1,5 @@
 package com.nukkad.program.repository;
 
-import com.nukkad.program.entity.Program;
 import com.nukkad.program.entity.ProgramApplication;
 import com.nukkad.program.entity.ProgramApplicationStatus;
 import org.springframework.data.jpa.domain.Specification;
@@ -24,9 +23,9 @@ public final class ProgramApplicationSpecifications {
                 .orElse((root, query, cb) -> cb.conjunction());
     }
 
-    public static Specification<ProgramApplication> program(Program program) {
-        if (program == null) return null;
-        return (root, query, cb) -> cb.equal(root.get("program"), program);
+    public static Specification<ProgramApplication> program(String programSlug) {
+        if (programSlug == null) return null;
+        return (root, query, cb) -> cb.equal(root.get("program"), programSlug);
     }
 
     public static Specification<ProgramApplication> status(ProgramApplicationStatus status) {

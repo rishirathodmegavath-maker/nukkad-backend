@@ -4,14 +4,16 @@ import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.exception.ResourceNotFoundException;
-import com.nukkad.program.catalog.ProgramCatalog;
+import com.nukkad.program.catalog.ProgramContentCodec;
 import com.nukkad.program.catalog.ProgramField;
 import com.nukkad.program.dto.ProgramApplicationDto;
 import com.nukkad.program.entity.Program;
 import com.nukkad.program.entity.ProgramApplication;
 import com.nukkad.program.entity.ProgramApplicationStatus;
+import com.nukkad.program.entity.ProgramStatus;
 import com.nukkad.program.mapper.ProgramMapper;
 import com.nukkad.program.repository.ProgramApplicationRepository;
+import com.nukkad.program.repository.ProgramRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +34,9 @@ import java.util.regex.Pattern;
  * the review-facing half. Mirrors {@code InvestorActivationService}'s "at most one active
  * application, reapply after rejection" shape, generalized per-program and with a real draft/resume
  * stage that investor activation (a single-shot submit) never needed.
+ * <p>
+ * A program's application question set now comes from its (admin-editable) {@link Program} row
+ * rather than the old fixed {@code ProgramCatalog} — see {@link ProgramContentCodec}.
  */
 @Service
 public class ProgramApplicationService {
@@ -42,10 +47,16 @@ public class ProgramApplicationService {
     private static final int MAX_ANSWER_LENGTH = 4000;
 
     private final ProgramApplicationRepository programApplicationRepository;
+    private final ProgramRepository programRepository;
+    private final ProgramContentCodec codec;
     private final ProgramMapper programMapper;
 
-    public ProgramApplicationService(ProgramApplicationRepository programApplicationRepository, ProgramMapper programMapper) {
+    public ProgramApplicationService(ProgramApplicationRepository programApplicationRepository,
+                                      ProgramRepository programRepository, ProgramContentCodec codec,
+                                      ProgramMapper programMapper) {
         this.programApplicationRepository = programApplicationRepository;
+        this.programRepository = programRepository;
+        this.codec = codec;
         this.programMapper = programMapper;
     }
 
@@ -53,7 +64,7 @@ public class ProgramApplicationService {
      *  always shows where things currently stand (including a past rejection). */
     @Transactional(readOnly = true)
     public List<ProgramApplicationDto> getMine(String userId) {
-        Map<Program, ProgramApplication> latestByProgram = new LinkedHashMap<>();
+        Map<String, ProgramApplication> latestByProgram = new LinkedHashMap<>();
         for (ProgramApplication application : programApplicationRepository.findByApplicantUserIdOrderByCreatedAtAsc(userId)) {
             latestByProgram.put(application.getProgram(), application); // later rows overwrite earlier ones
         }
@@ -62,10 +73,10 @@ public class ProgramApplicationService {
 
     @Transactional(readOnly = true)
     public ProgramApplicationDto getMineForProgram(String userId, String programKey) {
-        Program program = ProgramService.parseProgram(programKey);
+        Program program = resolveApplicableProgram(programKey);
         ProgramApplication application = programApplicationRepository
-                .findTopByApplicantUserIdAndProgramOrderByCreatedAtDesc(userId, program)
-                .orElseThrow(() -> new ResourceNotFoundException("You haven't started an application for " + program.name()));
+                .findTopByApplicantUserIdAndProgramOrderByCreatedAtDesc(userId, program.getSlug())
+                .orElseThrow(() -> new ResourceNotFoundException("You haven't started an application for " + program.getName()));
         return programMapper.toDto(application);
     }
 
@@ -74,7 +85,7 @@ public class ProgramApplicationService {
      *  submitted — that's Admin's to move forward, not the applicant's to keep editing. */
     @Transactional
     public ProgramApplicationDto saveDraft(String userId, String programKey, Map<String, String> answers) {
-        Program program = ProgramService.parseProgram(programKey);
+        Program program = resolveApplicableProgram(programKey);
         ProgramApplication application = findOrStartDraft(userId, program);
         mergeAnswers(application, program, answers);
         return programMapper.toDto(programApplicationRepository.saveAndFlush(application));
@@ -82,9 +93,9 @@ public class ProgramApplicationService {
 
     @Transactional
     public ProgramApplicationDto submit(String userId, String programKey) {
-        Program program = ProgramService.parseProgram(programKey);
+        Program program = resolveApplicableProgram(programKey);
         ProgramApplication application = programApplicationRepository
-                .findTopByApplicantUserIdAndProgramOrderByCreatedAtDesc(userId, program)
+                .findTopByApplicantUserIdAndProgramOrderByCreatedAtDesc(userId, program.getSlug())
                 .filter(a -> a.getApplicantUserId().equals(userId))
                 .orElseThrow(() -> new BadRequestException("Start an application before submitting it"));
         if (application.getStatus() != ProgramApplicationStatus.DRAFT) {
@@ -113,17 +124,30 @@ public class ProgramApplicationService {
         return programMapper.toDto(programApplicationRepository.saveAndFlush(application));
     }
 
+    /** A program an applicant may interact with: it must exist and not be a draft (see {@link
+     *  ProgramStatus}'s doc comment) — anything else Admin is doing with it (archived, closed) is
+     *  handled separately, not by hiding it here. {@code BadRequestException}, not not-found: this
+     *  is what every existing caller/test already expects for "not a real program key". */
+    private Program resolveApplicableProgram(String key) {
+        Program program = programRepository.findBySlugIgnoreCase(key)
+                .orElseThrow(() -> new BadRequestException("Unknown program: " + key));
+        if (program.getStatus() == ProgramStatus.DRAFT) {
+            throw new BadRequestException("Unknown program: " + key);
+        }
+        return program;
+    }
+
     private ProgramApplication findOrStartDraft(String userId, Program program) {
-        var latest = programApplicationRepository.findTopByApplicantUserIdAndProgramOrderByCreatedAtDesc(userId, program);
+        var latest = programApplicationRepository.findTopByApplicantUserIdAndProgramOrderByCreatedAtDesc(userId, program.getSlug());
         if (latest.isEmpty()) {
-            return ProgramApplication.builder().applicantUserId(userId).program(program).status(ProgramApplicationStatus.DRAFT).build();
+            return ProgramApplication.builder().applicantUserId(userId).program(program.getSlug()).status(ProgramApplicationStatus.DRAFT).build();
         }
         ProgramApplication application = latest.get();
         if (application.getStatus() == ProgramApplicationStatus.DRAFT) {
             return application;
         }
         if (application.getStatus() == ProgramApplicationStatus.REJECTED || application.getStatus() == ProgramApplicationStatus.WITHDRAWN) {
-            return ProgramApplication.builder().applicantUserId(userId).program(program).status(ProgramApplicationStatus.DRAFT).build();
+            return ProgramApplication.builder().applicantUserId(userId).program(program.getSlug()).status(ProgramApplicationStatus.DRAFT).build();
         }
         throw new ConflictException("You already have an application for this program under review");
     }
@@ -206,7 +230,8 @@ public class ProgramApplicationService {
 
     private Map<String, ProgramField> fieldsByKey(Program program) {
         Map<String, ProgramField> byKey = new TreeMap<>();
-        ProgramCatalog.get(program).applicationSteps().forEach(step -> step.fields().forEach(f -> byKey.put(f.key(), f)));
+        codec.readApplicationSteps(program.getApplicationStepsJson())
+                .forEach(step -> step.fields().forEach(f -> byKey.put(f.key(), f)));
         return byKey;
     }
 }

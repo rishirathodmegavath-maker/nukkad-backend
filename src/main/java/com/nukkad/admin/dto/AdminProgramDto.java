@@ -1,24 +1,27 @@
-package com.nukkad.program.dto;
+package com.nukkad.admin.dto;
 
 import com.nukkad.program.catalog.ProgramBenefit;
 import com.nukkad.program.catalog.ProgramJourneyPhase;
 import com.nukkad.program.catalog.ProgramStep;
 
+import java.time.Instant;
 import java.util.List;
 
-/** The public shape of a program — the landing page's card list (as a summary) and the detail page
- *  (in full) both fetch this. {@code feeAmount}/{@code enrollmentInfo}/{@code selective} and every
- *  optional text field are null until Admin sets them — never a fabricated default. Never carries
- *  {@code status}: only PUBLISHED (or, for a direct link, ARCHIVED) programs are ever mapped to this
- *  DTO in the first place (see {@code ProgramService}), so there's nothing to distinguish here. */
-public record ProgramDto(
-        String key,
+/** Admin's full view of a program — everything {@link com.nukkad.program.dto.ProgramDto} carries
+ *  plus what only Admin needs to see: its id (for edit/delete), status (including DRAFT), and how
+ *  many applications it has received (excluding never-submitted drafts, which aren't really
+ *  "applications" yet). */
+public record AdminProgramDto(
+        String id,
+        String slug,
         String name,
         String badge,
         String tagline,
         String description,
         String heroImageUrl,
         String thumbnailUrl,
+        String status,
+        int displayOrder,
         List<String> highlights,
         List<String> targetAudience,
         String audienceDescription,
@@ -34,6 +37,9 @@ public record ProgramDto(
         Integer feeAmount,
         String feeCurrency,
         String enrollmentInfo,
-        Boolean selective
+        Boolean selective,
+        long applicationCount,
+        Instant createdAt,
+        Instant updatedAt
 ) {
 }
