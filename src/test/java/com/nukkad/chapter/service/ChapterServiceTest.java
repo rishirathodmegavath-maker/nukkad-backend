@@ -6,11 +6,13 @@ import com.nukkad.chapter.dto.UpdateChapterRequest;
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.repository.EventRepository;
+import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.idea.repository.IdeaRepository;
 import com.nukkad.resource.repository.ResourceRepository;
 import com.nukkad.opportunity.repository.OpportunityRepository;
@@ -33,6 +35,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -49,14 +52,17 @@ class ChapterServiceTest {
     @Mock private OpportunityRepository opportunityRepository;
     @Mock private EventRepository eventRepository;
     @Mock private ResourceRepository resourceRepository;
+    @Mock private PostRepository postRepository;
     @Mock private FileStorageService fileStorageService;
+    @Mock private AuditService auditService;
 
     private final ChapterMapper chapterMapper = new ChapterMapper();
     private final UserMapper userMapper = new UserMapper();
 
     private ChapterService service() {
         return new ChapterService(chapterRepository, userRepository, ideaRepository, startupRepository,
-                opportunityRepository, eventRepository, resourceRepository, chapterMapper, userMapper, fileStorageService);
+                opportunityRepository, eventRepository, resourceRepository, postRepository, chapterMapper,
+                userMapper, fileStorageService, auditService);
     }
 
     private Chapter chapter(String id, String presidentUserId) {
@@ -140,13 +146,101 @@ class ChapterServiceTest {
     }
 
     @Test
+    void joiningAChapterSetsTheMembersChapterIdAndJoinedAt() {
+        User member = user("u2");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(chapter("c1", "u1")));
+        when(userRepository.findById("u2")).thenReturn(Optional.of(member));
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service().joinChapter("u2", "c1");
+
+        assertThat(member.getChapterId()).isEqualTo("c1");
+        assertThat(member.getChapterJoinedAt()).isNotNull();
+    }
+
+    // ---- admin chapter creation ----
+
+    private com.nukkad.admin.dto.AdminCreateChapterRequest adminRequest(String presidentEmail) {
+        return new com.nukkad.admin.dto.AdminCreateChapterRequest("Nukkad Pune", "Pune", "India", "A new hub",
+                null, null, null, "IIT Mandi", "University Chapter", Set.of("Startups"), presidentEmail);
+    }
+
+    @Test
+    void adminCreatingAChapterInstallsTheNamedExistingUserAsPresident() {
+        User president = User.builder().id("u9").email("prez@example.com")
+                .securityRoles(new HashSet<>(Set.of(SecurityRole.USER))).build();
+        when(userRepository.findByEmail("prez@example.com")).thenReturn(Optional.of(president));
+        when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> {
+            Chapter c = inv.getArgument(0);
+            c.setId("c1");
+            return c;
+        });
+        when(userRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ChapterDto dto = service().createChapterAsAdmin("admin1", adminRequest("  Prez@Example.com "), "1.2.3.4");
+
+        assertThat(dto.presidentUserId()).isEqualTo("u9");
+        assertThat(president.getChapterId()).isEqualTo("c1");
+        assertThat(president.getSecurityRoles()).contains(SecurityRole.CHAPTER_PRESIDENT);
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_CHAPTER_CREATED),
+                eq("Chapter"), eq("c1"), eq("1.2.3.4"), any());
+    }
+
+    @Test
+    void adminChapterCreationRejectsAnUnknownPresidentEmailAndCreatesNothing() {
+        when(userRepository.findByEmail("nobody@example.com")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service().createChapterAsAdmin("admin1", adminRequest("nobody@example.com"), "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+        verify(chapterRepository, never()).saveAndFlush(any());
+        verify(userRepository, never()).save(any());
+    }
+
+    @Test
+    void adminChapterCreationRejectsASuspendedPresident() {
+        User suspended = User.builder().id("u9").email("prez@example.com")
+                .status(com.nukkad.user.entity.AccountStatus.SUSPENDED).build();
+        when(userRepository.findByEmail("prez@example.com")).thenReturn(Optional.of(suspended));
+
+        assertThatThrownBy(() -> service().createChapterAsAdmin("admin1", adminRequest("prez@example.com"), "1.2.3.4"))
+                .isInstanceOf(BadRequestException.class);
+        verify(chapterRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void adminCanUpdateAnyChapterWithoutBeingItsPresident() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ChapterDto dto = service().updateChapterAsAdmin("admin1", "c1",
+                new UpdateChapterRequest("Renamed by admin", null, null, null, null, null, null, null, null, null), "1.2.3.4");
+
+        assertThat(dto.name()).isEqualTo("Renamed by admin");
+        verify(auditService).log(eq("admin1"), eq(com.nukkad.common.audit.AuditAction.ADMIN_CHAPTER_UPDATED),
+                eq("Chapter"), eq("c1"), eq("1.2.3.4"), any());
+    }
+
+    @Test
+    void chapterCountsIncludeDiscussionCount() {
+        Chapter existing = chapter("c1", "u1");
+        when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
+        when(postRepository.countByChapterIdAndTypeAndRemovedByAdminFalse("c1", com.nukkad.feed.entity.Post.Type.discussion))
+                .thenReturn(7L);
+
+        ChapterDto dto = service().getChapter("c1");
+
+        assertThat(dto.discussionCount()).isEqualTo(7L);
+    }
+
+    @Test
     void presidentCanUpdateTheirOwnChapter() {
         Chapter existing = chapter("c1", "u1");
         when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
         when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ChapterDto dto = service().updateChapter("u1", "c1",
-                new UpdateChapterRequest("New Name", null, null, null, null, null, null, null));
+                new UpdateChapterRequest("New Name", null, null, null, null, null, null, null, null, null));
 
         assertThat(dto.name()).isEqualTo("New Name");
     }
@@ -158,7 +252,7 @@ class ChapterServiceTest {
         when(chapterRepository.saveAndFlush(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ChapterDto dto = service().updateChapter("u1", "c1",
-                new UpdateChapterRequest(null, null, null, null, null, "IIT Mandi", "University Chapter", Set.of("Startups", "Technology")));
+                new UpdateChapterRequest(null, null, null, null, null, null, null, "IIT Mandi", "University Chapter", Set.of("Startups", "Technology")));
 
         assertThat(dto.institution()).isEqualTo("IIT Mandi");
         assertThat(dto.type()).isEqualTo("University Chapter");
@@ -171,7 +265,7 @@ class ChapterServiceTest {
         when(chapterRepository.findById("c1")).thenReturn(Optional.of(existing));
 
         assertThatThrownBy(() -> service().updateChapter("u2", "c1",
-                new UpdateChapterRequest("Hijacked", null, null, null, null, null, null, null)))
+                new UpdateChapterRequest("Hijacked", null, null, null, null, null, null, null, null, null)))
                 .isInstanceOf(ForbiddenException.class);
 
         verify(chapterRepository, never()).saveAndFlush(any());

@@ -19,6 +19,7 @@ import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.UuidGenerator;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -51,8 +52,14 @@ public class Chapter {
     @Column(name = "cover_image_url", length = 500)
     private String coverImageUrl;
 
+    @Column(name = "logo_url", length = 500)
+    private String logoUrl;
+
     @Column(name = "president_user_id", columnDefinition = "CHAR(36)")
     private String presidentUserId;
+
+    @Column(name = "founded_at")
+    private LocalDate foundedAt;
 
     @Column(length = 150)
     private String institution;

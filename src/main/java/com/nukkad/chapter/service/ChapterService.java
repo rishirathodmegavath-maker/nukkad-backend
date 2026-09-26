@@ -10,6 +10,9 @@ import com.nukkad.chapter.dto.UpdateChapterRequest;
 import com.nukkad.chapter.entity.Chapter;
 import com.nukkad.chapter.mapper.ChapterMapper;
 import com.nukkad.chapter.repository.ChapterRepository;
+import com.nukkad.admin.dto.AdminCreateChapterRequest;
+import com.nukkad.common.audit.AuditAction;
+import com.nukkad.common.audit.AuditService;
 import com.nukkad.common.exception.BadRequestException;
 import com.nukkad.common.exception.ConflictException;
 import com.nukkad.common.exception.ForbiddenException;
@@ -18,6 +21,8 @@ import com.nukkad.common.paging.PageRequests;
 import com.nukkad.common.storage.FileStorageService;
 import com.nukkad.event.entity.Event;
 import com.nukkad.event.repository.EventRepository;
+import com.nukkad.feed.entity.Post;
+import com.nukkad.feed.repository.PostRepository;
 import com.nukkad.idea.entity.Idea;
 import com.nukkad.idea.repository.IdeaRepository;
 import com.nukkad.opportunity.entity.Opportunity;
@@ -27,6 +32,7 @@ import com.nukkad.resource.repository.ResourceRepository;
 import com.nukkad.startup.entity.Startup;
 import com.nukkad.startup.repository.StartupRepository;
 import com.nukkad.user.dto.UserDto;
+import com.nukkad.user.entity.AccountStatus;
 import com.nukkad.user.entity.SecurityRole;
 import com.nukkad.user.entity.User;
 import com.nukkad.user.mapper.UserMapper;
@@ -61,9 +67,11 @@ public class ChapterService {
     private final OpportunityRepository opportunityRepository;
     private final EventRepository eventRepository;
     private final ResourceRepository resourceRepository;
+    private final PostRepository postRepository;
     private final ChapterMapper chapterMapper;
     private final UserMapper userMapper;
     private final FileStorageService fileStorageService;
+    private final AuditService auditService;
 
     public ChapterService(ChapterRepository chapterRepository,
                            UserRepository userRepository,
@@ -72,9 +80,11 @@ public class ChapterService {
                            OpportunityRepository opportunityRepository,
                            EventRepository eventRepository,
                            ResourceRepository resourceRepository,
+                           PostRepository postRepository,
                            ChapterMapper chapterMapper,
                            UserMapper userMapper,
-                           FileStorageService fileStorageService) {
+                           FileStorageService fileStorageService,
+                           AuditService auditService) {
         this.chapterRepository = chapterRepository;
         this.userRepository = userRepository;
         this.ideaRepository = ideaRepository;
@@ -82,9 +92,11 @@ public class ChapterService {
         this.opportunityRepository = opportunityRepository;
         this.eventRepository = eventRepository;
         this.resourceRepository = resourceRepository;
+        this.postRepository = postRepository;
         this.chapterMapper = chapterMapper;
         this.userMapper = userMapper;
         this.fileStorageService = fileStorageService;
+        this.auditService = auditService;
     }
 
     public Chapter getEntityOrThrow(String id) {
@@ -169,16 +181,99 @@ public class ChapterService {
             throw new ForbiddenException("Only this chapter's president can update it");
         }
 
+        applyUpdate(chapter, request);
+
+        return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
+    }
+
+    private void applyUpdate(Chapter chapter, UpdateChapterRequest request) {
         if (request.name() != null) chapter.setName(request.name());
         if (request.city() != null) chapter.setCity(request.city());
         if (request.country() != null) chapter.setCountry(request.country());
         if (request.description() != null) chapter.setDescription(request.description());
         if (request.coverImageUrl() != null) chapter.setCoverImageUrl(request.coverImageUrl());
+        if (request.logoUrl() != null) chapter.setLogoUrl(request.logoUrl());
+        if (request.foundedAt() != null) chapter.setFoundedAt(request.foundedAt());
         if (request.institution() != null) chapter.setInstitution(request.institution());
         if (request.type() != null) chapter.setType(request.type());
         if (request.focusAreas() != null) chapter.setFocusAreas(new HashSet<>(request.focusAreas()));
+    }
 
-        return toDtoWithCounts(chapterRepository.saveAndFlush(chapter));
+    /**
+     * An admin editing any chapter's fields — unlike {@link #updateChapter}, no president-only
+     * restriction (this IS the admin override path). Does not reassign the president: transferring
+     * chapter governance is a separate, bigger feature than editing its profile fields.
+     */
+    @Transactional
+    public ChapterDto updateChapterAsAdmin(String adminId, String id, UpdateChapterRequest request, String ip) {
+        Chapter chapter = getEntityOrThrow(id);
+        applyUpdate(chapter, request);
+        chapter = chapterRepository.saveAndFlush(chapter);
+
+        auditService.log(adminId, AuditAction.ADMIN_CHAPTER_UPDATED, "Chapter", chapter.getId(), ip, Map.of());
+
+        return toDtoWithCounts(chapter);
+    }
+
+    /**
+     * An admin creating a chapter from the admin panel. {@code presidentEmail} must resolve to an
+     * existing, active member — the admin account is never installed as president, and no fake user
+     * is ever created (see AdminCreateChapterRequest's own doc comment for why this has no
+     * unattributed-platform fallback, unlike every other Admin*CreateRequest).
+     */
+    @Transactional
+    public ChapterDto createChapterAsAdmin(String adminId, AdminCreateChapterRequest request, String ip) {
+        String name = request.name().trim();
+        if (chapterRepository.existsByNameIgnoreCase(name)) {
+            throw new ConflictException("A chapter with this name already exists");
+        }
+
+        String presidentEmail = request.presidentEmail().toLowerCase().trim();
+        User president = userRepository.findByEmail(presidentEmail)
+                .orElseThrow(() -> new BadRequestException("No member has that email address"));
+        if (president.getStatus() != AccountStatus.ACTIVE) {
+            throw new BadRequestException("That member's account is not active");
+        }
+
+        Chapter chapter = Chapter.builder()
+                .name(name)
+                .city(request.city())
+                .country(request.country())
+                .description(request.description())
+                .coverImageUrl(request.coverImageUrl())
+                .logoUrl(request.logoUrl())
+                .foundedAt(request.foundedAt())
+                .institution(request.institution())
+                .type(request.type())
+                .focusAreas(request.focusAreas() == null ? new HashSet<>() : new HashSet<>(request.focusAreas()))
+                .presidentUserId(president.getId())
+                .build();
+        try {
+            chapter = chapterRepository.saveAndFlush(chapter);
+        } catch (DataIntegrityViolationException e) {
+            throw new ConflictException("A chapter with this name already exists");
+        }
+
+        // The president is automatically a member of the chapter admin just created for them —
+        // same as the self-serve path, so this chapter never starts with "no members yet" while
+        // its own president is displayed right above it as a contradiction.
+        president.getSecurityRoles().add(SecurityRole.CHAPTER_PRESIDENT);
+        president.setChapterId(chapter.getId());
+        president.setChapterJoinedAt(Instant.now());
+        userRepository.save(president);
+
+        auditService.log(adminId, AuditAction.ADMIN_CHAPTER_CREATED, "Chapter", chapter.getId(), ip, Map.of());
+
+        return toDtoWithCounts(chapter);
+    }
+
+    /** Mirrors {@link #uploadCoverImage} exactly — same size limit, same "works before the chapter
+     *  exists yet" shape, stored under its own prefix. */
+    public ChapterCoverImageDto uploadLogoImage(MultipartFile file) {
+        if (file != null && file.getSize() > MAX_COVER_IMAGE_BYTES) {
+            throw new BadRequestException("Logo image is too large. The maximum size is 8 MB.");
+        }
+        return new ChapterCoverImageDto(fileStorageService.storeImage(file, "chapter-logos"));
     }
 
     @Transactional
@@ -354,6 +449,7 @@ public class ChapterService {
         long opportunityCount = opportunityRepository.countByChapterId(chapter.getId());
         long eventCount = eventRepository.countByChapterId(chapter.getId());
         long resourceCount = resourceRepository.countByChapterId(chapter.getId());
-        return chapterMapper.toDto(chapter, memberCount, ideaCount, startupCount, opportunityCount, eventCount, resourceCount);
+        long discussionCount = postRepository.countByChapterIdAndTypeAndRemovedByAdminFalse(chapter.getId(), Post.Type.discussion);
+        return chapterMapper.toDto(chapter, memberCount, ideaCount, startupCount, opportunityCount, eventCount, resourceCount, discussionCount);
     }
 }

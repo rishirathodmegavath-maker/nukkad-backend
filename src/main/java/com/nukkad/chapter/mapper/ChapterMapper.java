@@ -7,7 +7,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class ChapterMapper {
 
-    public ChapterDto toDto(Chapter chapter, long memberCount, long ideaCount, long startupCount, long opportunityCount, long eventCount, long resourceCount) {
+    public ChapterDto toDto(Chapter chapter, long memberCount, long ideaCount, long startupCount, long opportunityCount,
+                             long eventCount, long resourceCount, long discussionCount) {
         return new ChapterDto(
                 chapter.getId(),
                 chapter.getName(),
@@ -15,7 +16,9 @@ public class ChapterMapper {
                 chapter.getCountry(),
                 chapter.getDescription(),
                 chapter.getCoverImageUrl(),
+                chapter.getLogoUrl(),
                 chapter.getPresidentUserId(),
+                chapter.getFoundedAt(),
                 chapter.getInstitution(),
                 chapter.getType(),
                 chapter.getFocusAreas(),
@@ -25,6 +28,7 @@ public class ChapterMapper {
                 opportunityCount,
                 eventCount,
                 resourceCount,
+                discussionCount,
                 chapter.getCreatedAt(),
                 chapter.getUpdatedAt()
         );
