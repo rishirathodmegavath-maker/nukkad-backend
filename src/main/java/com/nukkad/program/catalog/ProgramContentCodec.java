@@ -1,9 +1,9 @@
 package com.nukkad.program.catalog;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
 
@@ -70,7 +70,7 @@ public class ProgramContentCodec {
         if (json == null || json.isBlank()) return List.of();
         try {
             return objectMapper.readValue(json, type);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("Corrupt program content JSON", e);
         }
     }
@@ -79,7 +79,7 @@ public class ProgramContentCodec {
         if (value == null || value.isEmpty()) return null;
         try {
             return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalStateException("Could not serialize program content", e);
         }
     }
