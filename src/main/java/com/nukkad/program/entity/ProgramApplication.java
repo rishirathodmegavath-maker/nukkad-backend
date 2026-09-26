@@ -55,9 +55,12 @@ public class ProgramApplication {
     @Column(name = "applicant_user_id", nullable = false, columnDefinition = "CHAR(36)")
     private String applicantUserId;
 
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
-    private Program program;
+    /** The owning program's slug (see {@link Program}'s class doc) — a plain string, not a foreign
+     *  key: kept exactly as wide/simple as the old fixed enum column was, so this migration touches
+     *  zero existing rows here. Widened from 20 to 60 characters so an admin-chosen slug for a new
+     *  program isn't truncated. */
+    @Column(nullable = false, length = 60)
+    private String program;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)

@@ -1,25 +1,22 @@
-package com.nukkad.program.mapper;
+package com.nukkad.admin.mapper;
 
+import com.nukkad.admin.dto.AdminProgramDto;
 import com.nukkad.program.catalog.ProgramContentCodec;
-import com.nukkad.program.dto.ProgramApplicationDto;
-import com.nukkad.program.dto.ProgramDto;
 import com.nukkad.program.entity.Program;
-import com.nukkad.program.entity.ProgramApplication;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
-
 @Component
-public class ProgramMapper {
+public class AdminProgramMapper {
 
     private final ProgramContentCodec codec;
 
-    public ProgramMapper(ProgramContentCodec codec) {
+    public AdminProgramMapper(ProgramContentCodec codec) {
         this.codec = codec;
     }
 
-    public ProgramDto toDto(Program program) {
-        return new ProgramDto(
+    public AdminProgramDto toDto(Program program, long applicationCount) {
+        return new AdminProgramDto(
+                program.getId(),
                 program.getSlug(),
                 program.getName(),
                 program.getBadge(),
@@ -27,6 +24,8 @@ public class ProgramMapper {
                 program.getDescription(),
                 program.getHeroImageUrl(),
                 program.getThumbnailUrl(),
+                program.getStatus().name(),
+                program.getDisplayOrder(),
                 codec.readStrings(program.getHighlightsJson()),
                 codec.readStrings(program.getTargetAudienceJson()),
                 program.getAudienceDescription(),
@@ -42,20 +41,9 @@ public class ProgramMapper {
                 program.getFeeAmount(),
                 program.getFeeCurrency(),
                 program.getEnrollmentInfo(),
-                program.getSelective());
-    }
-
-    public ProgramApplicationDto toDto(ProgramApplication application) {
-        return new ProgramApplicationDto(
-                application.getId(),
-                application.getProgram(),
-                application.getStatus().name(),
-                // Copied, not passed through: answers is a lazy @ElementCollection and this DTO is
-                // serialized after the transaction's Hibernate session has closed (see ChapterMapper's
-                // identical fix for focusAreas, which crashed production the same way).
-                new HashMap<>(application.getAnswers()),
-                application.getSubmittedAt(),
-                application.getCreatedAt(),
-                application.getUpdatedAt());
+                program.getSelective(),
+                applicationCount,
+                program.getCreatedAt(),
+                program.getUpdatedAt());
     }
 }
